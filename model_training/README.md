@@ -1,1 +1,1 @@
-Model training code adapted from https://github.com/cb-42/AnNOTEator
+Model training code adapted from https://github.com/cb-42/AnNOTEator, which uses the MIT license
