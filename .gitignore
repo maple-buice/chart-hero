@@ -1,3 +1,14 @@
+# Training data
+training_data/
+
+# Processing directories
+midi_output/
+music/
+separated/
+
+# Reference code
+reference_code/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
