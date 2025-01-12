@@ -20,7 +20,7 @@ songFileNameNoExtension = songFileName.replace(".mp3", "")
 
 demucsOutputDir = "separated"
 demucsModel = "htdemucs_6s"
-demucsSplitSongOutputDir = "/Users/maple/src/clone-hero-hero/" + demucsOutputDir + "/" + demucsModel + "/" + songFileNameNoExtension
+demucsSplitSongOutputDir = "/Users/maple/Repos/chart-hero/" + demucsOutputDir + "/" + demucsModel + "/" + songFileNameNoExtension
 
 if os.path.exists(demucsSplitSongOutputDir):
     print("Song already split, moving on to MIDI generation")
@@ -33,7 +33,7 @@ else:
         musicDir + "/" + songFileName])
 
 basicPitchOutputDir = "midi_output"
-basicPitchSongOutputDir = "/Users/maple/src/clone-hero-hero/" + basicPitchOutputDir + "/" + songFileNameNoExtension
+basicPitchSongOutputDir = "/Users/maple/Repos/chart-hero/" + basicPitchOutputDir + "/" + songFileNameNoExtension
 
 if not os.path.exists(basicPitchOutputDir):
     os.makedirs(basicPitchOutputDir)

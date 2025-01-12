@@ -31,7 +31,7 @@ librosaSongOutputDir = demucsOutputDir + "/" + songFileNameNoExtension
 if not os.path.exists(librosaSongOutputDir):
     os.makedirs(librosaSongOutputDir)
 
-filename = "/Users/maple/src/clone-hero-hero/" + demucsSplitSongOutputDir + "/" + "drums.mp3"
+filename = "/Users/maple/Repos/chart-hero/" + demucsSplitSongOutputDir + "/" + "drums.mp3"
 midioutput = demucsSplitSongOutputDir + "/" + "drums.mid"
 
 
