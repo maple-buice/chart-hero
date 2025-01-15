@@ -11,7 +11,6 @@ import itertools
 import math
 import sys
 
-
 class data_preparation(): 
 
     tqdm.pandas()
@@ -48,20 +47,64 @@ class data_preparation():
             df=df[df['diff'].le(diff_threshold)]
             self.midi_wav_map=df.copy()
             self.notes_collection=pd.DataFrame()
+            
             # the midi note mapping is copied from the Google project page. note 39,54,56 are new in 
             # EGMD dataset and Google never assigned it to a code. From initial listening test, these
             # are electronic pad / cowbell sound, temporaily assigned it to CB, CowBell for now
-            # self.midi_note_map={36:'KD', 38:'SD', 40:'SD', 37:'SD_xstick', 48:'HT', 50:'HT',
-            #                    45:'MT', 47:'MT', 43:'FT' ,58:'FT', 46:'HH_open', 
-            #                    26:'HH_open', 42:'HH_close', 22:'HH_close', 44:'HH_close',
-            #                    49:'CC', 57:'CC', 55:'CC', 52:'CC', 51:'RC',
-            #                    59:'RC', 53:'RC', 39:'CB', 54:'CB', 56:'CB'}
+            # 
+            # Updated for Clone Hero use case. See README for methodology.
 
-            self.midi_note_map={36:'KD', 38:'SD', 40:'SD', 37:'SD', 48:'TT', 50:'TT',
-                               45:'TT', 47:'TT', 43:'TT' ,58:'TT', 46:'HH', 
-                               26:'HH', 42:'HH', 22:'HH', 44:'HH',
-                               49:'CC', 57:'CC', 55:'CC', 52:'CC', 51:'RC',
-                               59:'RC', 53:'RC', 39:'CB', 54:'CB', 56:'CB'}
+            self.midi_note_map={
+                22: '67', # Hi-hat Closed (Edge) -> HiHatCymbal
+                26: '67', # Hi-hat Open (Edge) -> HiHatCymbal
+                35: '0', # Acoustic Bass Drum -> Kick
+                36: '0', # Kick / Bass Drum 1 -> Kick
+                37: '1', # Snare X-Stick / Side Stick -> Snare
+                38: '1', # Snare (Head) / Acoustic Snare -> Snare
+                39: '67', # Hand Clap	/ Cowbell -> HiHatCymbal
+                40: '1', # Snare (Rim) / Electric Snare -> Snare
+                41: '4', # Low Floor Tom	-> LowTom
+                42: '67', # Hi-hat Closed (Bow) / Closed Hi-Hat -> HiHatCymbal
+                43: '4', # Tom 3 (Head) / High Floor Tom -> LowTom
+                44: '67', # Hi-hat Pedal / Pedal Hi-Hat -> HiHatCymbal
+                45: '3', # Tom 2 / Low Tom -> MiddleTom
+                46: '67', # Hi-hat Open (Bow) / Open Hi-Hat -> HiHatCymbal
+                47: '3', # Tom 2 (Rim) / Low-Mid Tom -> MiddleTom
+                48: '2', # Tom 1 / Hi-Mid Tom -> HighTom
+                49: '66', # Crash 1 (Bow) / Crash Cymbal 1 -> CrashCymbal
+                50: '2', # Tom 1 (Rim) / High Tom -> HighTom
+                51: '68', # Ride (Bow) / Ride Cymbal 1 -> RideCymbal
+                52: '66', # Crash 2 (Edge) / Chinese Cymbal -> CrashCymbal
+                53: '68', # Ride (Bell) / Ride Bell -> RideCymbal
+                54: '67', # Tambourine / Cowbell -> HiHatCymbal
+                55: '66', # Crash 1 (Edge) / Splash Cymbal -> CrashCymbal
+                56: '67', # Cowbell -> HiHatCymbal
+                57: '66', # Crash 2 (Bow) / Crash Cymbal 2 -> CrashCymbal
+                58: '4', # Tom 3 (Rim) / Vibraslap -> LowTom
+                59: '68', # Ride (Edge) / Ride Cymbal 2 -> RideCymbal
+                60: '2', # Hi Bongo -> HighTom
+                61: '3', # Low Bongo -> MiddleTom
+                62: '2', # Mute Hi Conga -> HighTom
+                63: '3', # Open Hi Conga -> MiddleTom
+                64: '4', # Low Conga -> LowTom
+                65: '2', # High Timbale -> HighTom
+                66: '3', # Low Timbale -> MiddleTom
+                67: '2', # High Agogo -> HighTom
+                68: '3', # Low Agogo -> MiddleTom
+                69: '67', # Cabasa -> HiHatCymbal
+                70: '67', # Maracas -> HiHatCymbal
+                71: '68', # Short Whistle -> RideCymbal
+                72: '66', # Long Whistle -> CrashCymbal
+                73: '68', # Short Guiro -> RideCymbal
+                74: '66', # Long Guiro -> CrashCymbal
+                75: '67', # Claves -> HiHatCymbal
+                76: '2', # Hi Wood Block -> HighTom
+                77: '3', # Low Wood Block -> MiddleTom
+                78: '2', # Mute Cuica -> HighTom
+                79: '3', # Open Cuica -> MiddleTom
+                80: '68', # Mute Triangle -> RideCymbal
+                81: '66', # Open Triangle -> CrashCymbal
+            }
 
             id_len=self.midi_wav_map[['track_id','wav_length']]
             id_len.set_index('track_id', inplace=True)
@@ -71,7 +114,7 @@ class data_preparation():
             raise NameError('dataset not supported')
     def get_length(self,x):
         wav, sr=librosa.load(os.path.join(self.directory_path, x), sr=None, mono=True)
-        return librosa.get_duration(wav, sr)
+        return librosa.get_duration(y = wav, sr = sr)
 
     def notes_extraction(self, midi_file):
         """

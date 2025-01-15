@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 from numpy import mean, random
 from pedalboard import LowpassFilter, Pedalboard, Reverb
 
-
 def add_lowpass_filter(audio_clip, sample_rate=44100, cutoff_freq=1000):
     """
     Add pedalboard.LowpassFilter to an audio file.
