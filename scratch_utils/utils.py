@@ -10,7 +10,7 @@ def re_order_npy_file_name_pieces():
             os.rename(os.path.join(npy_data_path, file), os.path.join(npy_data_path, new_file_name))
     
 # %%
-# data set is too big, laptop is too weak, so let's do the evens
+# data set is too big, laptop is too weak, so let's a third
 def thin_out_dataset(base_path, process_later_path):
     if not os.path.exists(base_path):
         return
@@ -31,7 +31,7 @@ def thin_out_dataset(base_path, process_later_path):
         #         batch_present_in_npy = True
         #         break
         
-        if int(batch_number) % 2 == 0:
+        if int(batch_number) % 3 == 0:
             continue
           
         print(os.path.join(base_path, file) + ' --> ' + os.path.join(process_later_base_path, file))  
