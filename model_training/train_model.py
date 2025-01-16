@@ -33,10 +33,10 @@ def train_model(npy_data_path: str, model: Sequential, batch_size: int) -> Histo
     batch_numbers = array('i', batch_number_set)
     
     def get_features(batch_number: int, mode: str):
-        return np.load(os.path.join(npy_data_path, mode + f'_{batch_numbers[batch_number]}_mel.npy'))
+        return np.load(os.path.join(npy_data_path, f'{batch_numbers[batch_number]}_' + mode + '_mel.npy'))
     
     def get_labels(batch_number: int, mode: str):
-        return np.load(os.path.join(npy_data_path, mode + f'_{batch_numbers[batch_number]}_label.npy'))
+        return np.load(os.path.join(npy_data_path, f'{batch_numbers[batch_number]}_' + mode + '_label.npy'))
     
     def generator(batch_size: int, mode: str):
         # Create empty arrays to contain batch of features and labels#
