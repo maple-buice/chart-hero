@@ -21,7 +21,7 @@ def train_model(npy_data_path: str, model: Sequential, batch_size: int) -> Histo
     for file in os.listdir(npy_data_path):
         if not file.endswith('.npy'):
             continue
-        batchNumber = Path(file).stem.split('_')[1]
+        batchNumber = Path(file).stem.split('_')[0]
         batch_number_set.add(int(batchNumber))
         
         loaded = np.load(os.path.join(npy_data_path, file))

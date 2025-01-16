@@ -342,9 +342,9 @@ class data_preparation():
                     self.train, self.val, self.test = np.split(self.notes_collection.sample(frac=1, random_state=42),
                                 [int(train*len(self.notes_collection)),
                                 int((train+val)*len(self.notes_collection))])
-                    self.train.to_pickle(os.path.join(dir_path, f"train_{self.batch_tracking}.pkl"))
-                    self.val.to_pickle(os.path.join(dir_path, f"val_{self.batch_tracking}.pkl"))
-                    self.test.to_pickle(os.path.join(dir_path, f"test_{self.batch_tracking}.pkl"))
+                    self.train.to_pickle(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl"))
+                    self.val.to_pickle(os.path.join(dir_path, f"{self.batch_tracking}_val.pkl"))
+                    self.test.to_pickle(os.path.join(dir_path, f"{self.batch_tracking}_test.pkl"))
                     print(f'saved batch {self.batch_tracking} data at {dir_path}')
                     self.batch_tracking=self.batch_tracking+1
                     df_list=[]
