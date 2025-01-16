@@ -12,10 +12,15 @@ def re_order_npy_file_name_pieces():
 # %%
 # data set is too big, laptop is too weak, so let's do the evens
 def thin_out_dataset(base_path, process_later_path):
+    if not os.path.exists(base_path):
+        return
+    if not os.path.exists(process_later_path):
+        os.makedirs(process_later_path)
+    process_later_base_path = os.path.join(process_later_path, Path(base_path).stem)
+    if not os.path.exists(process_later_base_path):
+        os.makedirs(process_later_base_path)
+    
     for file in os.listdir(base_path):
-        # if not file.endswith('.pkl') and not file.endswith('.npy'):
-        #     continue
-        
         batch_number = Path(file).stem.split('_')[0]
         if not str.isnumeric(batch_number):
             continue
@@ -26,12 +31,12 @@ def thin_out_dataset(base_path, process_later_path):
         #         batch_present_in_npy = True
         #         break
         
-        # if batch_present_in_npy or int(batch_number) % 2 == 0:
-        #     continue
+        if int(batch_number) % 2 == 0:
+            continue
           
-        print(os.path.join(base_path, file) + ' --> ' + os.path.join(process_later_path, base_path, file))  
-        # os.rename(os.path.join(audio_set_path, file),
-        #           os.path.join(process_later_path, base_path, file))
+        print(os.path.join(base_path, file) + ' --> ' + os.path.join(process_later_base_path, file))  
+        os.rename(os.path.join(base_path, file),
+                  os.path.join(process_later_base_path, file))
 
 training_data_path = os.path.join(Path(os.getcwd()).parent, 'training_data')
 e_gmd_path = os.path.join(training_data_path, 'e-gmd-v1.0.0')
