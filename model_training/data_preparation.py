@@ -258,6 +258,9 @@ class data_preparation():
         """
         if batching==True and dir_path==None:
             raise TypeError('please specify directory path for saving pickle files')
+        
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
 
         self.batch_tracking=0
         tqdm.pandas()

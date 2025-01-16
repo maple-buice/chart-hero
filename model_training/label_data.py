@@ -8,6 +8,9 @@ import librosa
 
 class label_data:
     def __init__(self, audio_set_path, npy_data_path):
+        if not os.path.exists(npy_data_path):
+            os.makedirs(npy_data_path)
+            
         for file in os.listdir(audio_set_path):
             
             if not file.endswith('.pkl'):
@@ -65,5 +68,7 @@ class label_data:
             y = np.array(y)
             np.save(result_mel_file, X)
             np.save(result_label_file, y)
-
             # use np.load(filename) to load whenever we need it
+            
+            # delete file to free up space and avoid reprocessing
+            os.remove(os.path.join(audio_set_path, file))
