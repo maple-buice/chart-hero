@@ -16,8 +16,6 @@ class label_data:
             if not file.endswith('.pkl'):
                 continue
             
-            print(file)
-            
             result_mel_file = os.path.join(npy_data_path, Path(file).stem + '_mel.npy')
             result_label_file = os.path.join(npy_data_path, Path(file).stem + '_label.npy')
             
@@ -25,7 +23,7 @@ class label_data:
                 print(result_mel_file + ' and ' + result_label_file + ' exist')
                 continue
             
-            print(file)
+            print('labeling ' + file)
             
             df = pd.read_pickle(os.path.join(audio_set_path, file))
             # df.head()
