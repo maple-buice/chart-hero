@@ -1,10 +1,5 @@
 from model_training.data_preparation import data_preparation
 
-# training_data_path = os.path.join(os.getcwd(), 'training_data')
-# e_gmd_path = os.path.join(training_data_path, 'e-gmd-v1.0.0')
-# audio_set_path = os.path.join(training_data_path, 'audio_set')
-# npy_data_path = os.path.join(training_data_path, 'npy_data')
-
 class create_audio_set:
     def __init__(self, data_set_path, audio_set_path):
 
