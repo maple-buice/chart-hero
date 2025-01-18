@@ -140,7 +140,8 @@ def augment_pitch(audio_clip, sample_rate=44100, n_steps=3, step_var=None, bins_
     if step_var is not None:
         n_steps += random.choice(step_var)
     
-    return pitch_shift(audio_clip, sr=sample_rate, n_steps=n_steps, bins_per_octave=bins_per_octave, res_type=res_type)
+    return pitch_shift(audio_clip, sr=sample_rate, n_steps=n_steps,
+                       bins_per_octave=bins_per_octave, res_type=res_type)
 
 
 def augment_spectrogram_spans(spec, spans=3, span_ranges=[[1,4], [1,6]], span_variation=1,
@@ -238,6 +239,7 @@ def compare_waveforms(df, i, signal_cols, signal_labs=None, sample_rate=44100, m
         plt.title('Comparison of audio clips for element: {}, label: {}'.format(i, df.loc[i, 'label']), fontsize=fontsizes[0])
     else:
         plt.title(title, fontsize=fontsizes[0])
+    
     plt.gca().xaxis.label.set_size(fontsizes[1])
     plt.legend(signal_labs, loc=leg_loc, fontsize=fontsizes[2])    
 
