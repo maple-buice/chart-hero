@@ -1,8 +1,12 @@
+import os
 from model_training.data_preparation import data_preparation
 
-from utils.file_utils import get_audio_set_dir, get_dataset_dir
+from utils.file_utils import get_audio_set_dir, get_dataset_dir, get_labeled_audio_set_dir
 
 def create_audio_set():
+    if any(os.scandir(get_audio_set_dir())) or any(os.scandir(get_labeled_audio_set_dir())):
+        return
+    
     # Initiate the data container
     # Parameters:
     # directory_path: the path to the root directory of the dataset. This class assumes the use of GMD / E-GMD dataset 
@@ -18,9 +22,9 @@ def create_audio_set():
     # Parameters
     # pad_before: padding added to the begining of each clip. Default setting is 0.02 seconds
     # pad_after: padding added to the end of each clip. Default setting is 0.02 seconds
-    # fix_length: the total length of each extracted clip. accpet value in seconds. If this is not None, the function will ignore pad_after parameter because fix_length is already adding padding to the eacd of each clip 
-    # batching control the batching implementation. Only set thei to True if you are processing >10% of egmd dataset. The egmd data have a size of ~110Gb, there is no way you can store it all in your company memory unless you have a very powerful machine  
-    #   By default, it will divide the dataset into 50 batches and created 50 pkl files. If batching is true, the function will also do the train test split automatically, so you will see a set of 50 training pkl files, 50 val pkl files.... created etc.
+    # fix_length: the total length of each extracted clip. accept value in seconds. If this is not None, the function will ignore pad_after parameter because fix_length is already adding padding to the eacd of each clip
+    # batching: control the batching implementation. Only set this to True if you are processing >10% of egmd dataset. The egmd data have a size of ~110Gb, there is no way you can store it all in your computer memory unless you have a very powerful machine.
+    #   By default, it will divide the dataset into 50 batches and create 50 pkl files. If batching is true, the function will also do the train test split automatically, so you will see a set of 50 training pkl files, 50 val pkl files.... created etc.
     # dir_path: the directory path of the store location of those output pkl files
     data_container.create_audio_set(
         pad_before=0.02,

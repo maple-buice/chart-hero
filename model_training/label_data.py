@@ -79,13 +79,11 @@ def label_data():
             os.remove(file)
             continue
         
-        print('labeling ' + file)
+        print('Labeling ' + file)
         
         df = pd.read_pickle(file)
         # df.head()
         
-        # eight unique drum hit types
-        # drum_hits = ['0','1','2','3','4','66','67','68']
         drum_hits = get_drum_hits()
 
         # label encoding            

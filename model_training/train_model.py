@@ -114,7 +114,7 @@ def train(model: Sequential) -> History:
         batch_size=batch_size,
         callbacks=[
             EarlyStopping(patience=5, monitor = 'val_accuracy'), # to prevent overfitting
-            BackupAndRestore(get_model_backup_dir(), 'epoch', True, False), # to restore interrupted training sessions
+            BackupAndRestore(get_model_backup_dir(), 'epoch', True), # to restore interrupted training sessions
             ]
         )
     
