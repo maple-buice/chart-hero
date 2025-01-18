@@ -18,7 +18,7 @@ def get_drum_hits() -> list[int]:
         38, # Snare (Head) / Acoustic Snare
         39, # Hand Clap	/ Cowbell
         40, # Snare (Rim) / Electric Snare
-        41, # Low Floor Tom	-> LowTom
+        41, # Low Floor Tom
         42, # Hi-hat Closed (Bow) / Closed Hi-Hat
         43, # Tom 3 (Head) / High Floor Tom
         44, # Hi-hat Pedal / Pedal Hi-Hat

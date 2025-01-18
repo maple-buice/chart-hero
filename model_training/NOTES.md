@@ -14,7 +14,7 @@ return [
     38, # Snare (Head) / Acoustic Snare
     39, # Hand Clap	/ Cowbell
     40, # Snare (Rim) / Electric Snare
-    41, # Low Floor Tom	-> LowTom
+    41, # Low Floor Tom
     42, # Hi-hat Closed (Bow) / Closed Hi-Hat
     43, # Tom 3 (Head) / High Floor Tom
     44, # Hi-hat Pedal / Pedal Hi-Hat
@@ -70,7 +70,7 @@ Results of analysis classification report:
 | Snare (Head) / Acoustic Snare | 38 | 0.78 | 0.89 | 0.83 | 38486 |
 | Hand Clap	/ Cowbell | 39 | 0.78 | 0.67 | 0.72 | 103 |
 | Snare (Rim) / Electric Snare | 40 | 0.62 | 0.90 | 0.73 | 7299 |
-| Low Floor Tom	-> LowTom | 41 | 0.00 | 0.00 | 0.00 | 0 |
+| Low Floor Tom | 41 | 0.00 | 0.00 | 0.00 | 0 |
 | Hi-hat Closed (Bow) / Closed Hi-Hat | 42 | 0.77 | 0.82 | 0.80 | 11606 |
 | Tom 3 (Head) / High Floor Tom | 43 | 0.69 | 0.82 | 0.75 | 3475 |
 | Hi-hat Pedal / Pedal Hi-Hat | 44 | 0.74 | 0.61 | 0.67 | 14357 |
