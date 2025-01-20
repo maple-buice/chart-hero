@@ -15,7 +15,10 @@ from tqdm.notebook import tqdm
 
 from model_training.augment_audio import apply_augmentations
 
-class data_preparation(): 
+def get_number_of_audio_set_batches() -> int:
+    return 50
+
+class data_preparation():
 
     tqdm.pandas()
 
@@ -369,7 +372,7 @@ class data_preparation():
             df_list.append(track_notes)
             
             if batching:
-                if len(df_list) > (self.midi_wav_map.shape[0] / 50):
+                if len(df_list) > (self.midi_wav_map.shape[0] / get_number_of_audio_set_batches()):
                     create_df(df_list)
                     
                     self.train, self.val, self.test = np.split(

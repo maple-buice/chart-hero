@@ -5,6 +5,7 @@ from keras.api.models import Sequential
 from keras.api.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
 from keras.api.optimizers import Adam
 
+from model_training.label_data import get_drum_hits
 from utils.file_utils import get_first_match, get_labeled_audio_set_dir
 
 #region file util functions
@@ -77,7 +78,7 @@ def create_model() -> Sequential:
     # Since we're doing a multi-label classification task, 
     # activation function set as sigmoid for the output layer
     
-    model.add(Dense(get_labels_shape()[1], activation='sigmoid'))
+    model.add(Dense(len(get_drum_hits()), activation='sigmoid'))
 
     model.compile(
         optimizer=Adam(learning_rate=0.001),

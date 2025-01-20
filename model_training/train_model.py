@@ -1,3 +1,4 @@
+from math import floor
 import os
 from array import array
 from pathlib import Path
@@ -12,7 +13,8 @@ from keras.api.callbacks import BackupAndRestore, EarlyStopping, History
 
 from matplotlib import pyplot as plt
 
-from model_training.create_model import create_model, get_batch_training_labels_array, get_data_array, get_first_match_training_features_file
+from model_training.create_model import create_model, get_batch_training_labels_array, get_data_array, get_features_shape, get_first_match_training_features_file, get_labels_shape
+from model_training.data_preparation import get_number_of_audio_set_batches
 from model_training.label_data import get_drum_hits_as_strings
 from utils.file_utils import get_labeled_audio_set_dir, get_model_backup_dir, get_model_file
 
@@ -27,6 +29,8 @@ def get_batch_files(mode: str) -> list:
             continue
         if not mode in file:
             continue
+        if not '_mel' in file: # only count feature files so we don't double count
+            continue
         
         batch_file = os.path.join(labeled_audio_set_dir, file)
         
@@ -38,7 +42,7 @@ def get_batch_files(mode: str) -> list:
 def get_batch_number(file: str) -> int:
     return int(Path(file).stem.split('_')[0])
 
-def get_batch_numbers(mode: str) -> array[int]:
+def get_batch_numbers(mode: str) -> list[int]:
     batch_number_set = set()
     
     for file in get_batch_files(mode):
@@ -58,59 +62,175 @@ def get_total_rows(mode: str) -> int:
     
     return total_rows
 
+def get_total_rows_in_batches(batch_numbers: list[int], mode: str) -> int:
+    total_rows = 0
+    batch_files = get_batch_files(mode)
+    
+    if batch_files is None or len(batch_files) == 0:
+        raise FileNotFoundError(f'No batch files found for mode {mode}')
+    
+    for file in batch_files:
+        if get_batch_number(file) in batch_numbers:
+            total_rows += len(np.load(file))
+    
+    return total_rows
+
 # making this a util function in case I decide to swap the order again...
-def get_batch_file_name(batch_numbers: array[int], batch_number: int, mode: str, file_suffix: str) -> str:
+def get_batch_file_name(batch_number: int, mode: str, file_suffix: str) -> str:
+    return f'{batch_number}_{mode}_{file_suffix}.npy'
+
+def get_batch_file_name_from_list(batch_numbers: list[int], batch_number: int, mode: str, file_suffix: str) -> str:
     return f'{batch_numbers[batch_number]}_{mode}_{file_suffix}.npy'
 
-def get_features(batch_numbers: array[int], batch_number: int, mode: str) -> np.ndarray:
+def get_features_from_list(batch_numbers: list[int], batch_number: int, mode: str) -> np.ndarray:
     return np.load(
         os.path.join(
             get_labeled_audio_set_dir(), 
-            get_batch_file_name(batch_numbers, batch_number, mode, 'mel')
+            get_batch_file_name_from_list(batch_numbers, batch_number, mode, 'mel')
             )
         )
 
-def get_labels(batch_numbers: array[int], batch_number: int, mode: str) -> np.ndarray:
+def get_features(batch_number: int, mode: str) -> np.ndarray:
     return np.load(
         os.path.join(
             get_labeled_audio_set_dir(), 
-            get_batch_file_name(batch_numbers, batch_number, mode, 'label')
+            get_batch_file_name(batch_number, mode, 'mel')
             )
         )
+
+def get_labels_from_list(batch_numbers: list[int], batch_number: int, mode: str) -> np.ndarray:
+    return np.load(
+        os.path.join(
+            get_labeled_audio_set_dir(), 
+            get_batch_file_name_from_list(batch_numbers, batch_number, mode, 'label')
+            )
+        )
+
+def get_labels(batch_number: int, mode: str) -> np.ndarray:
+    return np.load(
+        os.path.join(
+            get_labeled_audio_set_dir(), 
+            get_batch_file_name(batch_number, mode, 'label')
+            )
+        )
+    
+def get_all_features(batch_numbers: list[int], mode: str) -> np.ndarray:
+    total_rows_in_batches = get_total_rows_in_batches(batch_numbers, mode)
+    features_shape = get_features_shape()
+    features: np.ndarray = np.zeros((
+        total_rows_in_batches,
+        features_shape[1],
+        features_shape[2],
+        1))
+    
+    i = 0
+    for batch_number in batch_numbers:
+        for feature in get_features(batch_number, mode):
+            features[i] = feature
+            i += 1
+            
+    # print(f'get_all_features! Total rows in batches: {total_rows_in_batches}, i: {i}, features: {features}')
+    
+    return features
+    
+def get_all_labels(batch_numbers: list[int], mode: str) -> np.ndarray:
+    total_rows_in_batches = get_total_rows_in_batches(batch_numbers, mode)
+    labels_shape = get_labels(batch_numbers[0], mode).shape
+    labels: np.ndarray = np.zeros((
+        total_rows_in_batches,
+        labels_shape[1]))
+    
+    i = 0
+    for batch_number in batch_numbers:
+        for label in get_labels(batch_number, mode):
+            labels[i] = label
+            i += 1
+    
+    # print(f'get_all_labels! Total rows in batches: {total_rows_in_batches}, i: {i}, labels: {labels}')
+    
+    return labels
+
+def get_generator_large_dataset(in_memory_batches: int, batch_size: int, mode: str):
+    while True:
+        batches_to_load = get_batch_numbers_to_load(mode, in_memory_batches)
+        total_rows_in_audio_set_batches = get_total_rows_in_batches(batches_to_load, mode)
+        print(
+            f'\n\nLoading a new set of batches into memory!' +
+            f'\n\tMode: {mode}' + 
+            f'\n\tBatches being loaded: {batches_to_load}' + 
+            f'\n\tTotal rows: {total_rows_in_audio_set_batches} rows\n')
+        
+        features = get_all_features(batches_to_load, mode)
+        labels = get_all_labels(batches_to_load, mode)
+        
+        # Load a new set of random batches when we've processed the count of this one
+        in_memory_row_index = 0
+        while in_memory_row_index < total_rows_in_audio_set_batches:
+            
+            # Create empty arrays to contain batch of features and labels
+            batch_features = np.zeros((batch_size, features.shape[1], features.shape[2], 1))
+            batch_labels = np.zeros((batch_size, labels.shape[1]))
+            
+            for batch_index in range(batch_size):
+                # Choose random index in features
+                index = random.randint(0, len(features)-1)
+                
+                # print(f'loop {i} of {batch_size}, index: {index}')
+                
+                batch_features[batch_index] = features[index] if 0 <= index < len(features) else None
+                batch_labels[batch_index] = labels[index] if 0 <= index < len(labels) else None
+                
+                in_memory_row_index += 1
+            
+            yield batch_features, batch_labels
 
 def get_generator(batch_size: int, mode: str):
-    batch_numbers = get_batch_numbers(mode)
-    
+    shuffled_batch_numbers = get_batch_numbers(mode)
+        
     while True:
-        batch_index = random.randint(0, len(batch_numbers)-1)
-        features = get_features(batch_numbers, batch_index, mode)
-        labels = get_labels(batch_numbers, batch_index, mode)
+        random.shuffle(shuffled_batch_numbers)
         
-        # Create empty arrays to contain batch of features and labels
-        batch_features = np.zeros((batch_size, features.shape[1], features.shape[2], 1))
-        batch_labels = np.zeros((batch_size, labels.shape[1]))
-        
-        for i in range(batch_size):
-            # Choose random index in features
-            index = random.randint(0, len(features)-1)
-            batch_features[i] = features[index] if 0 <= index < len(features) else None
-            batch_labels[i] = labels[index] if 0 <= index < len(labels) else None
-        yield batch_features, batch_labels
+        for batch_number in shuffled_batch_numbers:
+            features = get_features_from_list(shuffled_batch_numbers, batch_number, mode)
+            labels = get_labels_from_list(shuffled_batch_numbers, batch_number, mode)
+            
+            # Create empty arrays to contain batch of features and labels
+            batch_features = np.zeros((batch_size, features.shape[1], features.shape[2], 1))
+            batch_labels = np.zeros((batch_size, labels.shape[1]))
+            
+            for i in range(batch_size):
+                # Choose random index in features
+                index = random.randint(0, len(features)-1)
+                batch_features[i] = features[index] if 0 <= index < len(features) else None
+                batch_labels[i] = labels[index] if 0 <= index < len(labels) else None
+            
+            yield batch_features, batch_labels
+            
+def get_batch_numbers_to_load(mode: str, audio_set_batches_per_epoch: int) -> list[int]:
+    all_batch_numbers = get_batch_numbers(mode)
+    random.shuffle(all_batch_numbers)
+    return all_batch_numbers[:audio_set_batches_per_epoch]
 
 def train(model: Sequential) -> History:
-    batch_size = 1024
-    portion_of_dataset_per_epoch = 1
+    batch_size = 32
+    number_of_audio_set_batches = get_number_of_audio_set_batches()
+    number_of_epochs = 25
+    in_memory_batches = 16
+    total_training_rows = get_total_rows('train')
+    total_test_rows = get_total_rows('test')
+    
+    assert in_memory_batches > 0 and in_memory_batches <= number_of_audio_set_batches
     
     print(f'Training model.\n\t' +
           f'Num GPUs Available: {len(tf.config.list_physical_devices('GPU'))}\n\t' +
-          f'Portion of dataset per epoch: 1/{portion_of_dataset_per_epoch}')
+          f'Batches of dataset per epoch: {in_memory_batches}')
     
     history: History = model.fit(
-        get_generator(batch_size, 'train'),
-        steps_per_epoch = get_total_rows('train') // portion_of_dataset_per_epoch // batch_size,
-        validation_data = get_generator(batch_size, 'test'),
-	    validation_steps = get_total_rows('test') // portion_of_dataset_per_epoch // batch_size,
-        epochs = 25,
+        get_generator_large_dataset(in_memory_batches, batch_size, 'train'),
+        steps_per_epoch = total_training_rows // batch_size,
+        validation_data = get_generator_large_dataset(in_memory_batches, batch_size, 'test'),
+	    validation_steps = total_test_rows // batch_size,
+        epochs = number_of_epochs,
         batch_size=batch_size,
         callbacks=[
             EarlyStopping(patience=5, monitor = 'val_accuracy'), # to prevent overfitting
