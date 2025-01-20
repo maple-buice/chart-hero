@@ -3,7 +3,7 @@ from pathlib import Path
 
 def get_first_match(dir: str, name_parts: list[str]) -> str:
     found_file = False
-    for file in os.listdir(dir):
+    for file in sorted(os.listdir(dir)):
         for name_part in name_parts:
             if name_part in file:
                 found_file = True

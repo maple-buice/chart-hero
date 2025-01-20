@@ -273,6 +273,8 @@ def evaluate_network(model: Sequential):
     features_file = get_first_match_training_features_file()
     features_array = get_data_array(features_file)
     labels_array = get_batch_training_labels_array(get_batch_number(features_file))
+    
+    assert features_array.shape[0] == labels_array.shape[0]
 
     result = []
     pred_raw: np.ndarray = model.predict(features_array)
