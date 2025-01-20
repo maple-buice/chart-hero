@@ -1,3 +1,4 @@
+import gc
 from math import floor
 import os
 from array import array
@@ -163,9 +164,11 @@ def get_generator_large_dataset(in_memory_batches: int, batch_size: int, mode: s
         features = get_all_features(batches_to_load, mode)
         labels = get_all_labels(batches_to_load, mode)
         
+        gc.collect()
+        
         # Load a new set of random batches when we've processed the count of this one
         in_memory_row_index = 0
-        while in_memory_row_index < total_rows_in_audio_set_batches:
+        while in_memory_row_index < total_rows_in_audio_set_batches * 1.5:
             
             # Create empty arrays to contain batch of features and labels
             batch_features = np.zeros((batch_size, features.shape[1], features.shape[2], 1))
@@ -212,10 +215,10 @@ def get_batch_numbers_to_load(mode: str, audio_set_batches_per_epoch: int) -> li
     return all_batch_numbers[:audio_set_batches_per_epoch]
 
 def train(model: Sequential) -> History:
-    batch_size = 32
+    batch_size = 2048
     number_of_audio_set_batches = get_number_of_audio_set_batches()
     number_of_epochs = 25
-    in_memory_batches = 16
+    in_memory_batches = 12
     total_training_rows = get_total_rows('train')
     total_test_rows = get_total_rows('test')
     
