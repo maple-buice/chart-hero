@@ -242,7 +242,7 @@ def train(model: Sequential) -> History:
         )
     
     if len(history.history.keys()) > 0:
-        model.save("my_model.keras")
+        model.save(get_model_file())
 
     return history
 
@@ -315,7 +315,6 @@ def train_model():
     # %%
     # If any training happened, save model and plot history
     if history != None and len(history.history.keys()) > 0:
-        model.save(get_model_file())
         plot_history(history)
     
     # %%
