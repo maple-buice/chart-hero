@@ -15,6 +15,11 @@ from tqdm.notebook import tqdm
 
 from model_training.augment_audio import apply_augmentations
 
+import soundfile as sf
+from joblib import Parallel, delayed
+import math
+from functools import partial
+
 def get_number_of_audio_set_batches() -> int:
     return 50
 
@@ -39,11 +44,12 @@ class data_preparation():
     :raise NameError: the use of other dataset is not supported
     """
     
-    def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1):
+    def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1, n_jobs=-1):
         if dataset in ['gmd', 'egmd']:
             self.directory_path = directory_path
             self.dataset_type = dataset
             self.batch_tracking = 0
+            self.n_jobs = n_jobs # Store number of jobs for parallel processing
             
             csv_path = [f for f in os.listdir(directory_path) if '.csv' in f][0]
             
@@ -53,9 +59,23 @@ class data_preparation():
             df = self.dataset[['index', 'midi_filename', 'audio_filename', 'duration']].copy()
             df.columns = ['track_id', 'midi_filename', 'audio_filename', 'duration']
             
-            print(f'Filtering out the midi/audio pair that has a duration difference > {diff_threshold} second')
-            
-            df['wav_length'] = df['audio_filename'].progress_apply(lambda x: self.get_length(x))
+            print(f'Filtering out the midi/audio pair that has a duration difference > {diff_threshold} second using soundfile')
+
+            # --- Optimization: Use soundfile and parallel processing for duration check ---
+            def get_wav_duration(filepath):
+                try:
+                    info = sf.info(os.path.join(self.directory_path, filepath))
+                    return info.duration
+                except Exception as e:
+                    print(f"Error getting duration for {filepath}: {e}")
+                    return None # Return None or np.nan for problematic files
+
+            # Use joblib for parallel execution
+            durations = Parallel(n_jobs=self.n_jobs)(delayed(get_wav_duration)(f) for f in tqdm(df['audio_filename'], desc="Calculating audio durations"))
+            df['wav_length'] = durations
+            df.dropna(subset=['wav_length'], inplace=True) # Drop rows where duration couldn't be read
+            # --- End Optimization ---
+
             df['diff'] = np.abs(df['duration'] - df['wav_length'])
             df = df[df['diff'].le(diff_threshold)]
             
@@ -125,9 +145,16 @@ class data_preparation():
             self.id_len_dict = id_len.to_dict()['wav_length']
         else:
             raise NameError('dataset not supported')
+
+    # Keep get_length in case it's used elsewhere, but __init__ now uses soundfile
     def get_length(self,x):
-        wav, sr = librosa.load(os.path.join(self.directory_path, x), sr=None, mono=True)
-        return librosa.get_duration(y=wav, sr=sr)
+        # This is now less efficient than sf.info(path).duration
+        try:
+            wav, sr = librosa.load(os.path.join(self.directory_path, x), sr=None, mono=True)
+            return librosa.get_duration(y=wav, sr=sr)
+        except Exception as e:
+            print(f"Librosa error loading {x}: {e}")
+            return None
 
     def notes_extraction(self, midi_file):
         """
@@ -262,150 +289,207 @@ class data_preparation():
                     round(mido.tick2second(note[2], ticks_per_beat,tempo), 2)]
                 for note in notes_collection]
     
-    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path=''):
+    # --- Optimization: Helper function for parallel processing of one file pair ---
+    def _process_file_pair(self, row, pad_before, pad_after, fix_length):
+        if row['midi_filename'] == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
+            return None # Skip problematic file
+
+        try:
+            # MIDI Processing
+            notes_collection = self.notes_extraction(row['midi_filename'])
+            converted_notes_collection = self.ticks_to_second(notes_collection)
+            track_notes = self.merge_note_label(row['track_id'], converted_notes_collection)
+
+            if track_notes.empty:
+                return None
+
+            audio_file_path = os.path.join(self.directory_path, row['audio_filename'])
+            sr = sf.info(audio_file_path).samplerate # Get sample rate efficiently
+            audio_duration_samples = sf.info(audio_file_path).frames
+
+            # --- Optimization: Segmented Audio Loading & Slicing ---
+            def optimized_audio_slicing(note_row):
+                start_time = note_row['start']
+                end_time = note_row['end']
+                max_len_seconds = audio_duration_samples / sr
+
+                # Calculate start and end samples, applying padding
+                slice_start_time = max(0.0, start_time - pad_before)
+                slice_start_sample = librosa.time_to_samples(slice_start_time, sr=sr)
+
+                if fix_length is not None:
+                    slice_duration = fix_length
+                    slice_end_time = slice_start_time + slice_duration
+                    slice_end_sample = slice_start_sample + librosa.time_to_samples(slice_duration, sr=sr)
+                else:
+                    # This path is less efficient and avoided by the calling script
+                    slice_end_time = min(max_len_seconds, end_time + pad_after)
+                    slice_duration = slice_end_time - slice_start_time
+                    slice_end_sample = min(audio_duration_samples, librosa.time_to_samples(end_time, sr=sr) + librosa.time_to_samples(pad_after, sr=sr))
+
+                if slice_start_time >= max_len_seconds or slice_duration <= 0:
+                    # If the start time is beyond the audio or duration is zero/negative, return silence
+                    if fix_length is not None:
+                        return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
+                    else:
+                        return np.array([], dtype=np.float32) # Or handle as appropriate
+
+                # Load only the required segment
+                try:
+                    # Ensure we don't read past the end of the file
+                    read_duration = min(slice_duration, max_len_seconds - slice_start_time)
+                    if read_duration <= 0:
+                         if fix_length is not None:
+                            return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
+                         else:
+                            return np.array([], dtype=np.float32)
+
+                    sliced_wav, _ = librosa.load(
+                        audio_file_path, sr=sr, mono=True,
+                        offset=slice_start_time,
+                        duration=read_duration
+                    )
+                except Exception as load_err:
+                     print(f"Error loading segment for {row['audio_filename']} at offset {slice_start_time}, duration {read_duration}: {load_err}")
+                     if fix_length is not None:
+                        return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
+                     else:
+                        return np.array([], dtype=np.float32)
+
+                # Pad if necessary (especially for fix_length)
+                if fix_length is not None:
+                    target_samples = librosa.time_to_samples(fix_length, sr=sr)
+                    if len(sliced_wav) < target_samples:
+                        padding = target_samples - len(sliced_wav)
+                        sliced_wav = np.pad(sliced_wav, (0, padding), mode='constant', constant_values=0)
+                    elif len(sliced_wav) > target_samples:
+                        sliced_wav = sliced_wav[:target_samples]
+
+                return sliced_wav
+            # --- End Segmented Loading ---
+
+            track_notes['audio_wav'] = track_notes.apply(optimized_audio_slicing, axis=1)
+            track_notes['sampling_rate'] = sr
+            # Filter out rows where slicing might have failed or resulted in empty arrays
+            track_notes = track_notes[track_notes['audio_wav'].apply(lambda x: isinstance(x, np.ndarray) and x.size > 0)]
+
+            return track_notes
+
+        except Exception as e:
+            print(f"Error processing pair {row['midi_filename']} / {row['audio_filename']}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    # --- End Helper Function ---
+
+    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50):
         """
         main function to create training/test/eval dataset from dataset
         
         :param  pad_before (float):     padding (in seconds) add to the begining of the sliced audio. default 0.02 seconds
         :param  pad_after (float):      padding (in seconds) add to the end of the sliced audio. default 0.02 seconds
-                                        The padding actually increas the window length when doing the slicing instead of adding white space before and after.
-        :param  fix_length (float):     in seconds, setting this length  will force the sound clip to have exact same length in seconds. suggest value is 0.1~0.2
-        :param  batching (bool):        apply batching to avoid memory issues. Suggest to turn this on if processing the full dataset. 
-                                        By default, it will divide the dataset into 50 batches and perform train test split automatically. .pkl file will be saved at specified location
+        :param  fix_length (float):     in seconds, setting this length will force the sound clip to have exact same length in seconds. suggest value is 0.1~0.2
+        :param  batching (bool):        apply batching to avoid memory issues. Suggest to turn this on if processing the full dataset.
         :param  dir_path (str):         The path to the directory to store .pkl files
-
+        :param  num_batches (int):      The target number of batches to divide the dataset into.
         :return None
         """
-        if batching and dir_path == None:
-            raise TypeError('Please specify directory path for saving pickle files')
-        
-        if not os.path.exists(dir_path):
+        if batching and not dir_path:
+            raise ValueError('Please specify directory path for saving pickle files when batching=True')
+
+        if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path)
 
         self.batch_tracking = 0
-        tqdm.pandas()
-        df_list = []
-              
-        def audio_slicing(x, wav, sr, pad_before, pad_after, window_size = None):
-            max_len = len(wav)
-            padding_b = librosa.time_to_samples(pad_before, sr=sr)
-            padding_a = librosa.time_to_samples(pad_after, sr=sr)
-            start = max(librosa.time_to_samples(x['start'], sr=sr) - padding_b, 0)
+        # tqdm.pandas() # Not needed directly here anymore
+
+        # --- Removed old audio_slicing, resampling, check_length functions as logic is moved/optimized ---
+
+        def save_batch(df_list, batch_idx):
+            if not df_list:
+                print(f"Batch {batch_idx} is empty, skipping save.")
+                return
             
-            if window_size:
-                window_size_samples = librosa.time_to_samples(window_size, sr=sr)
-                if (start + window_size_samples) > max_len:
-                    sliced_wav = wav[start:max_len]
-                    return np.pad(
-                        sliced_wav,
-                        pad_width = (0, start + window_size_samples - max_len),
-                        mode = 'constant',
-                        constant_values = 0)
-                return wav[start:start + window_size_samples]
-            else:
-                end = min(librosa.time_to_samples(x['end'], sr=sr) + padding_a, len(wav))
-            return wav[start:end]
-
-        def resampling(x, target_length):
-            org_sr = x['sampling_rate']
-            tar_sr_ratio = target_length / len(x['audio_wav'])
-            return pd.Series([
-                librosa.resample(
-                    x['audio_wav'],
-                    orig_sr = org_sr,
-                    target_sr = int(org_sr * tar_sr_ratio)),
-                int(org_sr * tar_sr_ratio)])
-
-        def check_length(x, target_length):
-            if len(x) > target_length:
-                return x[:target_length]
-            elif len(x) < target_length:
-                return np.pad(x, (0, target_length - len(x)), 'constant')
-
-        def create_df(df_list):
-            self.notes_collection = pd.concat(df_list, ignore_index=True)
-            self.notes_collection = self.notes_collection[
-                self.notes_collection['audio_wav'].apply(lambda x: len(x)) != 0]
+            notes_collection_batch = pd.concat(df_list, ignore_index=True)
             
-            if fix_length != None:
-                pass
-            else:
-                print('Resampling Audio Data to align data shape')
-                target_length = self.notes_collection['audio_wav'].apply(lambda x:len(x)).mode()[0]
-                df = self.notes_collection.copy()
-                df[['audio_wav_resample', 'resample_sr']] = df.progress_apply(
-                    lambda x: resampling(x, target_length) if len(x['audio_wav']) != target_length else pd.Series([x['audio_wav'], x['sampling_rate']]) , axis=1)
-                df['audio_wav_resample'] = df.audio_wav_resample.progress_apply(
-                    lambda x: check_length(x, target_length) if len(x)!=target_length else x)
-                self.notes_collection=df.copy()
+            # Filter out problematic tracks where start time might exceed audio length (less likely now but good check)
+            problematic_tracks = []
+            for _, r in notes_collection_batch.iterrows():
+                if r.track_id not in self.id_len_dict:
+                     print(f"Warning: track_id {r.track_id} not found in id_len_dict. Skipping duration check for this row.")
+                     continue
+                if r.start > self.id_len_dict[r.track_id]:
+                    problematic_tracks.append(r.track_id)
+            
+            notes_collection_batch = notes_collection_batch[~notes_collection_batch.track_id.isin(problematic_tracks)]
 
+            if notes_collection_batch.empty:
+                print(f"Batch {batch_idx} became empty after filtering problematic tracks, skipping save.")
+                return
 
+            # Train/Val/Test Split
+            train_frac, val_frac = 0.6, 0.2
+            train_df, val_df, test_df = np.split(
+                notes_collection_batch.sample(frac=1, random_state=42),
+                [int(train_frac * len(notes_collection_batch)),
+                 int((train_frac + val_frac) * len(notes_collection_batch))])
+
+            # Save
+            train_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_train.pkl"))
+            val_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_val.pkl"))
+            test_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_test.pkl"))
+
+            print(f'Saved batch {batch_idx} data at {dir_path}')
+            # Explicitly delete to free memory
+            del notes_collection_batch, train_df, val_df, test_df
+
+        print('Generating Dataset using Parallel Processing')
+
+        # --- Optimization: Parallel Processing Loop ---
+        process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length)
+        results = Parallel(n_jobs=self.n_jobs, backend='loky')( # 'loky' is often more robust
+            delayed(process_func)(row)
+            for _, row in tqdm(self.midi_wav_map.iterrows(), total=self.midi_wav_map.shape[0], desc="Processing file pairs")
+        )
+        # --- End Parallel Processing Loop ---
+
+        # Filter out None results (from errors or skipped files)
+        valid_results = [df for df in results if df is not None and not df.empty]
+        del results # Free memory
+
+        if not valid_results:
+             print("No valid dataframes were generated. Check for errors during processing.")
+             return
+
+        if batching:
+            print(f"Processing {len(valid_results)} results into {num_batches} batches.")
+            # Calculate approximate number of dataframes per batch
+            num_results = len(valid_results)
+            results_per_batch = math.ceil(num_results / num_batches)
+
+            current_batch_list = []
+            for i, df in enumerate(tqdm(valid_results, desc="Saving batches")):
+                current_batch_list.append(df)
+                # Save when batch is full or it's the last result
+                if len(current_batch_list) >= results_per_batch or i == num_results - 1:
+                    save_batch(current_batch_list, self.batch_tracking)
+                    self.batch_tracking += 1
+                    current_batch_list = [] # Reset for next batch
+                    import gc
+                    gc.collect() # Force garbage collection
+
+        else: # No batching (likely for small datasets)
+            print("Concatenating all results (no batching)")
+            self.notes_collection = pd.concat(valid_results, ignore_index=True)
+             # Filter out problematic tracks (redundant check, but safe)
             problematic_tracks=[]
-            for r in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0]):
+            for r in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check"):
                 if r[1].start>self.id_len_dict[r[1].track_id]:
                     problematic_tracks.append(r[1].track_id)
-            
             self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
+            # Save the single file
+            self.notes_collection.to_pickle(os.path.join(dir_path, f"dataset_full.pkl"))
 
-        print('Generating Dataset')
-        train=0.6
-        val=0.2
-
-        for _, row in tqdm(self.midi_wav_map.iterrows(), total=self.midi_wav_map.shape[0]):
-            if row['midi_filename'] == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
-                continue
-            
-            notes_collection = self.notes_extraction(row['midi_filename'])
-            converted_notes_collection = self.ticks_to_second(notes_collection)
-            track_notes = self.merge_note_label(row['track_id'], converted_notes_collection)
-        
-            wav, sr = librosa.load(os.path.join(self.directory_path, row['audio_filename']), sr=None, mono=True)
-            
-            if fix_length!=None:
-                track_notes['audio_wav'] = track_notes.apply(
-                    lambda x: audio_slicing(x, wav, sr, pad_before, pad_after, window_size=fix_length), axis=1)
-            else:
-                track_notes['audio_wav'] = track_notes.apply(
-                    lambda x:audio_slicing(x, wav, sr, pad_before, pad_after), axis=1)
-                
-            track_notes['sampling_rate']=sr
-            df_list.append(track_notes)
-            
-            if batching:
-                if len(df_list) > (self.midi_wav_map.shape[0] / get_number_of_audio_set_batches()):
-                    create_df(df_list)
-                    
-                    self.train, self.val, self.test = np.split(
-                        self.notes_collection.sample(frac=1, random_state=42),
-                        [int(train * len(self.notes_collection)),
-                         int((train + val) * len(self.notes_collection))])
-                    
-                    self.train.to_pickle(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl"))
-                    self.val.to_pickle(os.path.join(dir_path, f"{self.batch_tracking}_val.pkl"))
-                    self.test.to_pickle(os.path.join(dir_path, f"{self.batch_tracking}_test.pkl"))
-                    
-                    print(f'saved batch {self.batch_tracking} data at {dir_path}')
-                    
-                    self.batch_tracking = self.batch_tracking + 1
-                    df_list = []
-                    self.notes_collection = pd.DataFrame()
-                    
-                    del self.train
-                    del self.val
-                    del self.test
-                else:
-                    pass
-            else:
-                pass
-        create_df(df_list)
-
-        if batching==True:
-            self.train, self.val, self.test = np.split(
-                self.notes_collection.sample(frac=1, random_state=42),
-                [int(train * len(self.notes_collection)), int((train + val) * len(self.notes_collection))])
-        else:
-            self.notes_collection.to_pickle(os.path.join(dir_path, f"dataset_{self.batch_tracking}.pkl"))
-        
         print('Done!')
         
     def augment_audio(self, audio_col='audio_wav', aug_col_names=None, aug_param_dict={}, train_only=False):
