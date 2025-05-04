@@ -350,7 +350,9 @@ class data_preparation():
                         duration=read_duration
                     )
                 except Exception as load_err:
+                     # Corrected f-string syntax
                      print(f"Error loading segment for {row['audio_filename']} at offset {slice_start_time}, duration {read_duration}: {load_err}")
+                     # Ensure proper handling for both fix_length cases
                      if fix_length is not None:
                         return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
                      else:
@@ -500,20 +502,42 @@ class data_preparation():
             audio_col: String specifying the name of source audio column.
             aug_col_names: Names to use for augmented columns. Defaults to using the augmentation functions
                 as column names.
-            aug_param_dict: Dictionary of function names and associated parameters.
+            aug_param_dict: Dictionary of function names and associated parameters. If empty, uses a default set.
             train_only: Boolean for whether to augment the training set, or the data in its entirety.
         
         Example usage:
             data_container = data_preparation.data_preparation(gmd_path, dataset='gmd', sample_ratio=sample_ratio)
-            data_container.augment_audio()
+            # Use default augmentations on training set only
+            data_container.augment_audio(train_only=True)
+            # Use custom augmentations
+            custom_augs = { 'add_white_noise': {'snr_db_range': (10, 25)} }
+            data_container.augment_audio(aug_param_dict=custom_augs, train_only=True)
         """
         if not aug_param_dict:
+            # --- Updated Default Augmentation Parameters --- 
+            print("Using default augmentation parameters with randomization.")
             aug_param_dict = {
-                'add_white_noise': {'snr': 20, 'random_state': 42},
-                'augment_pitch': {'n_steps': 2, 'step_var': range(-1, 2, 1)},
-                'add_pedalboard_effects': {}
+                'add_white_noise': {'snr_db_range': (10, 30)}, # Use randomized SNR
+                'augment_pitch': {'n_steps_range': (-2, 2)}, # Use randomized pitch steps
+                'add_pedalboard_effects': { # Use randomized reverb/lowpass
+                    'room_size_range': (0.1, 0.8),
+                    'cutoff_freq_hz_range': (1000, 6000)
+                },
+                # Example: Add lowpass filter separately sometimes
+                # 'add_lowpass_filter': {'cutoff_freq_hz_range': (1500, 7000)}
             }
+            # --- End Updated Defaults --- 
+            
+        # The rest of the function remains the same, calling the updated apply_augmentations
         if train_only:
-            self.train = apply_augmentations(self.train, audio_col, aug_col_names, **aug_param_dict)
+            if hasattr(self, 'train') and not self.train.empty:
+                print(f"Applying augmentations to training set ({len(self.train)} samples)...")
+                self.train = apply_augmentations(self.train, audio_col, aug_col_names, **aug_param_dict)
+            else:
+                print("Warning: 'train_only' is True, but self.train is not available or empty. No augmentations applied.")
         else:
-            self.notes_collection = apply_augmentations(self.notes_collection, audio_col, aug_col_names, **aug_param_dict)
+            if not self.notes_collection.empty:
+                print(f"Applying augmentations to entire dataset ({len(self.notes_collection)} samples)...")
+                self.notes_collection = apply_augmentations(self.notes_collection, audio_col, aug_col_names, **aug_param_dict)
+            else:
+                print("Warning: self.notes_collection is empty. No augmentations applied.")
