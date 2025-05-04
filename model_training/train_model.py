@@ -8,9 +8,10 @@ import random
 import numpy as np
 from sklearn.metrics import classification_report
 import tensorflow as tf
+from tensorflow.keras.utils import Sequence # Use tf.keras
 
 from keras.api.models import Sequential, load_model
-from keras.api.callbacks import BackupAndRestore, EarlyStopping, History
+from keras.api.callbacks import BackupAndRestore, EarlyStopping, History, ModelCheckpoint # Add ModelCheckpoint
 
 from matplotlib import pyplot as plt
 
@@ -19,231 +20,160 @@ from model_training.data_preparation import get_number_of_audio_set_batches
 from model_training.label_data import get_drum_hits_as_strings
 from utils.file_utils import get_labeled_audio_set_dir, get_model_backup_dir, get_model_file
 
-def get_batch_files(mode: str) -> list:
-    # print(f'get_batch_files(\'{mode}\')')
-    
-    batch_files = []
-    labeled_audio_set_dir = get_labeled_audio_set_dir()
-    
-    for file in os.listdir(labeled_audio_set_dir):
-        if not file.endswith('.npy'): # ignore directories and non-numpy files
-            continue
-        if not mode in file:
-            continue
-        if not '_mel' in file: # only count feature files so we don't double count
-            continue
-        
-        batch_file = os.path.join(labeled_audio_set_dir, file)
-        
-        # print(f'get_batch_files(\'{mode}\') appending \'{batch_file}\'')
-        batch_files.append(batch_file)
-    
-    return batch_files
+# --- Keras Sequence for Efficient Batch Loading ---
+class BatchSequence(Sequence):
+    """Generates batches of data from .npy files."""
+    def __init__(self, mode: str, batch_size: int, shuffle=True):
+        self.mode = mode
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.labeled_audio_set_dir = get_labeled_audio_set_dir()
+        self.batch_files = self._get_batch_files()
+        self.features_shape, self.labels_shape = self._get_shapes()
+        self.indices = np.arange(len(self.batch_files)) # Indices for shuffling batches
+        self.on_epoch_end() # Initial shuffle
 
-def get_batch_number(file: str) -> int:
-    return int(Path(file).stem.split('_')[0])
-
-def get_batch_numbers(mode: str) -> list[int]:
-    batch_number_set = set()
-    
-    for file in get_batch_files(mode):
-        batch_number_set.add(get_batch_number(file))
-    
-    return array('i', batch_number_set)
-
-def get_total_rows(mode: str) -> int:
-    total_rows = 0
-    batch_files = get_batch_files(mode)
-    
-    if batch_files is None or len(batch_files) == 0:
-        raise FileNotFoundError(f'No batch files found for mode {mode}')
-    
-    for file in get_batch_files(mode):
-        total_rows += len(np.load(file))
-    
-    return total_rows
-
-def get_total_rows_in_batches(batch_numbers: list[int], mode: str) -> int:
-    total_rows = 0
-    batch_files = get_batch_files(mode)
-    
-    if batch_files is None or len(batch_files) == 0:
-        raise FileNotFoundError(f'No batch files found for mode {mode}')
-    
-    for file in batch_files:
-        if get_batch_number(file) in batch_numbers:
-            total_rows += len(np.load(file))
-    
-    return total_rows
-
-# making this a util function in case I decide to swap the order again...
-def get_batch_file_name(batch_number: int, mode: str, file_suffix: str) -> str:
-    return f'{batch_number}_{mode}_{file_suffix}.npy'
-
-def get_batch_file_name_from_list(batch_numbers: list[int], batch_number: int, mode: str, file_suffix: str) -> str:
-    return f'{batch_numbers[batch_number]}_{mode}_{file_suffix}.npy'
-
-def get_features_from_list(batch_numbers: list[int], batch_number: int, mode: str) -> np.ndarray:
-    return np.load(
-        os.path.join(
-            get_labeled_audio_set_dir(), 
-            get_batch_file_name_from_list(batch_numbers, batch_number, mode, 'mel')
-            )
-        )
-
-def get_features(batch_number: int, mode: str) -> np.ndarray:
-    return np.load(
-        os.path.join(
-            get_labeled_audio_set_dir(), 
-            get_batch_file_name(batch_number, mode, 'mel')
-            )
-        )
-
-def get_labels_from_list(batch_numbers: list[int], batch_number: int, mode: str) -> np.ndarray:
-    return np.load(
-        os.path.join(
-            get_labeled_audio_set_dir(), 
-            get_batch_file_name_from_list(batch_numbers, batch_number, mode, 'label')
-            )
-        )
-
-def get_labels(batch_number: int, mode: str) -> np.ndarray:
-    return np.load(
-        os.path.join(
-            get_labeled_audio_set_dir(), 
-            get_batch_file_name(batch_number, mode, 'label')
-            )
-        )
-    
-def get_all_features(batch_numbers: list[int], mode: str) -> np.ndarray:
-    total_rows_in_batches = get_total_rows_in_batches(batch_numbers, mode)
-    features_shape = get_features_shape()
-    features: np.ndarray = np.zeros((
-        total_rows_in_batches,
-        features_shape[1],
-        features_shape[2],
-        1))
-    
-    i = 0
-    for batch_number in batch_numbers:
-        for feature in get_features(batch_number, mode):
-            features[i] = feature
-            i += 1
+    def _get_batch_files(self) -> list[tuple[str, str]]:
+        """Gets pairs of (feature_file, label_file) paths."""
+        files = {} # {batch_num: {'mel': path, 'label': path}}
+        for file in os.listdir(self.labeled_audio_set_dir):
+            if not file.endswith('.npy') or self.mode not in file:
+                continue
             
-    # print(f'get_all_features! Total rows in batches: {total_rows_in_batches}, i: {i}, features: {features}')
-    
-    return features
-    
-def get_all_labels(batch_numbers: list[int], mode: str) -> np.ndarray:
-    total_rows_in_batches = get_total_rows_in_batches(batch_numbers, mode)
-    labels_shape = get_labels(batch_numbers[0], mode).shape
-    labels: np.ndarray = np.zeros((
-        total_rows_in_batches,
-        labels_shape[1]))
-    
-    i = 0
-    for batch_number in batch_numbers:
-        for label in get_labels(batch_number, mode):
-            labels[i] = label
-            i += 1
-    
-    # print(f'get_all_labels! Total rows in batches: {total_rows_in_batches}, i: {i}, labels: {labels}')
-    
-    return labels
-
-def get_generator_large_dataset(in_memory_batches: int, batch_size: int, mode: str):
-    while True:
-        batches_to_load = get_batch_numbers_to_load(mode, in_memory_batches)
-        total_rows_in_audio_set_batches = get_total_rows_in_batches(batches_to_load, mode)
-        print(
-            f'\n\nLoading a new set of batches into memory!' +
-            f'\n\tMode: {mode}' + 
-            f'\n\tBatches being loaded: {batches_to_load}' + 
-            f'\n\tTotal rows: {total_rows_in_audio_set_batches} rows\n')
-        
-        features = get_all_features(batches_to_load, mode)
-        labels = get_all_labels(batches_to_load, mode)
-        
-        gc.collect()
-        
-        # Load a new set of random batches when we've processed the count of this one
-        in_memory_row_index = 0
-        while in_memory_row_index < total_rows_in_audio_set_batches * 1.5:
-            
-            # Create empty arrays to contain batch of features and labels
-            batch_features = np.zeros((batch_size, features.shape[1], features.shape[2], 1))
-            batch_labels = np.zeros((batch_size, labels.shape[1]))
-            
-            for batch_index in range(batch_size):
-                # Choose random index in features
-                index = random.randint(0, len(features)-1)
+            parts = Path(file).stem.split('_')
+            if len(parts) < 3:
+                continue # Skip improperly named files
                 
-                # print(f'loop {i} of {batch_size}, index: {index}')
-                
-                batch_features[batch_index] = features[index] if 0 <= index < len(features) else None
-                batch_labels[batch_index] = labels[index] if 0 <= index < len(labels) else None
-                
-                in_memory_row_index += 1
+            batch_num = int(parts[0])
+            file_type = parts[-1] # 'mel' or 'label'
             
-            yield batch_features, batch_labels
+            if batch_num not in files:
+                files[batch_num] = {}
+            
+            files[batch_num][file_type] = os.path.join(self.labeled_audio_set_dir, file)
 
-def get_generator(batch_size: int, mode: str):
-    shuffled_batch_numbers = get_batch_numbers(mode)
+        # Create list of pairs, ensuring both mel and label exist
+        file_pairs = []
+        for batch_num in sorted(files.keys()):
+            if 'mel' in files[batch_num] and 'label' in files[batch_num]:
+                file_pairs.append((files[batch_num]['mel'], files[batch_num]['label']))
+            else:
+                print(f"Warning: Missing mel or label file for batch {batch_num} in mode '{self.mode}'. Skipping batch.")
         
-    while True:
-        random.shuffle(shuffled_batch_numbers)
+        if not file_pairs:
+             raise FileNotFoundError(f"No complete batch file pairs found for mode '{self.mode}' in {self.labeled_audio_set_dir}")
+             
+        return file_pairs
+
+    def _get_shapes(self):
+        """Infers feature and label shapes from the first batch file."""
+        try:
+            features = np.load(self.batch_files[0][0])
+            labels = np.load(self.batch_files[0][1])
+            # Shape: (samples_in_batch, height, width, channels), (samples_in_batch, num_classes)
+            return features.shape[1:], labels.shape[1:] 
+        except Exception as e:
+            print(f"Error loading shapes from {self.batch_files[0]}: {e}")
+            raise
+
+    def __len__(self):
+        """Denotes the number of batches per epoch."""
+        # Each file pair represents a pre-defined batch of samples
+        # The generator yields one sample at a time from these files
+        # Keras' fit handles the batch_size grouping
+        # So, length is the total number of samples / batch_size
+        # Let's estimate total samples (can be slow if files are huge)
+        # A better way might be to store total samples per mode elsewhere
+        # For now, approximate based on first batch file size * num files
+        # TODO: Find a more accurate way to get total samples without loading all files
+        samples_in_first_batch = np.load(self.batch_files[0][0]).shape[0]
+        total_samples_estimate = samples_in_first_batch * len(self.batch_files)
+        return int(np.ceil(total_samples_estimate / self.batch_size))
+
+    def __getitem__(self, index):
+        """Generate one batch of data."""
+        # Calculate start and end sample indices for the overall dataset
+        start_sample_idx = index * self.batch_size
+        end_sample_idx = (index + 1) * self.batch_size
+
+        # Determine which files contain these samples
+        # This requires knowing samples per file - assuming constant for now (simplification)
+        # TODO: Handle variable samples per file if necessary
+        samples_per_file = np.load(self.batch_files[0][0]).shape[0]
         
-        for batch_number in shuffled_batch_numbers:
-            features = get_features_from_list(shuffled_batch_numbers, batch_number, mode)
-            labels = get_labels_from_list(shuffled_batch_numbers, batch_number, mode)
+        start_file_idx = start_sample_idx // samples_per_file
+        end_file_idx = (end_sample_idx - 1) // samples_per_file
+
+        # Adjust indices to be relative within the files being loaded
+        start_sample_in_file = start_sample_idx % samples_per_file
+        end_sample_in_file = (end_sample_idx - 1) % samples_per_file
+
+        batch_features_list = []
+        batch_labels_list = []
+
+        for i in range(start_file_idx, end_file_idx + 1):
+            file_pair_index = self.indices[i % len(self.indices)] # Use shuffled index
+            feature_file, label_file = self.batch_files[file_pair_index]
             
-            # Create empty arrays to contain batch of features and labels
-            batch_features = np.zeros((batch_size, features.shape[1], features.shape[2], 1))
-            batch_labels = np.zeros((batch_size, labels.shape[1]))
+            features_data = np.load(feature_file)
+            labels_data = np.load(label_file)
+
+            # Determine slice indices for this file
+            slice_start = start_sample_in_file if i == start_file_idx else 0
+            slice_end = end_sample_in_file + 1 if i == end_file_idx else samples_per_file
             
-            for i in range(batch_size):
-                # Choose random index in features
-                index = random.randint(0, len(features)-1)
-                batch_features[i] = features[index] if 0 <= index < len(features) else None
-                batch_labels[i] = labels[index] if 0 <= index < len(labels) else None
-            
-            yield batch_features, batch_labels
-            
-def get_batch_numbers_to_load(mode: str, audio_set_batches_per_epoch: int) -> list[int]:
-    all_batch_numbers = get_batch_numbers(mode)
-    random.shuffle(all_batch_numbers)
-    return all_batch_numbers[:audio_set_batches_per_epoch]
+            batch_features_list.append(features_data[slice_start:slice_end])
+            batch_labels_list.append(labels_data[slice_start:slice_end])
+
+        # Concatenate data from potentially multiple files
+        batch_features = np.concatenate(batch_features_list, axis=0)
+        batch_labels = np.concatenate(batch_labels_list, axis=0)
+        
+        # Ensure the batch size is correct (might be smaller for the last batch)
+        # Keras handles this, but good practice
+        actual_batch_size = batch_features.shape[0]
+        if actual_batch_size != self.batch_size and end_sample_idx < self.__len__() * self.batch_size:
+             print(f"Warning: Batch {index} size mismatch. Expected {self.batch_size}, got {actual_batch_size}")
+
+        return batch_features, batch_labels
+
+    def on_epoch_end(self):
+        """Updates indices after each epoch."""
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+# --- End Keras Sequence ---
 
 def train(model: Sequential) -> History:
-    batch_size = 2048
-    number_of_audio_set_batches = get_number_of_audio_set_batches()
+    batch_size = 128 # Adjusted batch size - tune based on GPU memory
     number_of_epochs = 25
-    in_memory_batches = 12
-    total_training_rows = get_total_rows('train')
-    total_test_rows = get_total_rows('test')
-    
-    assert in_memory_batches > 0 and in_memory_batches <= number_of_audio_set_batches
     
     print(f'Training model.\n\t' +
-          f'Num GPUs Available: {len(tf.config.list_physical_devices('GPU'))}\n\t' +
-          f'Batches of dataset per epoch: {in_memory_batches}')
+          f'Num GPUs Available: {len(tf.config.list_physical_devices("GPU"))}\n\t' +
+          f'Batch Size: {batch_size}')
+
+    # Create Sequence generators
+    train_generator = BatchSequence(mode='train', batch_size=batch_size, shuffle=True)
+    val_generator = BatchSequence(mode='val', batch_size=batch_size, shuffle=False) # Use 'val' set, no shuffle
+
+    # Define callbacks
+    early_stopping = EarlyStopping(patience=5, monitor='val_accuracy', verbose=1) # Monitor val_accuracy
+    backup_restore = BackupAndRestore(get_model_backup_dir(), save_freq='epoch')
+    model_checkpoint = ModelCheckpoint(
+        filepath=get_model_file(), # Save best model to the final path
+        monitor='val_accuracy', 
+        save_best_only=True, 
+        verbose=1
+    )
     
     history: History = model.fit(
-        get_generator_large_dataset(in_memory_batches, batch_size, 'train'),
-        steps_per_epoch = total_training_rows // batch_size,
-        validation_data = get_generator_large_dataset(in_memory_batches, batch_size, 'test'),
-	    validation_steps = total_test_rows // batch_size,
-        epochs = number_of_epochs,
-        batch_size=batch_size,
-        callbacks=[
-            EarlyStopping(patience=5, monitor = 'val_accuracy'), # to prevent overfitting
-            BackupAndRestore(get_model_backup_dir(), 'epoch', True), # to restore interrupted training sessions
-            ]
-        )
+        train_generator,
+        validation_data=val_generator,
+        epochs=number_of_epochs,
+        callbacks=[early_stopping, backup_restore, model_checkpoint],
+        workers=4, # Use multiple workers for data loading (adjust based on CPU cores)
+        use_multiprocessing=True
+    )
     
-    if len(history.history.keys()) > 0:
-        model.save(get_model_file())
-
     return history
 
 def plot_history(history: History):
@@ -270,27 +200,54 @@ def plot_history(history: History):
     plt.show()
 
 def evaluate_network(model: Sequential):
-    features_file = get_first_match_training_features_file()
-    features_array = get_data_array(features_file)
-    labels_array = get_batch_training_labels_array(get_batch_number(features_file))
-    
-    assert features_array.shape[0] == labels_array.shape[0]
+    # Evaluate on the test set using the Sequence
+    print("\nEvaluating model on test set...")
+    batch_size = 128 # Use same batch size or adjust as needed
+    test_generator = BatchSequence(mode='test', batch_size=batch_size, shuffle=False)
 
-    result = []
-    pred_raw: np.ndarray = model.predict(features_array)
-    print(pred_raw.shape)
-    pred = np.round(pred_raw)
+    if len(test_generator) == 0:
+        print("No test data found to evaluate.")
+        return
 
-    for i in range(pred_raw.shape[0]):
-        prediction = pred[i]
-        if sum(prediction) == 0:
-            new = np.zeros(pred_raw.shape[1])
-            new[pred_raw[i].argmax()] = 1
-            result.append(new)
-        else:
-            result.append(prediction)
+    # Get all predictions and true labels from the test generator
+    # This might be memory intensive for large test sets
+    # Alternative: Evaluate in batches and aggregate metrics
+    try:
+        y_pred_raw = model.predict(test_generator, verbose=1)
+        y_pred = np.round(y_pred_raw)
+        
+        # Get true labels (requires iterating through generator)
+        y_true = []
+        for i in range(len(test_generator)):
+            _, labels_batch = test_generator[i]
+            y_true.append(labels_batch)
+        y_true = np.concatenate(y_true, axis=0)
 
-    print(classification_report(labels_array, np.array(result), target_names=get_drum_hits_as_strings()))
+        # Adjust predictions where sum is 0 (optional, same logic as before)
+        y_pred_adjusted = []
+        for i in range(y_pred_raw.shape[0]):
+            prediction = y_pred[i]
+            if sum(prediction) == 0 and i < y_pred_raw.shape[0]: # Check index boundary
+                new = np.zeros_like(prediction)
+                new[y_pred_raw[i].argmax()] = 1
+                y_pred_adjusted.append(new)
+            else:
+                y_pred_adjusted.append(prediction)
+        y_pred_adjusted = np.array(y_pred_adjusted)
+        
+        # Ensure shapes match before classification report
+        if y_true.shape[0] != y_pred_adjusted.shape[0]:
+             print(f"Warning: Mismatch in number of samples between true labels ({y_true.shape[0]}) and predictions ({y_pred_adjusted.shape[0]}). Truncating to minimum.")
+             min_samples = min(y_true.shape[0], y_pred_adjusted.shape[0])
+             y_true = y_true[:min_samples]
+             y_pred_adjusted = y_pred_adjusted[:min_samples]
+
+        print(classification_report(y_true, y_pred_adjusted, target_names=get_drum_hits_as_strings(), zero_division=0))
+
+    except Exception as e:
+        print(f"Error during evaluation: {e}")
+        import traceback
+        traceback.print_exc()
 
 def get_model() -> Sequential:
     model: Sequential = None
