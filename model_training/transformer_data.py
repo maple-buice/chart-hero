@@ -132,16 +132,25 @@ class DrumDataset(Dataset):
         row = self.data_df.iloc[idx]
         
         try:
-            # Load audio
-            audio_path = self.audio_dir / row['audio_filename']
-            audio, sr = torchaudio.load(str(audio_path))
+            # Load pre-processed audio from the data_preparation step
+            audio_data = row['audio_wav']
+            sr = row['sampling_rate']
+            
+            # Convert numpy array to torch tensor
+            if isinstance(audio_data, list):
+                audio_data = np.array(audio_data)
+            audio = torch.from_numpy(audio_data).float()
+            
+            # Ensure audio is 2D (channels, samples)
+            if audio.dim() == 1:
+                audio = audio.unsqueeze(0)
             
             # Resample if necessary
             if sr != self.config.sample_rate:
                 resampler = torchaudio.transforms.Resample(sr, self.config.sample_rate)
                 audio = resampler(audio)
             
-            # Convert to mono if stereo
+            # Audio is already mono from data preparation, but ensure consistency
             if audio.shape[0] > 1:
                 audio = torch.mean(audio, dim=0, keepdim=True)
             
@@ -149,21 +158,13 @@ class DrumDataset(Dataset):
             if self.augment:
                 audio = self._augment_audio(audio)
             
-            # Extract segment based on note timing
+            # The audio is already pre-segmented from data_preparation step
+            # with padding included, so we use it directly
+            audio_segment = audio
+            
+            # Extract timing info for reference (though audio is already segmented)
             start_time = row['start']
             end_time = row['end']
-            
-            # Add padding around the note
-            pad_before = 0.1  # 100ms before
-            pad_after = 0.1   # 100ms after
-            
-            segment_start = max(0, start_time - pad_before)
-            segment_end = min(audio.shape[-1] / self.config.sample_rate, end_time + pad_after)
-            
-            start_sample = int(segment_start * self.config.sample_rate)
-            end_sample = int(segment_end * self.config.sample_rate)
-            
-            audio_segment = audio[:, start_sample:end_sample]
             
             # Convert to spectrogram
             spectrogram = self.processor.audio_to_spectrogram(audio_segment)

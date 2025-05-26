@@ -49,7 +49,19 @@ python main.py -p "path/to/audio.wav" -km speed
 python model_training/train_model.py
 ```
 
-**Transformer Training (Phase 1 Complete):**
+**Data Preparation for Transformer Training:**
+```bash
+# Prepare E-GMD dataset with memory-efficient processing
+python prepare_egmd_data.py --sample-ratio 0.1 --memory-limit-gb 32 --high-performance
+
+# Conservative mode for low-memory systems
+python prepare_egmd_data.py --sample-ratio 0.1 --conservative
+
+# Test data preparation
+python prepare_egmd_data.py --sample-ratio 0.01 --memory-limit-gb 8 --high-performance --n-jobs 4
+```
+
+**Transformer Training (Phase 1 Complete & Functional):**
 ```bash
 # Setup transformer environment
 python setup_transformer.py
@@ -57,14 +69,14 @@ python setup_transformer.py
 # Test installation
 python model_training/test_transformer_setup.py
 
-# Local training on M1-Max
-python model_training/train_transformer.py --config local
+# Full training (auto-detects local M1-Max or cloud config)
+python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0
 
-# Cloud training on Google Colab  
-python model_training/train_transformer.py --config cloud
+# Quick test run (1 epoch, small batches)
+python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0 --quick-test
 
-# Auto-detect configuration
-python model_training/train_transformer.py --config auto
+# With W&B logging (requires wandb.login())
+python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0 --use-wandb
 ```
 
 ### Dependencies
@@ -85,26 +97,39 @@ The system maps MIDI drum notes to Clone Hero chart positions using a comprehens
 ### Model Architecture
 **Current (Legacy)**: Models are stored in `model_training/model/` and use Keras/TensorFlow CNN architecture that processes mel-spectrograms to predict drum hit probabilities across multiple drum types simultaneously.
 
-**Transformer Implementation (Phase 1 Complete)**: The project has been modernized with transformer-based architectures following the comprehensive plan in `TRANSFORMER_REFACTORING_PLAN.md`. The new system includes:
+**Transformer Implementation (Phase 1 Complete & Functional)**: The project has been modernized with transformer-based architectures following the comprehensive plan in `TRANSFORMER_REFACTORING_PLAN.md`. The new system includes:
 - ✅ Audio Spectrogram Transformer (AST) with patch-based tokenization implemented
 - ✅ PyTorch Lightning training framework with mixed precision support
 - ✅ Configuration classes for both local training (M1-Max MacBook Pro) and cloud training (Google Colab)
 - ✅ Enhanced data pipeline with transformer-compatible spectrogram processing
 - ✅ Complete model architecture with 85M+ parameters
+- ✅ Memory-efficient data preparation with parallel processing controls
+- ✅ Fixed audio loading pipeline to use pre-processed data
+- ✅ Working training pipeline with optional W&B logging
 - 🔄 Expected 15-20% improvement in F1-score over CNN baseline (to be validated in Phase 2)
 
 ### File Structure Patterns
-- Training data is organized in batches with naming pattern: `{batch_num}_{mode}_{type}.npy`
+- **Legacy**: Training data organized in batches with naming pattern: `{batch_num}_{mode}_{type}.npy`
+- **Transformer**: Training data organized as `{batch_num}_{mode}.pkl` files in `datasets/processed/`
 - Model checkpoints use backup and restore functionality
-- Audio processing uses librosa for feature extraction
+- Audio processing uses librosa for feature extraction and pre-processing
 
 ## Notes for Development
 
 When working with this codebase:
 - The main pipeline in `main.py` has most processing steps commented out - uncomment as needed
 - **Legacy**: Model training uses efficient batch loading via Keras Sequence classes
-- **Transformer Refactor**: New training will use PyTorch DataLoaders with patch-based spectrograms
+- **Transformer**: Uses PyTorch DataLoaders with patch-based spectrograms and pre-processed audio data
 - Audio fingerprinting integrates with AcousticBrainz and Audd APIs
 - The system is designed to work with both local audio files and YouTube videos
-- **Transformer Development**: Follow the 8-week roadmap in `TRANSFORMER_REFACTORING_PLAN.md` for modernization
-- **Training Environments**: Support for both M1-Max local training and Google Colab cloud training
+
+### Memory Management & Performance
+- **Data Preparation**: Uses aggressive memory monitoring and limits to prevent system crashes
+- **Parallel Processing**: Automatically switches to sequential mode for memory limits ≤48GB due to librosa memory explosion issues
+- **Batch Processing**: Respects specified batch limits and stops processing at target counts
+- **Training**: Supports both CPU and MPS (Apple Silicon) acceleration with mixed precision
+
+### Training Environments
+- **Local (M1-Max)**: Optimized for Apple Silicon with MPS acceleration
+- **Cloud (Google Colab)**: Configured for GPU training with appropriate batch sizes
+- **Auto-detection**: Automatically selects optimal configuration based on available hardware

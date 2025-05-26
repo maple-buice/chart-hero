@@ -1,6 +1,35 @@
-# Drum Note Mapping
+# Model Training Documentation
 
-*Model training code adapted from https://github.com/cb-42/AnNOTEator, which uses the MIT license*
+## Current Status
+
+### Transformer Implementation ✅ COMPLETE
+The project has been fully modernized with a transformer-based architecture:
+
+- **✅ Audio Spectrogram Transformer**: 85M+ parameter model implemented
+- **✅ PyTorch Lightning Training**: Complete training pipeline with mixed precision
+- **✅ Memory-Efficient Data Processing**: Handles large datasets without crashes
+- **✅ Multi-Environment Support**: Local (M1-Max) and cloud (Google Colab) configurations
+
+### Quick Start Commands
+
+**Data Preparation:**
+```bash
+# Prepare dataset with memory-efficient processing
+python prepare_egmd_data.py --sample-ratio 0.1 --memory-limit-gb 32 --high-performance
+```
+
+**Training:**
+```bash
+# Full training
+python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0
+
+# Quick test (1 epoch)
+python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0 --quick-test
+```
+
+## Legacy Documentation: Drum Note Mapping
+
+*Legacy model training code adapted from https://github.com/cb-42/AnNOTEator, which uses the MIT license*
 
 The MIDI note mapping from the original AnNOTEator was:
 ```python

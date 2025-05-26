@@ -3,6 +3,12 @@ Main training script for transformer-based drum transcription.
 Supports both local (M1-Max) and cloud (Google Colab) training environments.
 """
 
+import os
+import sys
+
+# Add project root to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -18,10 +24,10 @@ from pathlib import Path
 import numpy as np
 from typing import Dict, Any, Optional
 
-from .transformer_config import get_config, auto_detect_config, validate_config
-from .transformer_model import create_model
-from .transformer_data import create_data_loaders
-from ..utils.file_utils import get_labeled_audio_set_dir
+from model_training.transformer_config import get_config, auto_detect_config, validate_config
+from model_training.transformer_model import create_model
+from model_training.transformer_data import create_data_loaders
+from utils.file_utils import get_labeled_audio_set_dir
 
 
 # Set up logging
@@ -252,18 +258,27 @@ def setup_callbacks(config):
     return callbacks
 
 
-def setup_logger(config, project_name: str = "chart-hero-transformer"):
-    """Set up W&B logger."""
-    logger = WandbLogger(
-        project=project_name,
-        name=f"drum-transformer-{config.device}",
-        log_model=True,
-        save_dir=config.log_dir
-    )
-    return logger
+def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb: bool = True):
+    """Set up W&B logger or None if disabled."""
+    if not use_wandb:
+        logger.info("WandB logging disabled")
+        return None
+    
+    try:
+        wandb_logger = WandbLogger(
+            project=project_name,
+            name=f"drum-transformer-{config.device}",
+            log_model=True,
+            save_dir=config.log_dir
+        )
+        return wandb_logger
+    except Exception as e:
+        logger.warning(f"Failed to initialize WandB logger: {e}")
+        logger.info("Continuing without WandB logging")
+        return None
 
 
-def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = None):
+def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = None, use_wandb: bool = False):
     """Main training function."""
     
     # Create model
@@ -271,7 +286,7 @@ def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = No
     
     # Set up callbacks and logger
     callbacks = setup_callbacks(config)
-    wandb_logger = setup_logger(config)
+    wandb_logger = setup_logger(config, use_wandb=use_wandb)
     
     # Create trainer
     trainer = pl.Trainer(
@@ -320,6 +335,10 @@ def main():
                        help='Path to checkpoint to resume from')
     parser.add_argument('--project-name', type=str, default='chart-hero-transformer',
                        help='W&B project name')
+    parser.add_argument('--use-wandb', action='store_true',
+                       help='Enable W&B logging (disabled by default)')
+    parser.add_argument('--quick-test', action='store_true',
+                       help='Run a quick test with minimal epochs for validation')
     
     args = parser.parse_args()
     
@@ -337,6 +356,13 @@ def main():
     else:
         # Default to the labeled audio set directory
         config.audio_dir = str(Path(get_labeled_audio_set_dir()).parent)
+    
+    # Apply quick test modifications if requested
+    if args.quick_test:
+        logger.info("Quick test mode enabled - reducing epochs and batch size for fast validation")
+        config.num_epochs = 1
+        config.train_batch_size = min(config.train_batch_size, 8)
+        config.val_batch_size = min(config.val_batch_size, 8)
     
     # Validate configuration
     validate_config(config)
@@ -361,7 +387,8 @@ def main():
         model, trainer = train_model(
             config=config,
             data_loaders=data_loaders,
-            resume_from_checkpoint=args.resume
+            resume_from_checkpoint=args.resume,
+            use_wandb=args.use_wandb
         )
         
         logger.info("Training completed successfully!")
@@ -376,8 +403,9 @@ def main():
         raise
     
     finally:
-        # Clean up W&B
-        wandb.finish()
+        # Clean up W&B if it was used
+        if args.use_wandb:
+            wandb.finish()
 
 
 if __name__ == "__main__":
