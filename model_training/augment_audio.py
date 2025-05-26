@@ -103,13 +103,8 @@ def add_white_noise(audio_clip, snr_db_range=(5, 30), random_state=None):
 
 
 # --- Safer apply_augmentations using dictionary lookup ---
-AVAILABLE_AUGMENTATIONS = {
-    'add_lowpass_filter': add_lowpass_filter,
-    'add_pedalboard_effects': add_pedalboard_effects,
-    'add_white_noise': add_white_noise,
-    'augment_pitch': augment_pitch,
-    # Add other functions here if they are intended to be used via this helper
-}
+# Note: AVAILABLE_AUGMENTATIONS dictionary is defined at the end of the file
+# after all functions are defined
 
 def apply_augmentations(df, audio_col='audio_wav', aug_col_names=None, **aug_param_dict):
     """
@@ -420,3 +415,13 @@ def augment_spectrogram_spans(spec, spans=3, span_ranges=[[1,4], [1,6]], span_va
         spec[freq_inds[0]:freq_inds[1]+1, time_inds[0]:time_inds[1]+1] = sig_val
     
     return spec
+
+
+# --- Available augmentations dictionary (defined at end after all functions) ---
+AVAILABLE_AUGMENTATIONS = {
+    'add_lowpass_filter': add_lowpass_filter,
+    'add_pedalboard_effects': add_pedalboard_effects,
+    'add_white_noise': add_white_noise,
+    'augment_pitch': augment_pitch,
+    # Add other functions here if they are intended to be used via this helper
+}
