@@ -193,7 +193,7 @@ class DrumDataset(Dataset):
         """Apply audio augmentations for training."""
         # Time stretching
         if torch.rand(1) < 0.3:
-            stretch_factor = torch.uniform(0.9, 1.1, (1,)).item()
+            stretch_factor = 0.9 + torch.rand(1).item() * 0.2  # Random between 0.9 and 1.1
             audio = torchaudio.functional.stretch(audio, stretch_factor, hop_length=256)
         
         # Pitch shifting
@@ -203,7 +203,7 @@ class DrumDataset(Dataset):
         
         # Add noise
         if torch.rand(1) < 0.2:
-            noise_factor = torch.uniform(0.001, 0.01, (1,)).item()
+            noise_factor = 0.001 + torch.rand(1).item() * 0.009  # Random between 0.001 and 0.01
             noise = torch.randn_like(audio) * noise_factor
             audio = audio + noise
         
@@ -278,7 +278,7 @@ def create_data_loaders(config: BaseConfig,
     val_dataset = DrumDataset(val_df, config, audio_dir, mode='val', augment=False)
     test_dataset = DrumDataset(test_df, config, audio_dir, mode='test', augment=False)
     
-    # Create data loaders
+    # Create data loaders with memory-optimized settings
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -286,7 +286,8 @@ def create_data_loaders(config: BaseConfig,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
         drop_last=True,
-        persistent_workers=config.num_workers > 0
+        persistent_workers=getattr(config, 'persistent_workers', False) and config.num_workers > 0,
+        prefetch_factor=getattr(config, 'prefetch_factor', 2) if config.num_workers > 0 else None
     )
     
     val_loader = DataLoader(
@@ -295,7 +296,8 @@ def create_data_loaders(config: BaseConfig,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
-        persistent_workers=config.num_workers > 0
+        persistent_workers=getattr(config, 'persistent_workers', False) and config.num_workers > 0,
+        prefetch_factor=getattr(config, 'prefetch_factor', 2) if config.num_workers > 0 else None
     )
     
     test_loader = DataLoader(
@@ -304,7 +306,8 @@ def create_data_loaders(config: BaseConfig,
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
-        persistent_workers=config.num_workers > 0
+        persistent_workers=getattr(config, 'persistent_workers', False) and config.num_workers > 0,
+        prefetch_factor=getattr(config, 'prefetch_factor', 2) if config.num_workers > 0 else None
     )
     
     return train_loader, val_loader, test_loader

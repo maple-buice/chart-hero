@@ -13,12 +13,12 @@ import os
 class BaseConfig:
     """Base configuration for transformer training."""
     
-    # Model architecture
+    # Model architecture - smaller defaults for memory efficiency
     model_name: str = "audio_spectrogram_transformer"
-    hidden_size: int = 768
-    num_layers: int = 12
-    num_heads: int = 12
-    intermediate_size: int = 3072
+    hidden_size: int = 384  # Reduced from 768
+    num_layers: int = 6     # Reduced from 12
+    num_heads: int = 6      # Reduced from 12
+    intermediate_size: int = 1536  # Reduced from 3072
     dropout: float = 0.1
     
     # Audio processing
@@ -72,20 +72,26 @@ class LocalConfig(BaseConfig):
     mixed_precision: bool = True
     precision: str = "16-mixed" if torch.backends.mps.is_available() else "32"
     
-    # Memory optimization for 64GB RAM
-    train_batch_size: int = 32
-    val_batch_size: int = 64
-    num_workers: int = 8  # M1-Max has 10 cores
-    pin_memory: bool = False  # Not needed for MPS
+    # Smaller model for memory efficiency
+    hidden_size: int = 384  # Reduced from 768
+    num_layers: int = 6     # Reduced from 12
+    num_heads: int = 6      # Reduced from 12
+    intermediate_size: int = 1536  # Reduced from 3072
+    
+    # Memory optimization for 64GB RAM - further reduced
+    train_batch_size: int = 4   # Further reduced from 8
+    val_batch_size: int = 8     # Further reduced from 16
+    num_workers: int = 2        # Reduced from 4
+    pin_memory: bool = False    # Not needed for MPS
     
     # Training settings
     gradient_checkpointing: bool = True
-    accumulate_grad_batches: int = 2
+    accumulate_grad_batches: int = 8  # Increased from 4 to maintain effective batch size
     
     # Storage optimization for 1TB SSD
-    cache_dataset: bool = True
+    cache_dataset: bool = False  # Disable caching to save memory
     prefetch_factor: int = 2
-    persistent_workers: bool = True
+    persistent_workers: bool = False  # Disable to save memory
     
     # Local paths
     data_dir: str = "datasets/"
@@ -93,8 +99,8 @@ class LocalConfig(BaseConfig):
     log_dir: str = "logs/"
     
     # Conservative settings for local development
-    max_audio_length: float = 8.0  # Shorter for memory efficiency
-    max_seq_len: int = 768
+    max_audio_length: float = 5.0  # Further reduced for memory efficiency
+    max_seq_len: int = 512         # Reduced from 768
     
     @property
     def effective_batch_size(self) -> int:

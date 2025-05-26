@@ -6,6 +6,7 @@ Based on the AST architecture with modifications for drum-specific tasks.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 import math
 from typing import Optional, Tuple, Dict, Any
 import numpy as np
@@ -54,7 +55,7 @@ class PatchEmbedding(nn.Module):
 class PositionalEncoding2D(nn.Module):
     """2D positional encoding for time-frequency patches."""
     
-    def __init__(self, embed_dim: int, max_time_patches: int = 64, max_freq_patches: int = 8):
+    def __init__(self, embed_dim: int, max_time_patches: int = 32, max_freq_patches: int = 8):
         super().__init__()
         self.embed_dim = embed_dim
         self.max_time_patches = max_time_patches
@@ -78,19 +79,32 @@ class PositionalEncoding2D(nn.Module):
         batch_size, num_patches, embed_dim = x.shape
         time_patches, freq_patches = patch_shape
         
-        # Create 2D position embeddings
-        time_pos = self.time_embed[:, :time_patches, :].repeat(1, freq_patches, 1)
-        freq_pos = self.freq_embed[:, :freq_patches, :].repeat_interleave(time_patches, dim=1)
+        # Clamp to avoid memory explosion
+        time_patches = min(time_patches, self.max_time_patches)
+        freq_patches = min(freq_patches, self.max_freq_patches)
         
-        # Concatenate time and frequency positions
+        # Create position embeddings efficiently with bound checking
+        device = x.device
+        
+        # Efficient time position embedding
+        time_embed_needed = self.time_embed[:, :time_patches, :]
+        time_pos = time_embed_needed.repeat(1, freq_patches, 1)
+        
+        # Efficient frequency position embedding  
+        freq_embed_needed = self.freq_embed[:, :freq_patches, :]
+        freq_pos = freq_embed_needed.repeat_interleave(time_patches, dim=1)
+        
+        # Concatenate and trim to actual patch count
         pos_embed = torch.cat([time_pos, freq_pos], dim=-1)
         
-        # Ensure position embedding matches the number of patches
-        if pos_embed.shape[1] > num_patches:
-            pos_embed = pos_embed[:, :num_patches, :]
-        elif pos_embed.shape[1] < num_patches:
-            # Pad with zeros if we have fewer position embeddings
-            padding = torch.zeros(1, num_patches - pos_embed.shape[1], embed_dim, device=pos_embed.device)
+        # Ensure we don't exceed memory by trimming to actual patches
+        actual_patches = min(num_patches, pos_embed.shape[1])
+        pos_embed = pos_embed[:, :actual_patches, :]
+        
+        # Pad if needed (rare case)
+        if actual_patches < num_patches:
+            padding_size = num_patches - actual_patches
+            padding = torch.zeros(1, padding_size, embed_dim, device=device, dtype=pos_embed.dtype)
             pos_embed = torch.cat([pos_embed, padding], dim=1)
         
         # Add positional encoding
@@ -185,10 +199,14 @@ class DrumTranscriptionTransformer(nn.Module):
             embed_dim=config.hidden_size
         )
         
-        # Calculate maximum patch dimensions based on audio length and spectrogram size
+        # Calculate maximum patch dimensions with conservative bounds for memory efficiency
         max_time_frames = int(config.max_audio_length * config.sample_rate / config.hop_length) + 1
         max_time_patches = (max_time_frames + config.patch_size[0] - 1) // config.patch_size[0]
         max_freq_patches = (config.n_mels + config.patch_size[1] - 1) // config.patch_size[1]
+        
+        # Apply conservative limits to prevent memory explosion
+        max_time_patches = min(max_time_patches, 32)  # Cap at 32 time patches
+        max_freq_patches = min(max_freq_patches, 8)   # Cap at 8 frequency patches
         
         self.pos_encoding = PositionalEncoding2D(
             embed_dim=config.hidden_size,
@@ -201,7 +219,7 @@ class DrumTranscriptionTransformer(nn.Module):
             TransformerBlock(
                 embed_dim=config.hidden_size,
                 num_heads=config.num_heads,
-                mlp_ratio=4.0,
+                mlp_ratio=2.0,  # Reduced from 4.0 to save memory
                 dropout=config.dropout
             )
             for _ in range(config.num_layers)
@@ -253,12 +271,22 @@ class DrumTranscriptionTransformer(nn.Module):
         # Add positional encoding and CLS token
         x = self.pos_encoding(patch_embeddings, patch_shape)
         
+        # Clear intermediate tensor to save memory
+        del patch_embeddings
+        
         # Store embeddings for each layer if requested
         layer_embeddings = []
         
-        # Pass through transformer layers
+        # Pass through transformer layers with optional gradient checkpointing
+        use_checkpointing = getattr(self.config, 'gradient_checkpointing', False) and self.training
+        
         for layer in self.transformer_layers:
-            x = layer(x, attention_mask)
+            if use_checkpointing:
+                # Use gradient checkpointing to save memory during training
+                x = checkpoint.checkpoint(layer, x, attention_mask, use_reentrant=False)
+            else:
+                x = layer(x, attention_mask)
+                
             if return_embeddings:
                 layer_embeddings.append(x.clone())
         
@@ -311,10 +339,10 @@ if __name__ == "__main__":
     config = get_config("local")
     model = create_model(config)
     
-    # Test forward pass
-    batch_size = 2
-    time_frames = 256  # ~5.8 seconds at 22050 Hz with hop_length=512
-    freq_bins = 128
+    # Test forward pass with smaller inputs to avoid memory issues
+    batch_size = 1  # Reduced from 2
+    time_frames = 128  # Reduced from 256 
+    freq_bins = 128  # Keep at 128
     
     dummy_input = torch.randn(batch_size, 1, time_frames, freq_bins)
     
