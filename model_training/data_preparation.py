@@ -79,10 +79,17 @@ class data_preparation():
                     logger.warning(f"Error getting duration for {filepath}: {e}") # Use warning
                     return None
 
-            # Use joblib for parallel execution
-            # Use 'loky' backend for better robustness, especially on macOS
-            with parallel_backend('loky', n_jobs=self.n_jobs):
-                durations = Parallel()(delayed(get_wav_duration)(f, self.directory_path) for f in tqdm(df['audio_filename'], desc="Calculating audio durations"))
+            # Sequential processing to avoid memory explosion in parallel workers
+            logger.info("Using sequential processing for duration calculation (memory optimization)")
+            durations = []
+            for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating audio durations sequentially")):
+                duration = get_wav_duration(filename, self.directory_path)
+                durations.append(duration)
+                
+                # Aggressive memory cleanup every 50 files
+                if i % 50 == 0:
+                    import gc
+                    gc.collect()
 
             df['wav_length'] = durations
             duration_calc_end_time = time.perf_counter()
@@ -369,7 +376,7 @@ class data_preparation():
                     else:
                         return np.array([], dtype=np.float32) # Or handle as appropriate
 
-                # Load only the required segment
+                # Load only the required segment with memory optimization
                 try:
                     # Ensure we don't read past the end of the file
                     read_duration = min(slice_duration, max_len_seconds - slice_start_time)
@@ -379,10 +386,12 @@ class data_preparation():
                          else:
                             return np.array([], dtype=np.float32)
 
+                    # Use lower-precision float32 and minimal memory allocation
                     sliced_wav, _ = librosa.load(
                         audio_file_path, sr=sr, mono=True,
                         offset=slice_start_time,
-                        duration=read_duration
+                        duration=read_duration,
+                        dtype=np.float32  # Explicit float32 for memory efficiency
                     )
                 except Exception as load_err:
                      # Corrected f-string syntax
@@ -422,6 +431,10 @@ class data_preparation():
                  logger.warning(f"Track notes became empty after audio slicing for {midi_file}")
                  return None
 
+            # Aggressive memory cleanup before returning
+            import gc
+            gc.collect()
+            
             pair_end_time = time.perf_counter()
             logger.debug(f"Processed pair {midi_file} in {pair_end_time - pair_start_time:.3f} seconds, resulting in {final_notes} notes.")
             return track_notes
@@ -432,9 +445,19 @@ class data_preparation():
             return None
     # --- End Helper Function ---
 
-    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50):
+    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50, memory_limit_gb=8):
         create_set_start_time = time.perf_counter()
-        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}")
+        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}, memory_limit={memory_limit_gb}GB")
+        
+        # Memory monitoring
+        import psutil
+        process = psutil.Process()
+        
+        def check_memory():
+            mem_gb = process.memory_info().rss / (1024**3)
+            if mem_gb > memory_limit_gb:
+                logger.warning(f"Memory usage ({mem_gb:.1f}GB) exceeds limit ({memory_limit_gb}GB)")
+            return mem_gb
 
         if batching and not dir_path:
             logger.error('Directory path must be specified for saving pickle files when batching=True')
@@ -448,10 +471,15 @@ class data_preparation():
 
         def save_batch(df_list, batch_idx):
             if not df_list:
-                print(f"Batch {batch_idx} is empty, skipping save.")
+                logger.debug(f"Batch {batch_idx} is empty, skipping save.")
                 return
             
+            # Process batch with immediate memory cleanup
+            logger.debug(f"Saving batch {batch_idx} with {len(df_list)} dataframes")
             notes_collection_batch = pd.concat(df_list, ignore_index=True)
+            
+            # Clear the input list immediately
+            df_list.clear()
             
             # Filter out problematic tracks where start time might exceed audio length (less likely now but good check)
             problematic_tracks = []
@@ -468,85 +496,153 @@ class data_preparation():
                 print(f"Batch {batch_idx} became empty after filtering problematic tracks, skipping save.")
                 return
 
-            # Train/Val/Test Split
+            # Train/Val/Test Split using pandas-native approach
             train_frac, val_frac = 0.6, 0.2
-            train_df, val_df, test_df = np.split(
-                notes_collection_batch.sample(frac=1, random_state=42),
-                [int(train_frac * len(notes_collection_batch)),
-                 int((train_frac + val_frac) * len(notes_collection_batch))])
+            shuffled_batch = notes_collection_batch.sample(frac=1, random_state=42).reset_index(drop=True)
+            
+            n_total = len(shuffled_batch)
+            n_train = int(train_frac * n_total)
+            n_val = int(val_frac * n_total)
+            
+            train_df = shuffled_batch.iloc[:n_train].copy()
+            val_df = shuffled_batch.iloc[n_train:n_train + n_val].copy()
+            test_df = shuffled_batch.iloc[n_train + n_val:].copy()
 
-            # Save
-            train_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_train.pkl"))
-            val_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_val.pkl"))
-            test_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_test.pkl"))
+            # Save with aggressive memory management
+            train_path = os.path.join(dir_path, f"{batch_idx}_train.pkl")
+            val_path = os.path.join(dir_path, f"{batch_idx}_val.pkl") 
+            test_path = os.path.join(dir_path, f"{batch_idx}_test.pkl")
+            
+            train_df.to_pickle(train_path)
+            val_df.to_pickle(val_path)
+            test_df.to_pickle(test_path)
 
             logger.info(f'Saved batch {batch_idx} data ({len(train_df)} train, {len(val_df)} val, {len(test_df)} test) at {dir_path}')
-            # Explicitly delete to free memory
-            del notes_collection_batch, train_df, val_df, test_df
+            
+            # Aggressive memory cleanup
+            del notes_collection_batch, shuffled_batch, train_df, val_df, test_df
+            import gc
+            gc.collect()
 
-        logger.info(f'Starting parallel processing for {len(self.midi_wav_map)} file pairs using {self.n_jobs} jobs...')
-        parallel_start_time = time.perf_counter()
+        # Zero-accumulation processing: save each file immediately
+        logger.info(f'Processing {len(self.midi_wav_map)} file pairs sequentially with immediate saving (zero-accumulation mode)...')
+        
         process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length)
+        
+        total_valid = 0
+        total_failed = 0
+        
+        # Initialize batch accumulators that write to disk immediately
+        if batching:
+            batch_accumulators = {}
+            results_per_batch = max(1, math.ceil(len(self.midi_wav_map) / num_batches))
+            current_batch_counts = {}
+            
+        # Process files one by one with immediate saving
+        for idx, (_, row) in enumerate(tqdm(self.midi_wav_map.iterrows(), total=len(self.midi_wav_map), desc="Processing files")):
+            
+            # Memory check before processing each file
+            mem_before = check_memory()
+            
+            # Process single file
+            result = process_func(row)
+            
+            if result is not None and not result.empty:
+                total_valid += 1
+                
+                if batching:
+                    # Determine which batch this result belongs to
+                    batch_idx = self.batch_tracking % num_batches
+                    
+                    # Initialize batch accumulator if needed
+                    if batch_idx not in batch_accumulators:
+                        batch_accumulators[batch_idx] = []
+                        current_batch_counts[batch_idx] = 0
+                    
+                    # Add to batch
+                    batch_accumulators[batch_idx].append(result)
+                    current_batch_counts[batch_idx] += len(result)
+                    
+                    # Save batch if it's getting large (save more frequently)
+                    if current_batch_counts[batch_idx] >= 500:  # Much smaller batch size
+                        save_batch(batch_accumulators[batch_idx], batch_idx)
+                        logger.info(f"Saved batch {batch_idx} early ({current_batch_counts[batch_idx]} samples)")
+                        
+                        # Clear this batch accumulator
+                        batch_accumulators[batch_idx] = []
+                        current_batch_counts[batch_idx] = 0
+                        self.batch_tracking += 1
+                        
+                        # Force aggressive cleanup  
+                        import gc
+                        gc.collect()
+                else:
+                    # For non-batching, save immediately to individual files
+                    individual_file = os.path.join(dir_path, f"individual_{idx}.pkl")
+                    result.to_pickle(individual_file)
+                    logger.debug(f"Saved individual result {idx} with {len(result)} samples")
+                    
+                # Cleanup result immediately
+                del result
+            else:
+                total_failed += 1
+            
+            # Aggressive cleanup every file
+            import gc
+            gc.collect()
+            
+            # Memory check and warning
+            if idx % 10 == 0:  # Check every 10 files
+                mem_after = check_memory()
+                if mem_after > mem_before + 0.5:  # If memory grew by 500MB
+                    logger.warning(f"Memory growing: {mem_before:.1f}GB -> {mem_after:.1f}GB on file {idx}")
+        
+        logger.info(f"Total processing results: {total_valid} valid, {total_failed} failed")
+        
+        # Save any remaining batch data
+        if batching:
+            for batch_idx, batch_data in batch_accumulators.items():
+                if batch_data:
+                    save_batch(batch_data, batch_idx)
+                    logger.info(f"Saved final batch {batch_idx} with {current_batch_counts[batch_idx]} samples")
 
-        # Use 'loky' backend for better robustness
-        with parallel_backend('loky', n_jobs=self.n_jobs):
-            results = Parallel()(
-                delayed(process_func)(row)
-                for _, row in tqdm(self.midi_wav_map.iterrows(), total=self.midi_wav_map.shape[0], desc="Processing file pairs")
-            )
-
-        parallel_end_time = time.perf_counter()
-        logger.info(f"Parallel processing finished in {parallel_end_time - parallel_start_time:.2f} seconds.")
-
-        valid_results = [df for df in results if df is not None and not df.empty]
-        num_valid = len(valid_results)
-        num_failed = len(self.midi_wav_map) - num_valid
-        logger.info(f"Generated {num_valid} valid dataframes ({num_failed} pairs failed or were skipped).")
-        del results # Free memory
-
-        if not valid_results:
+        if total_valid == 0:
              logger.warning("No valid dataframes were generated. Check logs for errors during processing.")
              return
 
         if batching:
-            logger.info(f"Processing {num_valid} results into ~{num_batches} batches.")
-            batch_save_start_time = time.perf_counter()
-            # Calculate approximate number of dataframes per batch
-            num_results = len(valid_results)
-            results_per_batch = math.ceil(num_results / num_batches)
+            logger.info(f"Batching complete: saved {self.batch_tracking} batches")
 
-            current_batch_list = []
-            for i, df in enumerate(tqdm(valid_results, desc="Saving batches")):
-                current_batch_list.append(df)
-                # Save when batch is full or it's the last result
-                if len(current_batch_list) >= results_per_batch or i == num_results - 1:
-                    save_batch(current_batch_list, self.batch_tracking)
-                    self.batch_tracking += 1
-                    current_batch_list = [] # Reset for next batch
-                    import gc
-                    gc.collect() # Force garbage collection
-                    logger.debug(f"Saved batch {self.batch_tracking-1}. Current memory usage: ...") # Add memory usage if possible/needed
-
-            batch_save_end_time = time.perf_counter()
-            logger.info(f"Batch saving finished in {batch_save_end_time - batch_save_start_time:.2f} seconds.")
-
-        else: # No batching
-            logger.info("Concatenating all results (no batching)...")
-            concat_start_time = time.perf_counter()
-            self.notes_collection = pd.concat(valid_results, ignore_index=True)
-            concat_end_time = time.perf_counter()
-            logger.info(f"Concatenation finished in {concat_end_time - concat_start_time:.2f} seconds.")
-            # Filter out problematic tracks (redundant check, but safe)
-            problematic_tracks=[]
-            for r in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check"):
-                if r[1].start>self.id_len_dict[r[1].track_id]:
-                    problematic_tracks.append(r[1].track_id)
-            self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
-            save_start_time = time.perf_counter()
-            output_path = os.path.join(dir_path, "dataset_full.pkl")
-            self.notes_collection.to_pickle(output_path)
-            save_end_time = time.perf_counter()
-            logger.info(f"Saved full dataset ({len(self.notes_collection)} notes) to {output_path} in {save_end_time - save_start_time:.2f} seconds.")
+        else: # No batching - combine individual files
+            logger.info("Non-batching mode: combining individual files")
+            individual_files = [f for f in os.listdir(dir_path) if f.startswith('individual_') and f.endswith('.pkl')]
+            
+            if individual_files:
+                logger.info(f"Combining {len(individual_files)} individual files")
+                combined_dfs = []
+                for file in tqdm(individual_files, desc="Loading individual files"):
+                    df = pd.read_pickle(os.path.join(dir_path, file))
+                    combined_dfs.append(df)
+                    # Clean up file after loading
+                    os.remove(os.path.join(dir_path, file))
+                
+                self.notes_collection = pd.concat(combined_dfs, ignore_index=True)
+                del combined_dfs
+                import gc
+                gc.collect()
+                
+                # Filter out problematic tracks
+                problematic_tracks=[]
+                for r in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check"):
+                    if r[1].start>self.id_len_dict[r[1].track_id]:
+                        problematic_tracks.append(r[1].track_id)
+                self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
+                
+                output_path = os.path.join(dir_path, "dataset_full.pkl")
+                self.notes_collection.to_pickle(output_path)
+                logger.info(f"Saved full dataset ({len(self.notes_collection)} notes) to {output_path}")
+            else:
+                logger.warning("No individual files found to combine")
 
         create_set_end_time = time.perf_counter()
         logger.info(f'create_audio_set finished in {create_set_end_time - create_set_start_time:.2f} seconds.')
