@@ -43,8 +43,19 @@ python main.py -p "path/to/audio.wav" -km speed
 ```
 
 ### Model Training
+
+**Legacy CNN Training:**
 ```bash
 python model_training/train_model.py
+```
+
+**Transformer Training (Future):**
+```bash
+# Local training on M1-Max
+python model_training/train_transformer.py --config local
+
+# Cloud training on Google Colab
+python model_training/train_transformer.py --config cloud
 ```
 
 ### Dependencies
@@ -63,7 +74,14 @@ The system maps MIDI drum notes to Clone Hero chart positions using a comprehens
 - Toms → Chart positions 2-4
 
 ### Model Architecture
-Models are stored in `model_training/model/` and use Keras/TensorFlow. The current architecture processes mel-spectrograms to predict drum hit probabilities across multiple drum types simultaneously.
+**Current (Legacy)**: Models are stored in `model_training/model/` and use Keras/TensorFlow CNN architecture that processes mel-spectrograms to predict drum hit probabilities across multiple drum types simultaneously.
+
+**Future (Transformer Refactor)**: The project is being modernized with transformer-based architectures following the comprehensive plan in `TRANSFORMER_REFACTORING_PLAN.md`. The new system will use:
+- Audio Spectrogram Transformer (AST) with patch-based tokenization
+- PyTorch Lightning training framework with mixed precision
+- Support for both local training (M1-Max MacBook Pro) and cloud training (Google Colab)
+- Enhanced temporal modeling and self-attention mechanisms
+- Expected 15-20% improvement in F1-score over CNN baseline
 
 ### File Structure Patterns
 - Training data is organized in batches with naming pattern: `{batch_num}_{mode}_{type}.npy`
@@ -74,6 +92,9 @@ Models are stored in `model_training/model/` and use Keras/TensorFlow. The curre
 
 When working with this codebase:
 - The main pipeline in `main.py` has most processing steps commented out - uncomment as needed
-- Model training uses efficient batch loading via Keras Sequence classes
+- **Legacy**: Model training uses efficient batch loading via Keras Sequence classes
+- **Transformer Refactor**: New training will use PyTorch DataLoaders with patch-based spectrograms
 - Audio fingerprinting integrates with AcousticBrainz and Audd APIs
 - The system is designed to work with both local audio files and YouTube videos
+- **Transformer Development**: Follow the 8-week roadmap in `TRANSFORMER_REFACTORING_PLAN.md` for modernization
+- **Training Environments**: Support for both M1-Max local training and Google Colab cloud training
