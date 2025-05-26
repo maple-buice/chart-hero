@@ -361,8 +361,15 @@ def main():
     if args.quick_test:
         logger.info("Quick test mode enabled - reducing epochs and batch size for fast validation")
         config.num_epochs = 1
-        config.train_batch_size = min(config.train_batch_size, 8)
+        config.train_batch_size = min(config.train_batch_size, 4)  # Even smaller for quick test
         config.val_batch_size = min(config.val_batch_size, 8)
+    
+    # Memory safety: further reduce batch sizes if on MPS (Apple Silicon)
+    if config.device == "mps":
+        logger.info("MPS device detected - applying conservative memory settings")
+        config.train_batch_size = min(config.train_batch_size, 4)  # Very conservative for MPS
+        config.val_batch_size = min(config.val_batch_size, 8)
+        config.num_workers = min(config.num_workers, 2)  # Reduce workers for MPS
     
     # Validate configuration
     validate_config(config)
@@ -374,6 +381,16 @@ def main():
     logger.info(f"Effective batch size: {config.effective_batch_size}")
     
     try:
+        # Add memory monitoring
+        import psutil
+        import gc
+        process = psutil.Process()
+        
+        # Force garbage collection before starting
+        gc.collect()
+        initial_memory = process.memory_info().rss / (1024**3)
+        logger.info(f"Initial memory usage: {initial_memory:.2f} GB")
+        
         # Create data loaders
         logger.info("Creating data loaders...")
         data_loaders = create_data_loaders(
@@ -381,6 +398,10 @@ def main():
             data_dir=config.data_dir,
             audio_dir=config.audio_dir
         )
+        
+        # Check memory after data loader creation
+        memory_after_data = process.memory_info().rss / (1024**3)
+        logger.info(f"Memory after data loader creation: {memory_after_data:.2f} GB")
         
         # Train model
         logger.info("Starting training...")
