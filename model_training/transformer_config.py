@@ -1,0 +1,229 @@
+"""
+Configuration classes for transformer-based drum transcription training.
+Supports both local (M1-Max MacBook Pro) and cloud (Google Colab) environments.
+"""
+
+import torch
+from dataclasses import dataclass
+from typing import Optional, Tuple, Dict, Any
+import os
+
+
+@dataclass
+class BaseConfig:
+    """Base configuration for transformer training."""
+    
+    # Model architecture
+    model_name: str = "audio_spectrogram_transformer"
+    hidden_size: int = 768
+    num_layers: int = 12
+    num_heads: int = 12
+    intermediate_size: int = 3072
+    dropout: float = 0.1
+    
+    # Audio processing
+    sample_rate: int = 22050
+    n_mels: int = 128
+    n_fft: int = 2048
+    hop_length: int = 512
+    max_audio_length: float = 10.0  # seconds
+    
+    # Transformer input
+    patch_size: Tuple[int, int] = (16, 16)  # (time, frequency)
+    max_seq_len: int = 1024
+    
+    # Training
+    num_epochs: int = 100
+    learning_rate: float = 1e-4
+    weight_decay: float = 0.01
+    warmup_steps: int = 1000
+    gradient_clip_val: float = 1.0
+    accumulate_grad_batches: int = 1
+    
+    # Data
+    train_batch_size: int = 32
+    val_batch_size: int = 32
+    num_workers: int = 4
+    pin_memory: bool = True
+    
+    # Drum classification
+    num_drum_classes: int = 9  # kick, snare, hi-hat, crash, ride, high-tom, mid-tom, low-tom, other
+    
+    # Regularization
+    label_smoothing: float = 0.1
+    mixup_alpha: float = 0.2
+    
+    # Checkpointing
+    save_top_k: int = 3
+    monitor: str = "val_f1"
+    mode: str = "max"
+    
+    # Logging
+    log_every_n_steps: int = 50
+    val_check_interval: float = 1.0
+
+
+@dataclass
+class LocalConfig(BaseConfig):
+    """Configuration optimized for M1-Max MacBook Pro (64GB RAM, 1TB storage)."""
+    
+    # Device settings
+    device: str = "mps" if torch.backends.mps.is_available() else "cpu"
+    mixed_precision: bool = True
+    precision: str = "16-mixed" if torch.backends.mps.is_available() else "32"
+    
+    # Memory optimization for 64GB RAM
+    train_batch_size: int = 32
+    val_batch_size: int = 64
+    num_workers: int = 8  # M1-Max has 10 cores
+    pin_memory: bool = False  # Not needed for MPS
+    
+    # Training settings
+    gradient_checkpointing: bool = True
+    accumulate_grad_batches: int = 2
+    
+    # Storage optimization for 1TB SSD
+    cache_dataset: bool = True
+    prefetch_factor: int = 2
+    persistent_workers: bool = True
+    
+    # Local paths
+    data_dir: str = "datasets/"
+    model_dir: str = "model_training/transformer_models/"
+    log_dir: str = "logs/"
+    
+    # Conservative settings for local development
+    max_audio_length: float = 8.0  # Shorter for memory efficiency
+    max_seq_len: int = 768
+    
+    @property
+    def effective_batch_size(self) -> int:
+        return self.train_batch_size * self.accumulate_grad_batches
+
+
+@dataclass
+class CloudConfig(BaseConfig):
+    """Configuration optimized for Google Colab with GPU."""
+    
+    # Device settings
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    mixed_precision: bool = True
+    precision: str = "16-mixed"
+    
+    # GPU optimization
+    train_batch_size: int = 64
+    val_batch_size: int = 128
+    num_workers: int = 4  # Conservative for Colab
+    pin_memory: bool = True
+    
+    # Training settings
+    accumulate_grad_batches: int = 4  # Larger effective batch size
+    gradient_checkpointing: bool = False  # GPU has more memory
+    
+    # Colab-specific paths (will be created if they don't exist)
+    data_dir: str = "datasets/"
+    model_dir: str = "model_training/transformer_models/"
+    log_dir: str = "logs/"
+    
+    # Longer sequences for GPU training
+    max_audio_length: float = 12.0
+    max_seq_len: int = 1536
+    
+    # More aggressive training for cloud resources
+    learning_rate: float = 2e-4
+    warmup_steps: int = 2000
+    
+    @property
+    def effective_batch_size(self) -> int:
+        return self.train_batch_size * self.accumulate_grad_batches
+
+
+def get_config(config_type: str = "local") -> BaseConfig:
+    """Get configuration based on environment type."""
+    
+    if config_type.lower() == "local":
+        return LocalConfig()
+    elif config_type.lower() == "cloud":
+        return CloudConfig()
+    else:
+        raise ValueError(f"Unknown config type: {config_type}. Use 'local' or 'cloud'.")
+
+
+def auto_detect_config() -> BaseConfig:
+    """Automatically detect the best configuration based on available hardware."""
+    
+    # Check if running in Google Colab
+    try:
+        import google.colab
+        return CloudConfig()
+    except ImportError:
+        pass
+    
+    # Check for CUDA
+    if torch.cuda.is_available():
+        return CloudConfig()
+    
+    # Check for Apple Silicon MPS
+    if torch.backends.mps.is_available():
+        return LocalConfig()
+    
+    # Default to CPU local config
+    config = LocalConfig()
+    config.device = "cpu"
+    config.mixed_precision = False
+    config.precision = "32"
+    return config
+
+
+def validate_config(config: BaseConfig) -> None:
+    """Validate configuration parameters."""
+    
+    # Check device availability
+    if config.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA not available but config specifies CUDA device")
+    
+    if config.device == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS not available but config specifies MPS device")
+    
+    # Validate paths exist
+    os.makedirs(config.data_dir, exist_ok=True)
+    os.makedirs(config.model_dir, exist_ok=True)
+    os.makedirs(config.log_dir, exist_ok=True)
+    
+    # Validate audio parameters
+    assert config.sample_rate > 0, "Sample rate must be positive"
+    assert config.max_audio_length > 0, "Max audio length must be positive"
+    assert config.n_mels > 0, "Number of mel bins must be positive"
+    
+    # Validate model parameters
+    assert config.hidden_size > 0, "Hidden size must be positive"
+    assert config.num_layers > 0, "Number of layers must be positive"
+    assert config.num_heads > 0, "Number of heads must be positive"
+    assert config.hidden_size % config.num_heads == 0, "Hidden size must be divisible by num_heads"
+    
+    # Validate training parameters
+    assert config.learning_rate > 0, "Learning rate must be positive"
+    assert 0 <= config.dropout <= 1, "Dropout must be between 0 and 1"
+    assert config.train_batch_size > 0, "Batch size must be positive"
+
+
+if __name__ == "__main__":
+    # Test configuration
+    print("Testing configuration classes...")
+    
+    # Test local config
+    local_config = get_config("local")
+    validate_config(local_config)
+    print(f"Local config: {local_config.device}, batch_size={local_config.train_batch_size}")
+    
+    # Test cloud config
+    cloud_config = get_config("cloud")
+    validate_config(cloud_config)
+    print(f"Cloud config: {cloud_config.device}, batch_size={cloud_config.train_batch_size}")
+    
+    # Test auto-detection
+    auto_config = auto_detect_config()
+    validate_config(auto_config)
+    print(f"Auto-detected config: {auto_config.device}")
+    
+    print("Configuration tests passed!")

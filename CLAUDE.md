@@ -49,13 +49,22 @@ python main.py -p "path/to/audio.wav" -km speed
 python model_training/train_model.py
 ```
 
-**Transformer Training (Future):**
+**Transformer Training (Phase 1 Complete):**
 ```bash
+# Setup transformer environment
+python setup_transformer.py
+
+# Test installation
+python model_training/test_transformer_setup.py
+
 # Local training on M1-Max
 python model_training/train_transformer.py --config local
 
-# Cloud training on Google Colab
+# Cloud training on Google Colab  
 python model_training/train_transformer.py --config cloud
+
+# Auto-detect configuration
+python model_training/train_transformer.py --config auto
 ```
 
 ### Dependencies
@@ -76,12 +85,13 @@ The system maps MIDI drum notes to Clone Hero chart positions using a comprehens
 ### Model Architecture
 **Current (Legacy)**: Models are stored in `model_training/model/` and use Keras/TensorFlow CNN architecture that processes mel-spectrograms to predict drum hit probabilities across multiple drum types simultaneously.
 
-**Future (Transformer Refactor)**: The project is being modernized with transformer-based architectures following the comprehensive plan in `TRANSFORMER_REFACTORING_PLAN.md`. The new system will use:
-- Audio Spectrogram Transformer (AST) with patch-based tokenization
-- PyTorch Lightning training framework with mixed precision
-- Support for both local training (M1-Max MacBook Pro) and cloud training (Google Colab)
-- Enhanced temporal modeling and self-attention mechanisms
-- Expected 15-20% improvement in F1-score over CNN baseline
+**Transformer Implementation (Phase 1 Complete)**: The project has been modernized with transformer-based architectures following the comprehensive plan in `TRANSFORMER_REFACTORING_PLAN.md`. The new system includes:
+- ✅ Audio Spectrogram Transformer (AST) with patch-based tokenization implemented
+- ✅ PyTorch Lightning training framework with mixed precision support
+- ✅ Configuration classes for both local training (M1-Max MacBook Pro) and cloud training (Google Colab)
+- ✅ Enhanced data pipeline with transformer-compatible spectrogram processing
+- ✅ Complete model architecture with 85M+ parameters
+- 🔄 Expected 15-20% improvement in F1-score over CNN baseline (to be validated in Phase 2)
 
 ### File Structure Patterns
 - Training data is organized in batches with naming pattern: `{batch_num}_{mode}_{type}.npy`
