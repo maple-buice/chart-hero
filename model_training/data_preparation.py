@@ -317,10 +317,20 @@ class data_preparation():
                 for note in notes_collection]
     
     # --- Optimization: Helper function for parallel processing of one file pair ---
-    def _process_file_pair(self, row, pad_before, pad_after, fix_length):
+    def _process_file_pair(self, row, pad_before, pad_after, fix_length, memory_limit_gb=None):
         pair_start_time = time.perf_counter()
         midi_file = row['midi_filename']
         audio_file = row['audio_filename']
+        
+        # Add memory monitoring if limit is provided
+        if memory_limit_gb:
+            import psutil
+            process = psutil.Process()
+            mem_before = process.memory_info().rss / (1024**3)
+            if mem_before > memory_limit_gb * 0.8:  # 80% threshold
+                logger.warning(f"Worker memory usage ({mem_before:.1f}GB) approaching limit ({memory_limit_gb:.1f}GB), skipping file {midi_file}")
+                return None
+        
         # logger.debug(f"Processing pair: {midi_file}") # Debug level for per-pair start
 
         if midi_file == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
@@ -351,6 +361,23 @@ class data_preparation():
 
             # --- Optimization: Segmented Audio Loading & Slicing ---
             def optimized_audio_slicing(note_row):
+                # Memory monitoring before processing each note
+                if memory_limit_gb:
+                    import psutil
+                    import gc
+                    current_memory = psutil.Process().memory_info().rss / (1024**3)
+                    if current_memory > memory_limit_gb * 0.9:  # 90% threshold
+                        logger.warning(f"Memory usage ({current_memory:.1f}GB) near limit ({memory_limit_gb:.1f}GB), forcing garbage collection")
+                        gc.collect()
+                        # Re-check after cleanup
+                        current_memory = psutil.Process().memory_info().rss / (1024**3)
+                        if current_memory > memory_limit_gb * 0.95:  # 95% threshold
+                            logger.error(f"Memory usage ({current_memory:.1f}GB) critically high, skipping note processing")
+                            if fix_length is not None:
+                                return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
+                            else:
+                                return np.array([], dtype=np.float32)
+                
                 start_time = note_row['start']
                 end_time = note_row['end']
                 max_len_seconds = audio_duration_samples / sr
@@ -433,7 +460,22 @@ class data_preparation():
 
             # Aggressive memory cleanup before returning
             import gc
+            
+            # Force deletion of large objects
+            del sf_info
+            if 'sliced_wav' in locals():
+                del sliced_wav
+            
+            # Multiple garbage collection passes to ensure cleanup
             gc.collect()
+            gc.collect()
+            
+            # Final memory check
+            if memory_limit_gb:
+                import psutil
+                final_memory = psutil.Process().memory_info().rss / (1024**3)
+                if final_memory > memory_limit_gb * 0.8:
+                    logger.warning(f"Memory usage after processing ({final_memory:.1f}GB) still high")
             
             pair_end_time = time.perf_counter()
             logger.debug(f"Processed pair {midi_file} in {pair_end_time - pair_start_time:.3f} seconds, resulting in {final_notes} notes.")
@@ -469,142 +511,30 @@ class data_preparation():
 
         self.batch_tracking = 0
 
+        # Legacy save_batch function (now handled by _save_batch_sequential)
         def save_batch(df_list, batch_idx):
-            if not df_list:
-                logger.debug(f"Batch {batch_idx} is empty, skipping save.")
-                return
-            
-            # Process batch with immediate memory cleanup
-            logger.debug(f"Saving batch {batch_idx} with {len(df_list)} dataframes")
-            notes_collection_batch = pd.concat(df_list, ignore_index=True)
-            
-            # Clear the input list immediately
-            df_list.clear()
-            
-            # Filter out problematic tracks where start time might exceed audio length (less likely now but good check)
-            problematic_tracks = []
-            for _, r in notes_collection_batch.iterrows():
-                if r.track_id not in self.id_len_dict:
-                     print(f"Warning: track_id {r.track_id} not found in id_len_dict. Skipping duration check for this row.")
-                     continue
-                if r.start > self.id_len_dict[r.track_id]:
-                    problematic_tracks.append(r.track_id)
-            
-            notes_collection_batch = notes_collection_batch[~notes_collection_batch.track_id.isin(problematic_tracks)]
+            # This is kept for backwards compatibility but should not be called
+            self._save_batch_sequential(df_list, batch_idx, dir_path)
+            df_list.clear()  # Clear input list
 
-            if notes_collection_batch.empty:
-                print(f"Batch {batch_idx} became empty after filtering problematic tracks, skipping save.")
-                return
-
-            # Train/Val/Test Split using pandas-native approach
-            train_frac, val_frac = 0.6, 0.2
-            shuffled_batch = notes_collection_batch.sample(frac=1, random_state=42).reset_index(drop=True)
-            
-            n_total = len(shuffled_batch)
-            n_train = int(train_frac * n_total)
-            n_val = int(val_frac * n_total)
-            
-            train_df = shuffled_batch.iloc[:n_train].copy()
-            val_df = shuffled_batch.iloc[n_train:n_train + n_val].copy()
-            test_df = shuffled_batch.iloc[n_train + n_val:].copy()
-
-            # Save with aggressive memory management
-            train_path = os.path.join(dir_path, f"{batch_idx}_train.pkl")
-            val_path = os.path.join(dir_path, f"{batch_idx}_val.pkl") 
-            test_path = os.path.join(dir_path, f"{batch_idx}_test.pkl")
-            
-            train_df.to_pickle(train_path)
-            val_df.to_pickle(val_path)
-            test_df.to_pickle(test_path)
-
-            logger.info(f'Saved batch {batch_idx} data ({len(train_df)} train, {len(val_df)} val, {len(test_df)} test) at {dir_path}')
-            
-            # Aggressive memory cleanup
-            del notes_collection_batch, shuffled_batch, train_df, val_df, test_df
-            import gc
-            gc.collect()
-
-        # Zero-accumulation processing: save each file immediately
-        logger.info(f'Processing {len(self.midi_wav_map)} file pairs sequentially with immediate saving (zero-accumulation mode)...')
+        # Create processing function with memory limit
+        # For sequential processing, use full memory limit; for parallel, divide by cores
+        if memory_limit_gb <= 48:  # Sequential mode (matches the processing decision threshold)
+            per_process_memory_limit = memory_limit_gb
+        else:  # Parallel mode - calculate based on cores that will actually be used
+            n_cores_for_calc = min(os.cpu_count(), 6)  # Match the max cores from prepare_egmd_data.py
+            per_process_memory_limit = memory_limit_gb / n_cores_for_calc
         
-        process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length)
+        process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
         
-        total_valid = 0
-        total_failed = 0
-        
-        # Initialize batch accumulators that write to disk immediately
-        if batching:
-            batch_accumulators = {}
-            results_per_batch = max(1, math.ceil(len(self.midi_wav_map) / num_batches))
-            current_batch_counts = {}
-            
-        # Process files one by one with immediate saving
-        for idx, (_, row) in enumerate(tqdm(self.midi_wav_map.iterrows(), total=len(self.midi_wav_map), desc="Processing files")):
-            
-            # Memory check before processing each file
-            mem_before = check_memory()
-            
-            # Process single file
-            result = process_func(row)
-            
-            if result is not None and not result.empty:
-                total_valid += 1
-                
-                if batching:
-                    # Determine which batch this result belongs to
-                    batch_idx = self.batch_tracking % num_batches
-                    
-                    # Initialize batch accumulator if needed
-                    if batch_idx not in batch_accumulators:
-                        batch_accumulators[batch_idx] = []
-                        current_batch_counts[batch_idx] = 0
-                    
-                    # Add to batch
-                    batch_accumulators[batch_idx].append(result)
-                    current_batch_counts[batch_idx] += len(result)
-                    
-                    # Save batch if it's getting large (save more frequently)
-                    if current_batch_counts[batch_idx] >= 500:  # Much smaller batch size
-                        save_batch(batch_accumulators[batch_idx], batch_idx)
-                        logger.info(f"Saved batch {batch_idx} early ({current_batch_counts[batch_idx]} samples)")
-                        
-                        # Clear this batch accumulator
-                        batch_accumulators[batch_idx] = []
-                        current_batch_counts[batch_idx] = 0
-                        self.batch_tracking += 1
-                        
-                        # Force aggressive cleanup  
-                        import gc
-                        gc.collect()
-                else:
-                    # For non-batching, save immediately to individual files
-                    individual_file = os.path.join(dir_path, f"individual_{idx}.pkl")
-                    result.to_pickle(individual_file)
-                    logger.debug(f"Saved individual result {idx} with {len(result)} samples")
-                    
-                # Cleanup result immediately
-                del result
-            else:
-                total_failed += 1
-            
-            # Aggressive cleanup every file
-            import gc
-            gc.collect()
-            
-            # Memory check and warning
-            if idx % 10 == 0:  # Check every 10 files
-                mem_after = check_memory()
-                if mem_after > mem_before + 0.5:  # If memory grew by 500MB
-                    logger.warning(f"Memory growing: {mem_before:.1f}GB -> {mem_after:.1f}GB on file {idx}")
-        
-        logger.info(f"Total processing results: {total_valid} valid, {total_failed} failed")
-        
-        # Save any remaining batch data
-        if batching:
-            for batch_idx, batch_data in batch_accumulators.items():
-                if batch_data:
-                    save_batch(batch_data, batch_idx)
-                    logger.info(f"Saved final batch {batch_idx} with {current_batch_counts[batch_idx]} samples")
+        # Adaptive processing mode based on memory limits  
+        # Force sequential for most cases since parallel audio processing causes memory explosion in librosa
+        if memory_limit_gb <= 48:  # Conservative mode - parallel only for very high memory (48GB+)
+            logger.info(f'Processing {len(self.midi_wav_map)} file pairs sequentially (low-memory mode)...')
+            total_valid = self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
+        else:  # High-performance mode
+            logger.info(f'Processing {len(self.midi_wav_map)} file pairs with optimized parallel processing (high-performance mode)...')
+            total_valid = self._process_parallel_optimized(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
 
         if total_valid == 0:
              logger.warning("No valid dataframes were generated. Check logs for errors during processing.")
@@ -646,6 +576,264 @@ class data_preparation():
 
         create_set_end_time = time.perf_counter()
         logger.info(f'create_audio_set finished in {create_set_end_time - create_set_start_time:.2f} seconds.')
+    
+    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
+        """Sequential processing for memory-constrained environments"""
+        total_valid = 0
+        total_failed = 0
+        current_batch_data = []
+        batch_sample_count = 0
+        target_samples_per_batch = 200  # Very small batches for memory efficiency
+        
+        for idx, (_, row) in enumerate(tqdm(self.midi_wav_map.iterrows(), total=len(self.midi_wav_map), desc="Processing files sequentially")):
+            # Aggressive memory check before each file
+            mem_before = check_memory()
+            if mem_before > memory_limit_gb * 0.8:  # 80% threshold
+                logger.warning(f"Memory usage ({mem_before:.1f}GB) high before processing file {idx}, forcing cleanup")
+                import gc
+                gc.collect()
+                gc.collect()  # Double collection
+                mem_after_cleanup = check_memory()
+                logger.info(f"Memory after cleanup: {mem_after_cleanup:.1f}GB")
+                
+                # If still too high, skip processing
+                if mem_after_cleanup > memory_limit_gb * 0.9:
+                    logger.error(f"Memory usage still too high ({mem_after_cleanup:.1f}GB), skipping file")
+                    total_failed += 1
+                    continue
+            
+            result = process_func(row)
+            
+            if result is not None and not result.empty:
+                total_valid += 1
+                
+                if batching:
+                    current_batch_data.append(result)
+                    batch_sample_count += len(result)
+                    
+                    # Save when batch reaches target size, but only if we haven't reached max batches
+                    if batch_sample_count >= target_samples_per_batch and self.batch_tracking < num_batches:
+                        # Find next available batch number (no overwriting)
+                        while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
+                            self.batch_tracking += 1
+                        
+                        self._save_batch_sequential(current_batch_data, self.batch_tracking, dir_path)
+                        logger.info(f"Saved batch {self.batch_tracking} ({batch_sample_count} samples)")
+                        
+                        # Reset for next batch
+                        current_batch_data = []
+                        batch_sample_count = 0
+                        self.batch_tracking += 1
+                        
+                        import gc
+                        gc.collect()
+                    elif self.batch_tracking >= num_batches:
+                        # Stop processing once we reach the desired number of batches
+                        logger.info(f"Reached target number of batches ({num_batches}), stopping processing")
+                        break
+                else:
+                    # Save individual files
+                    individual_file = os.path.join(dir_path, f"individual_{idx}.pkl")
+                    result.to_pickle(individual_file)
+                
+                del result
+            else:
+                total_failed += 1
+            
+            # More frequent garbage collection for memory management
+            if idx % 10 == 0:  # Every 10 files instead of 50
+                import gc
+                gc.collect()
+                gc.collect()  # Double collection
+                current_mem = check_memory()
+                logger.debug(f"Memory after processing {idx} files: {current_mem:.1f}GB")
+        
+        # Save remaining data only if we haven't reached the batch limit
+        if batching and current_batch_data and self.batch_tracking < num_batches:
+            while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
+                self.batch_tracking += 1
+            self._save_batch_sequential(current_batch_data, self.batch_tracking, dir_path)
+            logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
+        
+        logger.info(f"Sequential processing complete: {total_valid} valid, {total_failed} failed")
+        return total_valid
+    
+    def _process_parallel_optimized(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
+        """Optimized parallel processing for high-resource environments"""
+        # Calculate optimal cores and chunk size based on memory constraints
+        available_cores = self.n_jobs if self.n_jobs > 0 else os.cpu_count()
+        
+        # Much more aggressive memory-based core limiting
+        # Each audio processing worker can use 10-20GB easily, so be very conservative
+        if memory_limit_gb <= 16:
+            max_cores_by_memory = 1  # Force sequential for low memory
+        elif memory_limit_gb <= 32:
+            max_cores_by_memory = max(1, int(memory_limit_gb / 8))  # 8GB per core minimum
+        else:
+            max_cores_by_memory = max(1, int(memory_limit_gb / 12))  # 12GB per core for safety
+        
+        n_cores = min(available_cores, max_cores_by_memory, 4)  # Cap at 4 cores for memory safety
+        
+        # Divide total memory limit across processes
+        memory_per_process_gb = memory_limit_gb / n_cores
+        logger.info(f"Total memory limit: {memory_limit_gb}GB, using {n_cores} cores = {memory_per_process_gb:.2f}GB per process")
+        
+        # Aggressively scale chunk size based on memory constraints
+        base_chunk_size = max(5, min(50, len(self.midi_wav_map) // (n_cores * 4)))
+        
+        # Much more aggressive memory-based scaling
+        if memory_per_process_gb <= 2:
+            chunk_size = 1  # Process one file at a time
+            logger.warning(f"Very low memory per process ({memory_per_process_gb:.2f}GB), using chunk_size=1")
+        elif memory_per_process_gb <= 4:
+            chunk_size = max(2, base_chunk_size // 8)  # Very small chunks
+            logger.info(f"Low memory per process ({memory_per_process_gb:.2f}GB), using chunk_size={chunk_size}")
+        elif memory_per_process_gb <= 8:
+            chunk_size = max(5, base_chunk_size // 4)  # Small chunks
+            logger.info(f"Medium memory per process ({memory_per_process_gb:.2f}GB), using chunk_size={chunk_size}")
+        else:
+            chunk_size = max(10, base_chunk_size // 2)  # Moderate chunks
+            logger.info(f"Good memory per process ({memory_per_process_gb:.2f}GB), using chunk_size={chunk_size}")
+        
+        # Create per-process memory check function
+        def check_memory_per_process():
+            import psutil
+            process = psutil.Process()
+            mem_gb = process.memory_info().rss / (1024**3)
+            if mem_gb > memory_per_process_gb:
+                logger.warning(f"Process memory usage ({mem_gb:.1f}GB) exceeds per-process limit ({memory_per_process_gb:.2f}GB)")
+            return mem_gb
+        
+        logger.info(f"Using {n_cores} cores with chunk size {chunk_size}")
+        
+        total_valid = 0
+        total_failed = 0
+        batch_data_accumulator = []
+        batch_sample_count = 0
+        
+        # Much more conservative batch sizing based on memory
+        if memory_per_process_gb <= 2:
+            target_samples_per_batch = 100  # Very small batches
+        elif memory_per_process_gb <= 4:
+            target_samples_per_batch = 250  # Small batches
+        elif memory_per_process_gb <= 8:
+            target_samples_per_batch = 500  # Medium batches
+        else:
+            target_samples_per_batch = min(1000, max(500, int(memory_per_process_gb * 50)))  # Larger batches
+        
+        logger.info(f"Target samples per batch: {target_samples_per_batch} (based on {memory_per_process_gb:.2f}GB per process)")
+        
+        # Process in optimized chunks
+        for chunk_start in tqdm(range(0, len(self.midi_wav_map), chunk_size), desc="Processing chunks"):
+            chunk_end = min(chunk_start + chunk_size, len(self.midi_wav_map))
+            chunk_df = self.midi_wav_map.iloc[chunk_start:chunk_end]
+            
+            mem_before = check_memory_per_process()
+            
+            # Parallel processing of chunk
+            with parallel_backend('loky', n_jobs=n_cores):
+                chunk_results = Parallel()(
+                    delayed(process_func)(row)
+                    for _, row in chunk_df.iterrows()
+                )
+            
+            # Process results
+            valid_chunk_results = [df for df in chunk_results if df is not None and not df.empty]
+            chunk_valid = len(valid_chunk_results)
+            chunk_failed = len(chunk_df) - chunk_valid
+            total_valid += chunk_valid
+            total_failed += chunk_failed
+            
+            if batching and valid_chunk_results:
+                batch_data_accumulator.extend(valid_chunk_results)
+                batch_sample_count += sum(len(df) for df in valid_chunk_results)
+                
+                # Save batches when they reach target size, but only if we haven't reached max batches
+                while batch_sample_count >= target_samples_per_batch and self.batch_tracking < num_batches:
+                    # Extract one batch worth of data
+                    current_samples = 0
+                    batch_data = []
+                    remaining_data = []
+                    
+                    for df in batch_data_accumulator:
+                        if current_samples + len(df) <= target_samples_per_batch:
+                            batch_data.append(df)
+                            current_samples += len(df)
+                        else:
+                            remaining_data.append(df)
+                    
+                    if not batch_data:
+                        # If single dataframe is larger than target, save it anyway
+                        batch_data = batch_data_accumulator[:1]
+                        remaining_data = batch_data_accumulator[1:]
+                        current_samples = len(batch_data[0]) if batch_data else 0
+                    
+                    # Find next available batch number
+                    while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
+                        self.batch_tracking += 1
+                    
+                    self._save_batch_sequential(batch_data, self.batch_tracking, dir_path)
+                    logger.info(f"Saved batch {self.batch_tracking} ({current_samples} samples)")
+                    
+                    # Update accumulators
+                    batch_data_accumulator = remaining_data
+                    batch_sample_count -= current_samples
+                    self.batch_tracking += 1
+                    
+                    import gc
+                    gc.collect()
+            
+            # Check if we've reached target number of batches
+            if batching and self.batch_tracking >= num_batches:
+                logger.info(f"Reached target number of batches ({num_batches}), stopping chunk processing")
+                break
+            
+            # Memory cleanup
+            del chunk_results, valid_chunk_results
+            import gc
+            gc.collect()
+            
+            mem_after = check_memory_per_process()
+            logger.debug(f"Chunk {chunk_start//chunk_size + 1}: {chunk_valid} valid, {chunk_failed} failed, memory: {mem_before:.1f}GB -> {mem_after:.1f}GB")
+        
+        # Save remaining data only if we haven't reached the batch limit
+        if batching and batch_data_accumulator and self.batch_tracking < num_batches:
+            while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
+                self.batch_tracking += 1
+            self._save_batch_sequential(batch_data_accumulator, self.batch_tracking, dir_path)
+            logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
+        
+        logger.info(f"Parallel processing complete: {total_valid} valid, {total_failed} failed")
+        return total_valid
+    
+    def _save_batch_sequential(self, df_list, batch_idx, dir_path):
+        """Save batch without modifying the input list"""
+        if not df_list:
+            return
+        
+        notes_collection_batch = pd.concat(df_list, ignore_index=True)
+        
+        # Train/Val/Test Split
+        train_frac, val_frac = 0.6, 0.2
+        shuffled_batch = notes_collection_batch.sample(frac=1, random_state=42).reset_index(drop=True)
+        
+        n_total = len(shuffled_batch)
+        n_train = int(train_frac * n_total)
+        n_val = int(val_frac * n_total)
+        
+        train_df = shuffled_batch.iloc[:n_train].copy()
+        val_df = shuffled_batch.iloc[n_train:n_train + n_val].copy()
+        test_df = shuffled_batch.iloc[n_train + n_val:].copy()
+        
+        # Save files
+        train_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_train.pkl"))
+        val_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_val.pkl"))
+        test_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_test.pkl"))
+        
+        # Cleanup
+        del notes_collection_batch, shuffled_batch, train_df, val_df, test_df
+        import gc
+        gc.collect()
 
     def augment_audio(self, audio_col='audio_wav', aug_col_names=None, aug_param_dict={}, train_only=False):
         aug_start_time = time.perf_counter()

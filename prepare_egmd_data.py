@@ -39,10 +39,12 @@ def main():
                        help='Fixed audio segment length in seconds')
     parser.add_argument('--n-jobs', type=int, default=-1,
                        help='Number of parallel jobs (-1 = all cores)')
-    parser.add_argument('--memory-limit-gb', type=float, default=4.0,
-                       help='Memory limit in GB (default: 4.0)')
+    parser.add_argument('--memory-limit-gb', type=float, default=8.0,
+                       help='Memory limit in GB (default: 8.0)')
     parser.add_argument('--conservative', action='store_true',
                        help='Use ultra-conservative settings for low-memory systems')
+    parser.add_argument('--high-performance', action='store_true',
+                       help='Use high-performance settings for resource-rich systems')
     
     args = parser.parse_args()
     
@@ -69,13 +71,23 @@ def main():
     logger.info(f"Parallel jobs: {args.n_jobs}")
     logger.info(f"Memory limit: {args.memory_limit_gb} GB")
     logger.info(f"Conservative mode: {args.conservative}")
+    logger.info(f"High-performance mode: {args.high_performance}")
     
-    # Apply conservative settings if requested
-    if args.conservative:
+    # Apply mode-specific settings
+    if args.conservative and args.high_performance:
+        logger.error("Cannot use both --conservative and --high-performance modes")
+        sys.exit(1)
+    elif args.conservative:
         args.n_jobs = 1
         args.memory_limit_gb = min(args.memory_limit_gb, 2.0)
         args.num_batches = max(args.num_batches, 200)  # Many more, much smaller batches
         logger.info(f"Applied conservative settings: n_jobs=1, memory_limit=2GB, num_batches={args.num_batches}")
+    elif args.high_performance:
+        import os
+        args.n_jobs = min(args.n_jobs if args.n_jobs > 0 else os.cpu_count(), 16)  # Use many cores but cap for stability
+        args.memory_limit_gb = max(args.memory_limit_gb, 16.0)  # Ensure high memory limit
+        args.num_batches = max(10, args.num_batches // 4)  # Fewer, larger batches for efficiency
+        logger.info(f"Applied high-performance settings: n_jobs={args.n_jobs}, memory_limit={args.memory_limit_gb}GB, num_batches={args.num_batches}")
     
     try:
         # Create data preparation instance
