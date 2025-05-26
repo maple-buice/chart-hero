@@ -51,11 +51,21 @@ class SpectrogramProcessor:
             padding = target_length - audio.shape[-1]
             audio = F.pad(audio, (0, padding))
         
+        # Ensure exactly the target length
+        audio = audio[..., :target_length]
+        
         # Convert to mel spectrogram
         mel_spec = self.mel_transform(audio)
         
         # Convert to log scale
         log_mel_spec = torch.log(mel_spec + 1e-8)
+        
+        # Ensure consistent shape: [channels, freq, time] -> [channels, time, freq]
+        # MelSpectrogram outputs [channels, n_mels, time_frames]
+        # We want [channels, time_frames, n_mels] for consistency
+        if log_mel_spec.shape[1] == self.config.n_mels:
+            # Current shape is [channels, n_mels, time_frames], transpose to [channels, time_frames, n_mels]
+            log_mel_spec = log_mel_spec.transpose(1, 2)
         
         # Normalize to [-1, 1] range
         log_mel_spec = 2 * (log_mel_spec - log_mel_spec.min()) / (log_mel_spec.max() - log_mel_spec.min()) - 1
@@ -79,13 +89,17 @@ class SpectrogramProcessor:
         time_padding = (patch_time - (time_frames % patch_time)) % patch_time
         freq_padding = (patch_freq - (freq_bins % patch_freq)) % patch_freq
         
-        # Pad spectrogram
+        # Pad spectrogram - padding order is (left, right, top, bottom) for last two dims
+        # For tensor [channels, time, freq], we pad freq (last dim) then time (second-to-last)
         if time_padding > 0 or freq_padding > 0:
             spectrogram = F.pad(spectrogram, (0, freq_padding, 0, time_padding))
         
-        # Calculate patch dimensions
-        time_patches = (time_frames + time_padding) // patch_time
-        freq_patches = (freq_bins + freq_padding) // patch_freq
+        # Calculate patch dimensions after padding
+        final_time_frames = time_frames + time_padding
+        final_freq_bins = freq_bins + freq_padding
+        
+        time_patches = final_time_frames // patch_time
+        freq_patches = final_freq_bins // patch_freq
         
         return spectrogram, (time_patches, freq_patches)
 
@@ -191,21 +205,36 @@ class DrumDataset(Dataset):
     
     def _augment_audio(self, audio: torch.Tensor) -> torch.Tensor:
         """Apply audio augmentations for training."""
-        # Time stretching
-        if torch.rand(1) < 0.3:
-            stretch_factor = 0.9 + torch.rand(1).item() * 0.2  # Random between 0.9 and 1.1
-            audio = torchaudio.functional.stretch(audio, stretch_factor, hop_length=256)
+        try:
+            # Time stretching using resample (alternative to stretch which doesn't exist)
+            if torch.rand(1) < 0.3:
+                stretch_factor = 0.9 + torch.rand(1).item() * 0.2  # Random between 0.9 and 1.1
+                # Use resample to simulate time stretching
+                original_sr = self.config.sample_rate
+                stretched_sr = int(original_sr * stretch_factor)
+                if stretched_sr != original_sr:
+                    resampler_stretch = torchaudio.transforms.Resample(original_sr, stretched_sr)
+                    resampler_back = torchaudio.transforms.Resample(stretched_sr, original_sr)
+                    audio = resampler_back(resampler_stretch(audio))
+            
+            # Pitch shifting
+            if torch.rand(1) < 0.3:
+                n_steps = torch.randint(-2, 3, (1,)).item()
+                try:
+                    audio = torchaudio.functional.pitch_shift(audio, self.config.sample_rate, n_steps)
+                except Exception:
+                    # Skip pitch shifting if it fails
+                    pass
+            
+            # Add noise
+            if torch.rand(1) < 0.2:
+                noise_factor = 0.001 + torch.rand(1).item() * 0.009  # Random between 0.001 and 0.01
+                noise = torch.randn_like(audio) * noise_factor
+                audio = audio + noise
         
-        # Pitch shifting
-        if torch.rand(1) < 0.3:
-            n_steps = torch.randint(-2, 3, (1,)).item()
-            audio = torchaudio.functional.pitch_shift(audio, self.config.sample_rate, n_steps)
-        
-        # Add noise
-        if torch.rand(1) < 0.2:
-            noise_factor = 0.001 + torch.rand(1).item() * 0.009  # Random between 0.001 and 0.01
-            noise = torch.randn_like(audio) * noise_factor
-            audio = audio + noise
+        except Exception as e:
+            # If any augmentation fails, return original audio
+            logger.warning(f"Audio augmentation failed: {e}")
         
         return audio
     

@@ -45,6 +45,7 @@ class BaseConfig:
     val_batch_size: int = 32
     num_workers: int = 4
     pin_memory: bool = True
+    persistent_workers: bool = True
     
     # Drum classification
     num_drum_classes: int = 9  # kick, snare, hi-hat, crash, ride, high-tom, mid-tom, low-tom, other
@@ -91,7 +92,6 @@ class LocalConfig(BaseConfig):
     # Storage optimization for 1TB SSD
     cache_dataset: bool = False  # Disable caching to save memory
     prefetch_factor: int = 2
-    persistent_workers: bool = False  # Disable to save memory
     
     # Local paths
     data_dir: str = "datasets/"
