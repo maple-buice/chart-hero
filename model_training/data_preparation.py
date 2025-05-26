@@ -16,9 +16,14 @@ from tqdm.notebook import tqdm
 from model_training.augment_audio import apply_augmentations
 
 import soundfile as sf
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_backend
 import math
 from functools import partial
+import logging
+import time
+
+# Configure logging at the module level
+logger = logging.getLogger(__name__)
 
 def get_number_of_audio_set_batches() -> int:
     return 50
@@ -45,6 +50,8 @@ class data_preparation():
     """
     
     def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1, n_jobs=-1):
+        init_start_time = time.perf_counter()
+        logger.info(f"Initializing data_preparation for dataset: {dataset} at {directory_path} with sample_ratio={sample_ratio}, diff_threshold={diff_threshold}")
         if dataset in ['gmd', 'egmd']:
             self.directory_path = directory_path
             self.dataset_type = dataset
@@ -61,24 +68,35 @@ class data_preparation():
             
             print(f'Filtering out the midi/audio pair that has a duration difference > {diff_threshold} second using soundfile')
 
-            # --- Optimization: Use soundfile and parallel processing for duration check ---
-            def get_wav_duration(filepath):
+            logger.info("Calculating audio durations using soundfile...")
+            duration_calc_start_time = time.perf_counter()
+
+            def get_wav_duration(filepath, base_dir): # Pass base_dir explicitly
                 try:
-                    info = sf.info(os.path.join(self.directory_path, filepath))
+                    info = sf.info(os.path.join(base_dir, filepath))
                     return info.duration
                 except Exception as e:
-                    print(f"Error getting duration for {filepath}: {e}")
-                    return None # Return None or np.nan for problematic files
+                    logger.warning(f"Error getting duration for {filepath}: {e}") # Use warning
+                    return None
 
             # Use joblib for parallel execution
-            durations = Parallel(n_jobs=self.n_jobs)(delayed(get_wav_duration)(f) for f in tqdm(df['audio_filename'], desc="Calculating audio durations"))
+            # Use 'loky' backend for better robustness, especially on macOS
+            with parallel_backend('loky', n_jobs=self.n_jobs):
+                durations = Parallel()(delayed(get_wav_duration)(f, self.directory_path) for f in tqdm(df['audio_filename'], desc="Calculating audio durations"))
+
             df['wav_length'] = durations
+            duration_calc_end_time = time.perf_counter()
+            logger.info(f"Audio duration calculation finished in {duration_calc_end_time - duration_calc_start_time:.2f} seconds.")
+
             df.dropna(subset=['wav_length'], inplace=True) # Drop rows where duration couldn't be read
-            # --- End Optimization ---
+            initial_pairs = len(df)
+            logger.info(f"Found {initial_pairs} pairs before duration difference filtering.")
 
             df['diff'] = np.abs(df['duration'] - df['wav_length'])
             df = df[df['diff'].le(diff_threshold)]
-            
+            final_pairs = len(df)
+            logger.info(f"Filtered pairs by duration difference (>{diff_threshold}s). Kept {final_pairs} pairs (removed {initial_pairs - final_pairs}).")
+
             self.midi_wav_map = df.copy()
             self.notes_collection = pd.DataFrame()
             
@@ -145,6 +163,8 @@ class data_preparation():
             self.id_len_dict = id_len.to_dict()['wav_length']
         else:
             raise NameError('dataset not supported')
+        init_end_time = time.perf_counter()
+        logger.info(f"data_preparation initialization finished in {init_end_time - init_start_time:.2f} seconds.")
 
     # Keep get_length in case it's used elsewhere, but __init__ now uses soundfile
     def get_length(self,x):
@@ -291,21 +311,36 @@ class data_preparation():
     
     # --- Optimization: Helper function for parallel processing of one file pair ---
     def _process_file_pair(self, row, pad_before, pad_after, fix_length):
-        if row['midi_filename'] == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
-            return None # Skip problematic file
+        pair_start_time = time.perf_counter()
+        midi_file = row['midi_filename']
+        audio_file = row['audio_filename']
+        # logger.debug(f"Processing pair: {midi_file}") # Debug level for per-pair start
+
+        if midi_file == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
+             logger.warning(f"Skipping known problematic file: {midi_file}")
+             return None # Skip problematic file
 
         try:
             # MIDI Processing
-            notes_collection = self.notes_extraction(row['midi_filename'])
+            notes_collection = self.notes_extraction(midi_file)
+            if not notes_collection:
+                 logger.warning(f"No notes extracted from MIDI: {midi_file}")
+                 return None
             converted_notes_collection = self.ticks_to_second(notes_collection)
             track_notes = self.merge_note_label(row['track_id'], converted_notes_collection)
 
             if track_notes.empty:
+                logger.warning(f"No notes after merging for MIDI: {midi_file}")
                 return None
 
-            audio_file_path = os.path.join(self.directory_path, row['audio_filename'])
-            sr = sf.info(audio_file_path).samplerate # Get sample rate efficiently
-            audio_duration_samples = sf.info(audio_file_path).frames
+            audio_file_path = os.path.join(self.directory_path, audio_file)
+            try:
+                sf_info = sf.info(audio_file_path)
+                sr = sf_info.samplerate
+                audio_duration_samples = sf_info.frames
+            except Exception as sf_err:
+                 logger.error(f"Soundfile error reading info for {audio_file_path}: {sf_err}")
+                 return None
 
             # --- Optimization: Segmented Audio Loading & Slicing ---
             def optimized_audio_slicing(note_row):
@@ -351,7 +386,7 @@ class data_preparation():
                     )
                 except Exception as load_err:
                      # Corrected f-string syntax
-                     print(f"Error loading segment for {row['audio_filename']} at offset {slice_start_time}, duration {read_duration}: {load_err}")
+                     logger.error(f"Error loading segment for {audio_file} at offset {slice_start_time}, duration {read_duration}: {load_err}")
                      # Ensure proper handling for both fix_length cases
                      if fix_length is not None:
                         return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
@@ -370,42 +405,46 @@ class data_preparation():
                 return sliced_wav
             # --- End Segmented Loading ---
 
+            slicing_start_time = time.perf_counter()
             track_notes['audio_wav'] = track_notes.apply(optimized_audio_slicing, axis=1)
+            slicing_end_time = time.perf_counter()
+            # logger.debug(f"Audio slicing for {audio_file} took {slicing_end_time - slicing_start_time:.3f}s")
+
             track_notes['sampling_rate'] = sr
             # Filter out rows where slicing might have failed or resulted in empty arrays
+            initial_notes = len(track_notes)
             track_notes = track_notes[track_notes['audio_wav'].apply(lambda x: isinstance(x, np.ndarray) and x.size > 0)]
+            final_notes = len(track_notes)
+            if initial_notes != final_notes:
+                 logger.warning(f"Filtered {initial_notes - final_notes} notes with empty audio for {audio_file}")
 
+            if track_notes.empty:
+                 logger.warning(f"Track notes became empty after audio slicing for {midi_file}")
+                 return None
+
+            pair_end_time = time.perf_counter()
+            logger.debug(f"Processed pair {midi_file} in {pair_end_time - pair_start_time:.3f} seconds, resulting in {final_notes} notes.")
             return track_notes
 
         except Exception as e:
-            print(f"Error processing pair {row['midi_filename']} / {row['audio_filename']}: {e}")
-            import traceback
-            traceback.print_exc()
+            # Log error with traceback information
+            logger.error(f"Error processing pair {midi_file} / {audio_file}: {e}", exc_info=True)
             return None
     # --- End Helper Function ---
 
     def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50):
-        """
-        main function to create training/test/eval dataset from dataset
-        
-        :param  pad_before (float):     padding (in seconds) add to the begining of the sliced audio. default 0.02 seconds
-        :param  pad_after (float):      padding (in seconds) add to the end of the sliced audio. default 0.02 seconds
-        :param  fix_length (float):     in seconds, setting this length will force the sound clip to have exact same length in seconds. suggest value is 0.1~0.2
-        :param  batching (bool):        apply batching to avoid memory issues. Suggest to turn this on if processing the full dataset.
-        :param  dir_path (str):         The path to the directory to store .pkl files
-        :param  num_batches (int):      The target number of batches to divide the dataset into.
-        :return None
-        """
+        create_set_start_time = time.perf_counter()
+        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}")
+
         if batching and not dir_path:
+            logger.error('Directory path must be specified for saving pickle files when batching=True')
             raise ValueError('Please specify directory path for saving pickle files when batching=True')
 
         if dir_path and not os.path.exists(dir_path):
+            logger.info(f"Creating output directory: {dir_path}")
             os.makedirs(dir_path)
 
         self.batch_tracking = 0
-        # tqdm.pandas() # Not needed directly here anymore
-
-        # --- Removed old audio_slicing, resampling, check_length functions as logic is moved/optimized ---
 
         def save_batch(df_list, batch_idx):
             if not df_list:
@@ -441,30 +480,37 @@ class data_preparation():
             val_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_val.pkl"))
             test_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_test.pkl"))
 
-            print(f'Saved batch {batch_idx} data at {dir_path}')
+            logger.info(f'Saved batch {batch_idx} data ({len(train_df)} train, {len(val_df)} val, {len(test_df)} test) at {dir_path}')
             # Explicitly delete to free memory
             del notes_collection_batch, train_df, val_df, test_df
 
-        print('Generating Dataset using Parallel Processing')
-
-        # --- Optimization: Parallel Processing Loop ---
+        logger.info(f'Starting parallel processing for {len(self.midi_wav_map)} file pairs using {self.n_jobs} jobs...')
+        parallel_start_time = time.perf_counter()
         process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length)
-        results = Parallel(n_jobs=self.n_jobs, backend='loky')( # 'loky' is often more robust
-            delayed(process_func)(row)
-            for _, row in tqdm(self.midi_wav_map.iterrows(), total=self.midi_wav_map.shape[0], desc="Processing file pairs")
-        )
-        # --- End Parallel Processing Loop ---
 
-        # Filter out None results (from errors or skipped files)
+        # Use 'loky' backend for better robustness
+        with parallel_backend('loky', n_jobs=self.n_jobs):
+            results = Parallel()(
+                delayed(process_func)(row)
+                for _, row in tqdm(self.midi_wav_map.iterrows(), total=self.midi_wav_map.shape[0], desc="Processing file pairs")
+            )
+
+        parallel_end_time = time.perf_counter()
+        logger.info(f"Parallel processing finished in {parallel_end_time - parallel_start_time:.2f} seconds.")
+
         valid_results = [df for df in results if df is not None and not df.empty]
+        num_valid = len(valid_results)
+        num_failed = len(self.midi_wav_map) - num_valid
+        logger.info(f"Generated {num_valid} valid dataframes ({num_failed} pairs failed or were skipped).")
         del results # Free memory
 
         if not valid_results:
-             print("No valid dataframes were generated. Check for errors during processing.")
+             logger.warning("No valid dataframes were generated. Check logs for errors during processing.")
              return
 
         if batching:
-            print(f"Processing {len(valid_results)} results into {num_batches} batches.")
+            logger.info(f"Processing {num_valid} results into ~{num_batches} batches.")
+            batch_save_start_time = time.perf_counter()
             # Calculate approximate number of dataframes per batch
             num_results = len(valid_results)
             results_per_batch = math.ceil(num_results / num_batches)
@@ -479,40 +525,37 @@ class data_preparation():
                     current_batch_list = [] # Reset for next batch
                     import gc
                     gc.collect() # Force garbage collection
+                    logger.debug(f"Saved batch {self.batch_tracking-1}. Current memory usage: ...") # Add memory usage if possible/needed
 
-        else: # No batching (likely for small datasets)
-            print("Concatenating all results (no batching)")
+            batch_save_end_time = time.perf_counter()
+            logger.info(f"Batch saving finished in {batch_save_end_time - batch_save_start_time:.2f} seconds.")
+
+        else: # No batching
+            logger.info("Concatenating all results (no batching)...")
+            concat_start_time = time.perf_counter()
             self.notes_collection = pd.concat(valid_results, ignore_index=True)
-             # Filter out problematic tracks (redundant check, but safe)
+            concat_end_time = time.perf_counter()
+            logger.info(f"Concatenation finished in {concat_end_time - concat_start_time:.2f} seconds.")
+            # Filter out problematic tracks (redundant check, but safe)
             problematic_tracks=[]
             for r in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check"):
                 if r[1].start>self.id_len_dict[r[1].track_id]:
                     problematic_tracks.append(r[1].track_id)
             self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
-            # Save the single file
-            self.notes_collection.to_pickle(os.path.join(dir_path, f"dataset_full.pkl"))
+            save_start_time = time.perf_counter()
+            output_path = os.path.join(dir_path, "dataset_full.pkl")
+            self.notes_collection.to_pickle(output_path)
+            save_end_time = time.perf_counter()
+            logger.info(f"Saved full dataset ({len(self.notes_collection)} notes) to {output_path} in {save_end_time - save_start_time:.2f} seconds.")
 
-        print('Done!')
-        
+        create_set_end_time = time.perf_counter()
+        logger.info(f'create_audio_set finished in {create_set_end_time - create_set_start_time:.2f} seconds.')
+
     def augment_audio(self, audio_col='audio_wav', aug_col_names=None, aug_param_dict={}, train_only=False):
-        """
-        Apply audio augmentations to the training or full portion of a prepared audio dataset. The original dataset is modified to contain columns containing the augmented audio.
-        
-        Parameters:
-            audio_col: String specifying the name of source audio column.
-            aug_col_names: Names to use for augmented columns. Defaults to using the augmentation functions
-                as column names.
-            aug_param_dict: Dictionary of function names and associated parameters. If empty, uses a default set.
-            train_only: Boolean for whether to augment the training set, or the data in its entirety.
-        
-        Example usage:
-            data_container = data_preparation.data_preparation(gmd_path, dataset='gmd', sample_ratio=sample_ratio)
-            # Use default augmentations on training set only
-            data_container.augment_audio(train_only=True)
-            # Use custom augmentations
-            custom_augs = { 'add_white_noise': {'snr_db_range': (10, 25)} }
-            data_container.augment_audio(aug_param_dict=custom_augs, train_only=True)
-        """
+        aug_start_time = time.perf_counter()
+        target_df_name = 'train' if train_only else 'notes_collection'
+        logger.info(f"Starting audio augmentation on '{target_df_name}' (train_only={train_only}). Using params: {aug_param_dict or 'default'}")
+
         if not aug_param_dict:
             # --- Updated Default Augmentation Parameters --- 
             print("Using default augmentation parameters with randomization.")
@@ -530,14 +573,17 @@ class data_preparation():
             
         # The rest of the function remains the same, calling the updated apply_augmentations
         if train_only:
-            if hasattr(self, 'train') and not self.train.empty:
-                print(f"Applying augmentations to training set ({len(self.train)} samples)...")
-                self.train = apply_augmentations(self.train, audio_col, aug_col_names, **aug_param_dict)
-            else:
-                print("Warning: 'train_only' is True, but self.train is not available or empty. No augmentations applied.")
+             if hasattr(self, 'train') and not self.train.empty:
+                 logger.info(f"Applying augmentations to training set ({len(self.train)} samples)...")
+                 self.train = apply_augmentations(self.train, audio_col, aug_col_names, **aug_param_dict)
+             else:
+                 logger.warning("Skipping augmentation: 'train_only' is True, but self.train is not available or empty.")
         else:
-            if not self.notes_collection.empty:
-                print(f"Applying augmentations to entire dataset ({len(self.notes_collection)} samples)...")
-                self.notes_collection = apply_augmentations(self.notes_collection, audio_col, aug_col_names, **aug_param_dict)
-            else:
-                print("Warning: self.notes_collection is empty. No augmentations applied.")
+             if not self.notes_collection.empty:
+                 logger.info(f"Applying augmentations to entire dataset ({len(self.notes_collection)} samples)...")
+                 self.notes_collection = apply_augmentations(self.notes_collection, audio_col, aug_col_names, **aug_param_dict)
+             else:
+                 logger.warning("Skipping augmentation: self.notes_collection is empty.")
+
+        aug_end_time = time.perf_counter()
+        logger.info(f"Audio augmentation finished in {aug_end_time - aug_start_time:.2f} seconds.")

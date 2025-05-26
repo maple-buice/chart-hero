@@ -7,8 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np # Use np consistently
 from numpy import mean, random
 from pedalboard import LowpassFilter, Pedalboard, Reverb
+import logging # Import logging
+import time # Import time
+from audiomentations import Compose, AddGaussianNoise, TimeStretch, PitchShift, Shift
 # Consider using audiomentations for a more robust and efficient pipeline in the future
 # from audiomentations import Compose, AddGaussianNoise, PitchShift, LowPassFilter, TimeStretch
+
+# Configure logging at the module level
+logger = logging.getLogger(__name__)
 
 # --- Helper for Randomization ---
 def _get_random_value(param):
@@ -132,6 +138,9 @@ def apply_augmentations(df, audio_col='audio_wav', aug_col_names=None, **aug_par
         # Assuming 'aug_wn', 'aug_pitch', 'aug_effects' are desired column names
         augmented_df = apply_augmentations(audio_df, aug_col_names=['aug_wn', 'aug_pitch', 'aug_effects'], **aug_params)
     """
+    aug_start_time = time.perf_counter()
+    logger.debug(f"Applying augmentations with parameters: {aug_param_dict}")
+
     aug_df = df.copy(deep=True)
     
     applied_funcs = []
@@ -157,7 +166,10 @@ def apply_augmentations(df, audio_col='audio_wav', aug_col_names=None, **aug_par
             aug_df.rename(columns=col_dict, inplace=True)
         else:
             print("Warning: Length of aug_col_names does not match the number of successfully applied augmentations. Skipping rename.")
-            
+    
+    aug_end_time = time.perf_counter()
+    logger.debug(f"Augmentation applied in {aug_end_time - aug_start_time:.4f} seconds.")
+    
     return aug_df
 
 
