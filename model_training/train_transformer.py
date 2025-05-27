@@ -5,6 +5,13 @@ Supports both local (M1-Max) and cloud (Google Colab) training environments.
 
 import os
 import sys
+import logging
+import gc
+import argparse
+import torch
+from typing import Optional
+import wandb # Moved import to top level
+from datetime import datetime # Added for logging timestamp
 
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,13 +24,8 @@ from pytorch_lightning.loggers import WandbLogger
 import torchmetrics
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-import argparse
-import logging
-import wandb
 from pathlib import Path
 import numpy as np
-import gc
-from typing import Dict, Any, Optional
 import subprocess
 
 from model_training.transformer_config import get_config, auto_detect_config, validate_config
@@ -35,6 +37,32 @@ from utils.file_utils import get_labeled_audio_set_dir
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def setup_experiment_logging(log_dir: str, experiment_tag: str):
+    """Sets up file-based logging for a single experiment."""
+    exp_log_file = Path(log_dir) / f"training_{experiment_tag}.log"
+    exp_log_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Remove existing handlers if any, to avoid duplicate logging
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        
+    # Add new file handler for this specific experiment
+    file_handler = logging.FileHandler(exp_log_file)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    
+    # Configure root logger - this will affect all loggers including Pytorch Lightning's
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[
+            file_handler,
+            logging.StreamHandler(sys.stdout) # Also log to console
+        ]
+    )
+    logger.info(f"Experiment-specific logging configured at: {exp_log_file}")
 
 
 def optimize_memory(force_gc: bool = True, aggressive: bool = False):
@@ -131,6 +159,15 @@ class DrumTranscriptionModule(pl.LightningModule):
         
         # Calculate loss
         loss = self.criterion(logits, labels)
+
+        # Check for NaN loss
+        if torch.isnan(loss):
+            logger.error("Loss is NaN. Stopping training.")
+            logger.error(f"Spectrograms - min: {torch.min(spectrograms)}, max: {torch.max(spectrograms)}, mean: {torch.mean(spectrograms)}, has_nan: {torch.isnan(spectrograms).any()}, has_inf: {torch.isinf(spectrograms).any()}")
+            logger.error(f"Labels - min: {torch.min(labels)}, max: {torch.max(labels)}, mean: {torch.mean(labels)}, has_nan: {torch.isnan(labels).any()}, has_inf: {torch.isinf(labels).any()}")
+            logger.error(f"Logits - min: {torch.min(logits)}, max: {torch.max(logits)}, mean: {torch.mean(logits)}, has_nan: {torch.isnan(logits).any()}, has_inf: {torch.isinf(logits).any()}")
+            logger.error(f"Loss: {loss.item()}")
+            raise ValueError("Loss became NaN during training")
         
         # Apply label smoothing manually if needed
         if self.config.label_smoothing > 0:
@@ -147,6 +184,39 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train_f1', self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_acc', self.train_acc, on_step=False, on_epoch=True)
+
+        # DEBUG: Check for NaN loss and log details
+        if torch.isnan(loss):
+            print(f"NaN loss detected in training_step! Batch Index: {batch_idx}")
+            # Print hyperparams that might be relevant from self.config
+            relevant_hyperparams = {
+                "learning_rate": self.config.learning_rate,
+                "batch_size": self.config.train_batch_size,
+                "hidden_size": self.config.hidden_size,
+                "num_layers": self.config.num_layers,
+                "label_smoothing": self.config.label_smoothing,
+                "device": self.config.device,
+                "is_quick_test": getattr(self.config, 'is_quick_test', 'N/A')
+            }
+            print(f"Relevant Hyperparameters: {relevant_hyperparams}")
+            print("Spectrogram stats:")
+            print(f"  Shape: {spectrograms.shape}, Min: {spectrograms.min().item()}, Max: {spectrograms.max().item()}, Mean: {spectrograms.mean().item()}, Has NaN: {torch.isnan(spectrograms).any().item()}, Has Inf: {torch.isinf(spectrograms).any().item()}")
+            print("Labels stats:")
+            print(f"  Shape: {labels.shape}, Min: {labels.min().item()}, Max: {labels.max().item()}, Mean: {labels.mean().item()}, Has NaN: {torch.isnan(labels).any().item()}, Has Inf: {torch.isinf(labels).any().item()}")
+            print("Logits stats:")
+            print(f"  Shape: {logits.shape}, Min: {logits.min().item()}, Max: {logits.max().item()}, Mean: {logits.mean().item()}, Has NaN: {torch.isnan(logits).any().item()}, Has Inf: {torch.isinf(logits).any().item()}")
+            
+            # Optionally save tensors for offline analysis
+            # from pathlib import Path
+            # log_dir = Path(self.config.log_dir)
+            # log_dir.mkdir(parents=True, exist_ok=True)
+            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # torch.save(spectrograms, log_dir / f"nan_spectrograms_batch{batch_idx}_{timestamp}.pt")
+            # torch.save(labels, log_dir / f"nan_labels_batch{batch_idx}_{timestamp}.pt")
+            # torch.save(logits, log_dir / f"nan_logits_batch{batch_idx}_{timestamp}.pt")
+            # print(f"Saved tensors to {log_dir}")
+
+            raise ValueError(f"NaN loss encountered during training_step at batch_idx {batch_idx}")
         
         return loss
     
@@ -167,6 +237,34 @@ class DrumTranscriptionModule(pl.LightningModule):
         
         # Calculate loss
         loss = self.criterion(logits, labels)
+
+        # DEBUG: Check for NaN loss and log details
+        if torch.isnan(loss):
+            logger.error(f"NaN loss encountered during validation_step at batch_idx {batch_idx}")
+            logger.error("--- Spectrogram Stats ---")
+            logger.error(f"  Shape: {spectrograms.shape}")
+            logger.error(f"  Min: {torch.min(spectrograms)}, Max: {torch.max(spectrograms)}, Mean: {torch.mean(spectrograms)}, Std: {torch.std(spectrograms)}")
+            logger.error(f"  Has NaN: {torch.isnan(spectrograms).any()}, Has Inf: {torch.isinf(spectrograms).any()}")
+            logger.error("--- Labels Stats ---")
+            logger.error(f"  Shape: {labels.shape}")
+            logger.error(f"  Min: {torch.min(labels)}, Max: {torch.max(labels)}, Mean: {torch.mean(labels.float())}, Std: {torch.std(labels.float())}") # Cast to float for mean/std
+            logger.error(f"  Has NaN: {torch.isnan(labels).any()}, Has Inf: {torch.isinf(labels).any()}")
+            logger.error("--- Logits Stats ---")
+            logger.error(f"  Shape: {logits.shape}")
+            logger.error(f"  Min: {torch.min(logits)}, Max: {torch.max(logits)}, Mean: {torch.mean(logits)}, Std: {torch.std(logits)}")
+            logger.error(f"  Has NaN: {torch.isnan(logits).any()}, Has Inf: {torch.isinf(logits).any()}")
+            logger.error(f"--- Loss ---: {loss}")
+            # Optionally, save tensors for offline analysis
+            # log_dir = Path(self.config.log_dir) / "nan_debug"
+            # log_dir.mkdir(parents=True, exist_ok=True)
+            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # torch.save(spectrograms, log_dir / f"val_nan_spectrograms_batch{batch_idx}_{timestamp}.pt")
+            # torch.save(labels, log_dir / f"val_nan_labels_batch{batch_idx}_{timestamp}.pt")
+            # torch.save(logits, log_dir / f"val_nan_logits_batch{batch_idx}_{timestamp}.pt")
+            # logger.info(f"Saved validation tensors to {log_dir}")
+            # We might not want to raise an error here to allow other validation batches to run,
+            # but for debugging, it can be useful.
+            # raise ValueError(f"NaN loss encountered during validation_step at batch_idx {batch_idx}")
         
         # Calculate metrics
         preds = torch.sigmoid(logits) > 0.5
@@ -336,19 +434,23 @@ def setup_callbacks(config):
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
     
-    return callbacks
+    return callbacks, checkpoint_callback
 
 
-def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb: bool = True):
+def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb: bool = True, experiment_tag: Optional[str] = None):
     """Set up W&B logger or None if disabled."""
     if not use_wandb:
         logger.info("WandB logging disabled")
         return None
     
+    run_name = f"drum-transformer-{config.device}"
+    if experiment_tag:
+        run_name += f"-{experiment_tag}"
+        
     try:
         wandb_logger = WandbLogger(
             project=project_name,
-            name=f"drum-transformer-{config.device}",
+            name=run_name,
             log_model=True,
             save_dir=config.log_dir
         )
@@ -359,227 +461,138 @@ def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb
         return None
 
 
-def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = None, use_wandb: bool = False):
-    """Main training function."""
-    
-    # Create model
+def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = None, use_wandb: bool = False, experiment_tag: Optional[str] = None):
+    """Trains the model using PyTorch Lightning."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"Starting training with config: {config}")
+
     model = DrumTranscriptionModule(config)
+
+    wandb_logger_instance = None
+    if use_wandb:
+        # wandb is already imported globally
+        wandb_logger_instance = setup_logger(config, use_wandb=True, experiment_tag=experiment_tag)
+        if wandb_logger_instance:
+            try:
+                wandb_logger_instance.watch(model, log='all')
+            except Exception as e:
+                logger.error(f"Failed to watch model with WandB: {e}")
     
-    # Set up callbacks and logger
-    callbacks = setup_callbacks(config)
-    wandb_logger = setup_logger(config, use_wandb=use_wandb)
+    callbacks, checkpoint_callback = setup_callbacks(config) 
+
+    # Unpack data loaders correctly if it's a tuple
+    if isinstance(data_loaders, tuple) and len(data_loaders) == 3:
+        train_loader, val_loader, test_loader = data_loaders
+    elif isinstance(data_loaders, dict) and all(k in data_loaders for k in ['train', 'val', 'test']):
+        train_loader, val_loader, test_loader = data_loaders['train'], data_loaders['val'], data_loaders['test']
+    else:
+        raise TypeError("data_loaders must be a 3-element tuple or a dict with 'train', 'val', 'test' keys")
     
-    # Create trainer - explicitly set accelerator for MPS
     trainer = pl.Trainer(
+        logger=wandb_logger_instance,
+        callbacks=callbacks,
         max_epochs=config.num_epochs,
-        devices=1,
-        accelerator='mps' if config.device == 'mps' and torch.backends.mps.is_available() else 'auto',
+        accelerator=config.device,
+        devices=1 if config.device != 'cpu' else 'auto',
         precision=config.precision,
         gradient_clip_val=config.gradient_clip_val,
         accumulate_grad_batches=config.accumulate_grad_batches,
-        log_every_n_steps=config.log_every_n_steps,
-        val_check_interval=config.val_check_interval,
-        callbacks=callbacks,
-        logger=wandb_logger,
-        enable_checkpointing=True,
+        deterministic=config.deterministic_training,
         enable_progress_bar=True,
         enable_model_summary=True,
+        limit_train_batches=5 if hasattr(config, 'is_quick_test') and config.is_quick_test else None,
+        limit_val_batches=2 if hasattr(config, 'is_quick_test') and config.is_quick_test else None
     )
     
-    # Train model
-    train_loader, val_loader, test_loader = data_loaders
+    logger.info("Starting model training...")
+    try:
+        trainer.fit(
+            model, 
+            train_dataloaders=train_loader,
+            val_dataloaders=val_loader,
+            ckpt_path=resume_from_checkpoint
+        )
+    except Exception as e:
+        logger.error(f"Error during trainer.fit: {e}")
+        if use_wandb and wandb_logger_instance:
+            logger.info("Attempting to finish wandb run after error in fit.")
+            wandb_logger_instance.finish() # Use the logger instance to finish
+        raise 
+
+    if not (hasattr(config, 'is_quick_test') and config.is_quick_test):
+        logger.info("Starting model testing...")
+        try:
+            trainer.test(model, dataloaders=test_loader, ckpt_path='best') 
+        except Exception as e:
+            logger.error(f"Error during trainer.test: {e}")
+            # Depending on desired behavior, you might want to finish wandb here too
+            # if use_wandb and wandb_logger_instance:
+            #     logger.info("Attempting to finish wandb run after error in test.")
+            #     wandb_logger_instance.finish()
+            # Not re-raising here by default, as training might have been successful
+    else:
+        logger.info("Skipping testing phase for quick test.")
     
-    trainer.fit(
-        model,
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader,
-        ckpt_path=resume_from_checkpoint
-    )
-    
-    # Test model
-    if test_loader is not None:
-        trainer.test(model, dataloaders=test_loader, ckpt_path='best')
-    
+    # Finish wandb run if it was started and hasn't been finished due to an error
+    if use_wandb and wandb_logger_instance:
+        # Check if the run is still active before finishing.
+        if wandb.run is not None: 
+             logger.info("Finishing wandb run.")
+             try:
+                 # Log the best model path using the global wandb object
+                 if checkpoint_callback.best_model_path:
+                     wandb.log({"best_model_path": checkpoint_callback.best_model_path})
+                 wandb_logger_instance.finalize("success") # Explicitly finalize
+             except Exception as e:
+                 logger.error(f"Error logging best_model_path or finalizing wandb run: {e}")
+             finally:
+                 # Ensure wandb.finish() is called if the logger's finish doesn't handle it or if an error occurs before.
+                 # However, PTL's logger.finalize() should handle this.
+                 pass # logger.finalize should be sufficient
+        else:
+            logger.info("Wandb run already finished or was not started properly.")
+
+    # Return the trained model and trainer instance
     return model, trainer
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train transformer for drum transcription')
-    parser.add_argument('--config', type=str, default='auto', 
-                       choices=['local', 'cloud', 'auto'],
-                       help='Configuration type')
-    parser.add_argument('--data-dir', type=str, default=None,
-                       help='Directory containing training data')
-    parser.add_argument('--audio-dir', type=str, default=None,
-                       help='Directory containing audio files')
-    parser.add_argument('--resume', type=str, default=None,
-                       help='Path to checkpoint to resume from')
-    parser.add_argument('--project-name', type=str, default='chart-hero-transformer',
-                       help='W&B project name')
-    parser.add_argument('--use-wandb', action='store_true',
-                       help='Enable W&B logging (disabled by default)')
-    parser.add_argument('--quick-test', action='store_true',
-                       help='Run a quick test with minimal epochs for validation')
-    parser.add_argument('--monitor-gpu', action='store_true',
-                       help='Enable detailed GPU monitoring during training (logs to logs/gpu_monitoring.csv)')
-    parser.add_argument('--debug', action='store_true',
-                       help='Enable debug output for troubleshooting')
-    parser.add_argument('--batch-size', type=int, default=None,
-                       help='Override the train batch size')
-    parser.add_argument('--hidden-size', type=int, default=None,
-                       help='Override the model hidden size')
-    
+    parser = argparse.ArgumentParser(description="Train a transformer model for drum transcription.")
+    parser.add_argument("--config", type=str, default="auto", choices=["local", "cloud", "auto"], help="Configuration profile to use (local, cloud, or auto-detect).")
+    parser.add_argument("--use-wandb", action="store_true", help="Enable WandB logging.")
+    parser.add_argument("--quick-test", action="store_true", help="Run a quick test with minimal data and epochs.")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode (e.g., anomaly detection).")
+    parser.add_argument("--experiment-tag", type=str, default=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}", help="A unique tag for this experiment run.")
+
     args = parser.parse_args()
-    
-    # Get configuration
-    if args.config == 'auto':
-        config = auto_detect_config()
-    else:
-        config = get_config(args.config)
-    
-    # Override data directories if provided
-    if args.data_dir:
-        config.data_dir = args.data_dir
-    if args.audio_dir:
-        config.audio_dir = args.audio_dir
-    else:
-        # Default to the labeled audio set directory
-        config.audio_dir = str(Path(get_labeled_audio_set_dir()).parent)
-    
-    # Apply quick test modifications if requested
-    if args.quick_test:
-        logger.info("Quick test mode enabled - reducing epochs and batch size for fast validation")
-        config.num_epochs = 1
-        # Ensure quick test batch sizes are not smaller than MPS conservative defaults if on MPS
-        if config.device == "mps":
-            config.train_batch_size = min(config.train_batch_size, 4) 
-            config.val_batch_size = min(config.val_batch_size, 8)
-        else:
-            config.train_batch_size = min(config.train_batch_size, 4)
-            config.val_batch_size = min(config.val_batch_size, 8)
 
-    # Memory safety: further reduce batch sizes if on MPS (Apple Silicon)
-    # This section is now less critical if LocalConfig defaults are conservative,
-    # but kept for safety if other configs are used or batch_size arg is high.
-    if config.device == "mps":
-        logger.info("MPS device detected - applying conservative memory settings")
-        if not args.batch_size:  # Only apply if batch size wasn't manually specified
-            config.train_batch_size = min(config.train_batch_size, 4)
-            config.val_batch_size = min(config.val_batch_size, 8)
-        config.num_workers = min(config.num_workers, 2)  # Reduce workers for MPS
-    
-    # Apply batch size and hidden size overrides if provided
-    if args.batch_size:
-        config.train_batch_size = args.batch_size
-        config.val_batch_size = args.batch_size * 2  # Double for validation
-        logger.info(f"Batch size overridden to {args.batch_size}")
-        
-    if args.hidden_size:
-        config.hidden_size = args.hidden_size
-        # Adjust other model parameters to maintain proportions
-        config.num_heads = max(2, args.hidden_size // 64)  # 1 head per 64 hidden units
-        config.intermediate_size = args.hidden_size * 4  # Standard ratio
-        logger.info(f"Model size overridden to hidden_size={args.hidden_size}, heads={config.num_heads}")
-    
-    # Validate configuration
-    validate_config(config)
-    
-    logger.info(f"Using {config.__class__.__name__} configuration")
-    logger.info(f"Device: {config.device}")
-    logger.info(f"Precision: {config.precision}")
-    logger.info(f"Batch size: {config.train_batch_size}")
-    logger.info(f"Effective batch size: {config.effective_batch_size}")
-    
-    try:
-        # Add memory monitoring
-        import psutil
-        process = psutil.Process()
-        
-        # GPU monitoring setup
-        gpu_monitor_process = None
-        if args.monitor_gpu:
-            if config.device == "mps":
-                try:
-                    # Using the consolidated monitor_mps.py script
-                    monitor_script_path = Path(__file__).parent.parent / "monitor_mps.py"
-                    log_file_path = Path(config.log_dir) / "gpu_monitoring.csv"
-                    # Ensure logs directory exists
-                    os.makedirs(config.log_dir, exist_ok=True)
-                    
-                    # Command to run the monitoring script
-                    # Ensure python3 is used, adjust if your env uses 'python'
-                    cmd = [
-                        "python3", str(monitor_script_path),
-                        "--pid", str(os.getpid()),
-                        "--log-file", str(log_file_path),
-                        "--interval", "5" # Log every 5 seconds, adjust as needed
-                    ]
-                    
-                    # Start the monitoring script as a background process
-                    gpu_monitor_process = subprocess.Popen(cmd)
-                    logger.info(f"Started GPU monitoring. Logging to {log_file_path}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to start GPU monitoring: {e}")
-            else:
-                logger.info("GPU monitoring is currently configured for MPS devices only.")
-
-        # Force garbage collection before starting
-        optimize_memory(force_gc=True)
-        initial_memory = process.memory_info().rss / (1024**3)
-        logger.info(f"Initial memory usage: {initial_memory:.2f} GB")
-        
-        # Create data loaders
-        logger.info("Creating data loaders...")
-        data_loaders = create_data_loaders(
-            config=config,
-            data_dir=config.data_dir,
-            audio_dir=config.audio_dir
-        )
-        
-        # Check memory after data loader creation
-        memory_after_data = process.memory_info().rss / (1024**3)
-        logger.info(f"Memory after data loader creation: {memory_after_data:.2f} GB")
-        
-        # Train model
-        logger.info("Starting training...")
-        model, trainer = train_model(
-            config=config,
-            data_loaders=data_loaders,
-            resume_from_checkpoint=args.resume,
-            use_wandb=args.use_wandb
-        )
-        
-        logger.info("Training completed successfully!")
-        
-        # Save final model
-        final_model_path = Path(config.model_dir) / "final_model.ckpt"
-        trainer.save_checkpoint(final_model_path)
-        logger.info(f"Final model saved to {final_model_path}")
-        
-    except Exception as e:
-        logger.error(f"Training failed: {e}")
-        raise
-    
-    finally:
-        # Clean up W&B if it was used
-        if args.use_wandb:
-            wandb.finish()
-        
-        # Terminate GPU monitoring process if it was started
-        if gpu_monitor_process:
+    if args.use_wandb:
+        # Check if WANDB_API_KEY is set, if not, prompt for login
+        if not os.getenv('WANDB_API_KEY'):
+            logger.warning("WANDB_API_KEY not found in environment. Attempting wandb.login().")
             try:
-                gpu_monitor_process.terminate()
-                gpu_monitor_process.wait(timeout=5) # Wait for graceful termination
-                logger.info("GPU monitoring process terminated.")
-            except subprocess.TimeoutExpired:
-                gpu_monitor_process.kill() # Force kill if terminate times out
-                logger.warning("GPU monitoring process force-killed.")
+                wandb.login()
             except Exception as e:
-                logger.error(f"Error terminating GPU monitoring process: {e}")
+                logger.error(f"wandb.login() failed. Please set WANDB_API_KEY or login manually. Error: {e}")
+                # Optionally, you could disable wandb here or exit
+                # args.use_wandb = False 
 
-if __name__ == "__main__":
-    # Add subprocess import if not already present at the top of the file
-    # This is a placeholder, ensure 'import subprocess' is at the top of train_transformer.py
-    import subprocess 
-    main()
+    config = get_config(args.config)
+    config = auto_detect_config(config) # Auto-detect if needed
+
+    # --- Setup Experiment Specific Logging ---
+    # Ensure log_dir exists in config, default if not
+    if not hasattr(config, 'log_dir') or not config.log_dir:
+        # Assuming TRAIN_SCRIPT_PATH is defined globally or accessible
+        # If TRAIN_SCRIPT_PATH is Path(__file__).parent / "train_transformer.py"
+        # then CHART_HERO_BASE_DIR would be Path(__file__).parent.parent
+        chart_hero_base_dir = Path(__file__).resolve().parent.parent 
+        config.log_dir = str(chart_hero_base_dir / "logs")
+        Path(config.log_dir).mkdir(parents=True, exist_ok=True)
+        
+    setup_experiment_logging(config.log_dir, args.experiment_tag)
+    # --- End Experiment Specific Logging Setup ---
+
+
+    # Override config with CLI arguments if provided
+    # ...existing code...

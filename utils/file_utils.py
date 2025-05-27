@@ -39,7 +39,7 @@ def get_training_data_dir() -> str:
         return get_dir(os.getcwd(), dir_name, False)
     except:
         try:
-            return get_dir(Path.parent(os.getcwd()), dir_name, False)
+            return get_dir(Path(os.getcwd()).parent, dir_name, False)
         except:
             raise FileNotFoundError(f'Unable to locate directory \'{dir_name}\' in ' +
                                     f'working directory: \'{os.getcwd()}\' or its parent')
@@ -51,7 +51,7 @@ def get_model_training_dir() -> str:
         return get_dir(os.getcwd(), dir_name, False)
     except:
         try:
-            return get_dir(Path.parent(os.getcwd()), dir_name, False)
+            return get_dir(Path(os.getcwd()).parent, dir_name, False)
         except:
             raise FileNotFoundError(f'Unable to locate directory \'{dir_name}\' in ' +
                                     f'working directory: \'{os.getcwd()}\' or its parent.\n' +
