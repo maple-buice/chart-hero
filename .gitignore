@@ -187,5 +187,7 @@ cython_debug/
 # macOS
 .DS_Store
 lightning_logs/
+
 logs/
 models/
+wandb/

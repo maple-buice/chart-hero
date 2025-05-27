@@ -48,10 +48,9 @@ def run_experiment(params: dict, use_wandb: bool, quick_test: bool, monitor_gpu:
         "--experiment-tag", experiment_tag
     ]
 
-    # Always pass --quick-test to train_transformer.py to ensure each experiment is short.
-    # The quick_test flag passed to this run_experiment function (from main's args.quick_test)
-    # now primarily controls whether 1 or all combinations are run by run_experiments.py.
-    cmd.append("--quick-test")
+    # Pass --quick-test to train_transformer.py only if the quick_test flag for this function is True.
+    if quick_test:
+        cmd.append("--quick-test")
 
     if use_wandb:
         cmd.append("--use-wandb")
@@ -163,7 +162,9 @@ def main():
         # The quick_test flag for run_experiment (and thus train_transformer.py) is now always True
         # to ensure individual experiments are short.
         # args.quick_test (now run_only_first_combination) controls if we run 1 or all combinations.
-        result = run_experiment(params, args.use_wandb, True, args.monitor_gpu)
+        # Pass args.quick_test (from run_experiments.py CLI) to the quick_test parameter of run_experiment.
+        # This determines if train_transformer.py itself runs in quick_test mode.
+        result = run_experiment(params, args.use_wandb, args.quick_test, args.monitor_gpu)
         results_summary.append(result)
         logger.info(f"--- Finished Experiment {experiment_count}/{total_experiments} ---")
 

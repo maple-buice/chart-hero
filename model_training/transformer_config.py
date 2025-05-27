@@ -118,6 +118,28 @@ class LocalConfig(BaseConfig):
 
 
 @dataclass
+class OvernightConfig(LocalConfig): # Inherits from LocalConfig for MPS settings
+    """Configuration optimized for overnight training on local MPS."""
+    num_epochs: int = 200  # Example: Increased epochs for overnight run
+    # Override any other LocalConfig settings as needed for overnight runs
+    # For example, you might want to ensure quick_test specific settings are off
+    # or adjust learning rate schedule, or ensure full dataset is used.
+    # These would typically be handled by the config itself rather than CLI flags for an 'overnight' profile.
+
+    # Ensure paths are appropriate if not overridden by CLI in train_transformer.py
+    # data_dir, audio_dir, log_dir, model_dir will be inherited from LocalConfig
+    # or overridden by train_transformer.py if CLI args are provided.
+
+    # Example: ensure no quick_test limits are applied from a base class if any existed
+    # This is more for illustration, as train_transformer.py handles --quick-test CLI
+    # limit_train_batches: Optional[float] = None 
+    # limit_val_batches: Optional[float] = None
+
+    # You might want a specific model_dir suffix for overnight runs if not using experiment_tag for the main folder
+    # model_dir: str = "models/local_transformer_models/overnight/"
+
+
+@dataclass
 class CloudConfig(BaseConfig):
     """Configuration optimized for Google Colab with GPU."""
     
@@ -157,12 +179,15 @@ class CloudConfig(BaseConfig):
 def get_config(config_type: str = "local") -> BaseConfig:
     """Get configuration based on environment type."""
     
-    if config_type.lower() == "local":
+    config_type_lower = config_type.lower()
+    if config_type_lower == "local":
         return LocalConfig()
-    elif config_type.lower() == "cloud":
+    elif config_type_lower == "cloud":
         return CloudConfig()
+    elif config_type_lower == "overnight_default": # Added new config type
+        return OvernightConfig()
     else:
-        raise ValueError(f"Unknown config type: {config_type}. Use 'local' or 'cloud'.")
+        raise ValueError(f"Unknown config type: {config_type}. Use 'local', 'cloud', or 'overnight_default'.")
 
 
 def auto_detect_config() -> BaseConfig:
@@ -235,7 +260,7 @@ if __name__ == "__main__":
     # Test local config
     local_config = get_config("local")
     # Ensure audio_dir is correctly set for local_config before validation
-    local_config.audio_dir = "datasets/processed/"
+    local_config.audio_dir = "datasets/processed/" # This might need to be more robust or handled by config itself
     validate_config(local_config)
     print(f"Local config: {local_config.device}, batch_size={local_config.train_batch_size}, audio_dir={local_config.audio_dir}")
     
@@ -243,6 +268,12 @@ if __name__ == "__main__":
     cloud_config = get_config("cloud")
     validate_config(cloud_config)
     print(f"Cloud config: {cloud_config.device}, batch_size={cloud_config.train_batch_size}")
+
+    # Test overnight config
+    overnight_config = get_config("overnight_default")
+    overnight_config.audio_dir = "datasets/processed/" # Example, ensure paths are valid for testing
+    validate_config(overnight_config)
+    print(f"Overnight config: {overnight_config.device}, epochs={overnight_config.num_epochs}, audio_dir={overnight_config.audio_dir}")
     
     # Test auto-detection
     auto_config = auto_detect_config()
