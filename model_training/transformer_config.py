@@ -70,8 +70,8 @@ class LocalConfig(BaseConfig):
     
     # Device settings
     device: str = "mps" if torch.backends.mps.is_available() else "cpu"
-    mixed_precision: bool = True
-    precision: str = "16-mixed" if torch.backends.mps.is_available() else "32"
+    mixed_precision: bool = False # MPS has limited mixed precision support
+    precision: str = "32"  # MPS doesn't fully support mixed precision yet in PyTorch Lightning
     
     # Smaller model for memory efficiency
     hidden_size: int = 384  # Reduced from 768
@@ -79,11 +79,11 @@ class LocalConfig(BaseConfig):
     num_heads: int = 6      # Reduced from 12
     intermediate_size: int = 1536  # Reduced from 3072
     
-    # Memory optimization for 64GB RAM - further reduced
-    train_batch_size: int = 4   # Further reduced from 8
-    val_batch_size: int = 8     # Further reduced from 16
-    num_workers: int = 2        # Reduced from 4
-    pin_memory: bool = False    # Not needed for MPS
+    # Memory optimization for 64GB RAM with MPS GPU
+    train_batch_size: int = 4   # Conservative default for MPS
+    val_batch_size: int = 8    # Conservative default for MPS
+    num_workers: int = 2        # Reduced for MPS stability
+    pin_memory: bool = False    # Disabled since not supported on MPS
     
     # Training settings
     gradient_checkpointing: bool = True

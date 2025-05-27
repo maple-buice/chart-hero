@@ -22,7 +22,9 @@ import logging
 import wandb
 from pathlib import Path
 import numpy as np
+import gc
 from typing import Dict, Any, Optional
+import subprocess
 
 from model_training.transformer_config import get_config, auto_detect_config, validate_config
 from model_training.transformer_model import create_model
@@ -33,6 +35,40 @@ from utils.file_utils import get_labeled_audio_set_dir
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def optimize_memory(force_gc: bool = True, aggressive: bool = False):
+    """
+    Optimize memory usage by clearing cache and optionally force garbage collection.
+    
+    Args:
+        force_gc: Whether to force garbage collection
+        aggressive: Whether to use more aggressive memory optimization
+    """
+    # First run GC to clean up any unused Python objects
+    if force_gc:
+        gc.collect(generation=2)  # Force full collection
+    
+    if torch.backends.mps.is_available():
+        # Clear MPS cache
+        torch.mps.empty_cache()
+        
+        # Collect again after cache clear
+        if force_gc:
+            gc.collect(generation=2)
+    
+    if aggressive and torch.backends.mps.is_available():
+        # More aggressive memory optimization for MPS
+        try:
+            # Multiple rounds of creating and deleting tensors to trigger memory cleanup
+            for size in [500, 1000, 1500]:
+                temp = torch.ones(1, size, size, device='mps')
+                del temp
+                torch.mps.empty_cache()
+                gc.collect(generation=2)
+        except Exception as e:
+            print(f"Memory optimization warning: {e}")
+            pass
 
 
 class DrumTranscriptionModule(pl.LightningModule):
@@ -47,18 +83,21 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.model = create_model(config)
         
         # Loss function with label smoothing
+        device_type = 'mps' if torch.backends.mps.is_available() and config.device == 'mps' else 'cpu'
+        pos_weights = torch.ones(config.num_drum_classes, device=device_type) * 2.0
         self.criterion = nn.BCEWithLogitsLoss(
-            pos_weight=torch.ones(config.num_drum_classes) * 2.0  # Weight positive examples more
+            pos_weight=pos_weights  # Weight positive examples more
         )
         
-        # Metrics
-        self.train_f1 = torchmetrics.F1Score(task='multilabel', num_labels=config.num_drum_classes)
-        self.val_f1 = torchmetrics.F1Score(task='multilabel', num_labels=config.num_drum_classes)
-        self.test_f1 = torchmetrics.F1Score(task='multilabel', num_labels=config.num_drum_classes)
+        # Metrics - ensure they're on the correct device
+        device_type = 'mps' if torch.backends.mps.is_available() and config.device == 'mps' else 'cpu'
+        self.train_f1 = torchmetrics.F1Score(task='multilabel', num_labels=config.num_drum_classes).to(device_type)
+        self.val_f1 = torchmetrics.F1Score(task='multilabel', num_labels=config.num_drum_classes).to(device_type)
+        self.test_f1 = torchmetrics.F1Score(task='multilabel', num_labels=config.num_drum_classes).to(device_type)
         
-        self.train_acc = torchmetrics.Accuracy(task='multilabel', num_labels=config.num_drum_classes)
-        self.val_acc = torchmetrics.Accuracy(task='multilabel', num_labels=config.num_drum_classes)
-        self.test_acc = torchmetrics.Accuracy(task='multilabel', num_labels=config.num_drum_classes)
+        self.train_acc = torchmetrics.Accuracy(task='multilabel', num_labels=config.num_drum_classes).to(device_type)
+        self.val_acc = torchmetrics.Accuracy(task='multilabel', num_labels=config.num_drum_classes).to(device_type)
+        self.test_acc = torchmetrics.Accuracy(task='multilabel', num_labels=config.num_drum_classes).to(device_type)
         
         # Store outputs for epoch-end processing
         self.validation_step_outputs = []
@@ -70,6 +109,21 @@ class DrumTranscriptionModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         spectrograms = batch['spectrogram']
         labels = batch['labels']
+        
+        # Ensure data is on the correct device
+        device = self.device
+        if spectrograms.device != device:
+            spectrograms = spectrograms.to(device)
+        if labels.device != device:
+            labels = labels.to(device)
+        
+        # Periodically optimize memory every 20 batches
+        if batch_idx % 20 == 0 and torch.backends.mps.is_available():
+            optimize_memory(aggressive=(batch_idx % 100 == 0))
+            
+            # Log memory stats if using MPS
+            if hasattr(torch.mps, 'current_allocated_memory'):
+                self.log('gpu_mem_allocated', torch.mps.current_allocated_memory() / (1024**3), on_step=True)
         
         # Forward pass
         outputs = self.model(spectrograms)
@@ -99,6 +153,13 @@ class DrumTranscriptionModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         spectrograms = batch['spectrogram']
         labels = batch['labels']
+        
+        # Ensure data is on the correct device
+        device = self.device
+        if spectrograms.device != device:
+            spectrograms = spectrograms.to(device)
+        if labels.device != device:
+            labels = labels.to(device)
         
         # Forward pass
         outputs = self.model(spectrograms)
@@ -130,6 +191,13 @@ class DrumTranscriptionModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         spectrograms = batch['spectrogram']
         labels = batch['labels']
+        
+        # Ensure data is on the correct device
+        device = self.device
+        if spectrograms.device != device:
+            spectrograms = spectrograms.to(device)
+        if labels.device != device:
+            labels = labels.to(device)
         
         # Forward pass
         outputs = self.model(spectrograms)
@@ -171,7 +239,16 @@ class DrumTranscriptionModule(pl.LightningModule):
                 )
                 self.log(f'val_f1_class_{i}', class_f1)
         
+        # Clear memory
         self.validation_step_outputs.clear()
+        optimize_memory()
+        
+    def on_train_epoch_end(self):
+        # Call parent method if it exists
+        super().on_train_epoch_end() if hasattr(super(), "on_train_epoch_end") else None
+        
+        # Free up memory
+        optimize_memory()
     
     def on_test_epoch_end(self):
         # Calculate per-class metrics
@@ -186,15 +263,19 @@ class DrumTranscriptionModule(pl.LightningModule):
                 )
                 self.log(f'test_f1_class_{i}', class_f1)
         
+        # Clear memory
         self.test_step_outputs.clear()
+        optimize_memory()
     
     def configure_optimizers(self):
-        # Use AdamW optimizer
+        # Use AdamW optimizer with MPS-optimized parameters
         optimizer = AdamW(
             self.parameters(),
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
-            betas=(0.9, 0.95)
+            betas=(0.9, 0.999),  # Standard betas
+            eps=1e-8,  # More stable epsilon value
+            foreach=True  # Enable more efficient parameter updates
         )
         
         # Learning rate scheduler
@@ -288,11 +369,11 @@ def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = No
     callbacks = setup_callbacks(config)
     wandb_logger = setup_logger(config, use_wandb=use_wandb)
     
-    # Create trainer
+    # Create trainer - explicitly set accelerator for MPS
     trainer = pl.Trainer(
         max_epochs=config.num_epochs,
         devices=1,
-        accelerator='auto',
+        accelerator='mps' if config.device == 'mps' and torch.backends.mps.is_available() else 'auto',
         precision=config.precision,
         gradient_clip_val=config.gradient_clip_val,
         accumulate_grad_batches=config.accumulate_grad_batches,
@@ -339,6 +420,14 @@ def main():
                        help='Enable W&B logging (disabled by default)')
     parser.add_argument('--quick-test', action='store_true',
                        help='Run a quick test with minimal epochs for validation')
+    parser.add_argument('--monitor-gpu', action='store_true',
+                       help='Enable detailed GPU monitoring during training (logs to logs/gpu_monitoring.csv)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable debug output for troubleshooting')
+    parser.add_argument('--batch-size', type=int, default=None,
+                       help='Override the train batch size')
+    parser.add_argument('--hidden-size', type=int, default=None,
+                       help='Override the model hidden size')
     
     args = parser.parse_args()
     
@@ -361,15 +450,36 @@ def main():
     if args.quick_test:
         logger.info("Quick test mode enabled - reducing epochs and batch size for fast validation")
         config.num_epochs = 1
-        config.train_batch_size = min(config.train_batch_size, 4)  # Even smaller for quick test
-        config.val_batch_size = min(config.val_batch_size, 8)
-    
+        # Ensure quick test batch sizes are not smaller than MPS conservative defaults if on MPS
+        if config.device == "mps":
+            config.train_batch_size = min(config.train_batch_size, 4) 
+            config.val_batch_size = min(config.val_batch_size, 8)
+        else:
+            config.train_batch_size = min(config.train_batch_size, 4)
+            config.val_batch_size = min(config.val_batch_size, 8)
+
     # Memory safety: further reduce batch sizes if on MPS (Apple Silicon)
+    # This section is now less critical if LocalConfig defaults are conservative,
+    # but kept for safety if other configs are used or batch_size arg is high.
     if config.device == "mps":
         logger.info("MPS device detected - applying conservative memory settings")
-        config.train_batch_size = min(config.train_batch_size, 4)  # Very conservative for MPS
-        config.val_batch_size = min(config.val_batch_size, 8)
+        if not args.batch_size:  # Only apply if batch size wasn't manually specified
+            config.train_batch_size = min(config.train_batch_size, 4)
+            config.val_batch_size = min(config.val_batch_size, 8)
         config.num_workers = min(config.num_workers, 2)  # Reduce workers for MPS
+    
+    # Apply batch size and hidden size overrides if provided
+    if args.batch_size:
+        config.train_batch_size = args.batch_size
+        config.val_batch_size = args.batch_size * 2  # Double for validation
+        logger.info(f"Batch size overridden to {args.batch_size}")
+        
+    if args.hidden_size:
+        config.hidden_size = args.hidden_size
+        # Adjust other model parameters to maintain proportions
+        config.num_heads = max(2, args.hidden_size // 64)  # 1 head per 64 hidden units
+        config.intermediate_size = args.hidden_size * 4  # Standard ratio
+        logger.info(f"Model size overridden to hidden_size={args.hidden_size}, heads={config.num_heads}")
     
     # Validate configuration
     validate_config(config)
@@ -383,11 +493,39 @@ def main():
     try:
         # Add memory monitoring
         import psutil
-        import gc
         process = psutil.Process()
         
+        # GPU monitoring setup
+        gpu_monitor_process = None
+        if args.monitor_gpu:
+            if config.device == "mps":
+                try:
+                    # Using the consolidated monitor_mps.py script
+                    monitor_script_path = Path(__file__).parent.parent / "monitor_mps.py"
+                    log_file_path = Path(config.log_dir) / "gpu_monitoring.csv"
+                    # Ensure logs directory exists
+                    os.makedirs(config.log_dir, exist_ok=True)
+                    
+                    # Command to run the monitoring script
+                    # Ensure python3 is used, adjust if your env uses 'python'
+                    cmd = [
+                        "python3", str(monitor_script_path),
+                        "--pid", str(os.getpid()),
+                        "--log-file", str(log_file_path),
+                        "--interval", "5" # Log every 5 seconds, adjust as needed
+                    ]
+                    
+                    # Start the monitoring script as a background process
+                    gpu_monitor_process = subprocess.Popen(cmd)
+                    logger.info(f"Started GPU monitoring. Logging to {log_file_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to start GPU monitoring: {e}")
+            else:
+                logger.info("GPU monitoring is currently configured for MPS devices only.")
+
         # Force garbage collection before starting
-        gc.collect()
+        optimize_memory(force_gc=True)
         initial_memory = process.memory_info().rss / (1024**3)
         logger.info(f"Initial memory usage: {initial_memory:.2f} GB")
         
@@ -427,7 +565,21 @@ def main():
         # Clean up W&B if it was used
         if args.use_wandb:
             wandb.finish()
-
+        
+        # Terminate GPU monitoring process if it was started
+        if gpu_monitor_process:
+            try:
+                gpu_monitor_process.terminate()
+                gpu_monitor_process.wait(timeout=5) # Wait for graceful termination
+                logger.info("GPU monitoring process terminated.")
+            except subprocess.TimeoutExpired:
+                gpu_monitor_process.kill() # Force kill if terminate times out
+                logger.warning("GPU monitoring process force-killed.")
+            except Exception as e:
+                logger.error(f"Error terminating GPU monitoring process: {e}")
 
 if __name__ == "__main__":
+    # Add subprocess import if not already present at the top of the file
+    # This is a placeholder, ensure 'import subprocess' is at the top of train_transformer.py
+    import subprocess 
     main()
