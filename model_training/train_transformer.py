@@ -45,9 +45,9 @@ def setup_experiment_logging(log_dir: str, experiment_tag: str):
     exp_log_file.parent.mkdir(parents=True, exist_ok=True)
     
     # Remove existing handlers if any, to avoid duplicate logging
-    root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
+    current_logger = logging.getLogger() # Use a more specific variable name
+    for handler in current_logger.handlers[:]:
+        current_logger.removeHandler(handler)
         
     # Add new file handler for this specific experiment
     file_handler = logging.FileHandler(exp_log_file)
@@ -55,6 +55,7 @@ def setup_experiment_logging(log_dir: str, experiment_tag: str):
     file_handler.setFormatter(formatter)
     
     # Configure root logger - this will affect all loggers including Pytorch Lightning's
+    # Use logging.getLogger() to get the root logger for basicConfig
     logging.basicConfig(
         level=logging.INFO,
         handlers=[
@@ -62,6 +63,7 @@ def setup_experiment_logging(log_dir: str, experiment_tag: str):
             logging.StreamHandler(sys.stdout) # Also log to console
         ]
     )
+    # Use the module-level logger for this specific message
     logger.info(f"Experiment-specific logging configured at: {exp_log_file}")
 
 
@@ -409,8 +411,12 @@ def setup_callbacks(config):
     callbacks = []
     
     # Model checkpointing
+    # Ensure model_dir is an absolute path
+    model_save_dir = Path(config.model_dir).resolve()
+    model_save_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+
     checkpoint_callback = ModelCheckpoint(
-        dirpath=config.model_dir,
+        dirpath=str(model_save_dir), # Use resolved and stringified path
         filename='drum-transformer-{epoch:02d}-{val_f1:.3f}',
         monitor=config.monitor,
         mode=config.mode,
@@ -424,9 +430,9 @@ def setup_callbacks(config):
     early_stop_callback = EarlyStopping(
         monitor=config.monitor,
         mode=config.mode,
-        patience=10,
+        patience=10, # Consider making this configurable
         verbose=True,
-        min_delta=0.001
+        min_delta=0.001 # Consider making this configurable
     )
     callbacks.append(early_stop_callback)
     
@@ -434,7 +440,7 @@ def setup_callbacks(config):
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
     
-    return callbacks, checkpoint_callback
+    return callbacks # Fix: return the callbacks list
 
 
 def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb: bool = True, experiment_tag: Optional[str] = None):
@@ -463,34 +469,31 @@ def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb
 
 def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = None, use_wandb: bool = False, experiment_tag: Optional[str] = None):
     """Trains the model using PyTorch Lightning."""
-    logger = logging.getLogger(__name__)
+    # logger = logging.getLogger(__name__) # logger is already defined at module level
     logger.info(f"Starting training with config: {config}")
 
     model = DrumTranscriptionModule(config)
 
     wandb_logger_instance = None
     if use_wandb:
-        # wandb is already imported globally
-        wandb_logger_instance = setup_logger(config, use_wandb=True, experiment_tag=experiment_tag)
-        if wandb_logger_instance:
-            try:
-                wandb_logger_instance.watch(model, log='all')
-            except Exception as e:
-                logger.error(f"Failed to watch model with WandB: {e}")
+        wandb_logger_instance = setup_logger(config, use_wandb=True, experiment_tag=experiment_tag) # Corrected call
     
-    callbacks, checkpoint_callback = setup_callbacks(config) 
+    # Call setup_callbacks and unpack correctly
+    callbacks_list = setup_callbacks(config) 
 
     # Unpack data loaders correctly if it's a tuple
     if isinstance(data_loaders, tuple) and len(data_loaders) == 3:
         train_loader, val_loader, test_loader = data_loaders
     elif isinstance(data_loaders, dict) and all(k in data_loaders for k in ['train', 'val', 'test']):
-        train_loader, val_loader, test_loader = data_loaders['train'], data_loaders['val'], data_loaders['test']
+        train_loader = data_loaders['train']
+        val_loader = data_loaders['val']
+        test_loader = data_loaders['test']
     else:
-        raise TypeError("data_loaders must be a 3-element tuple or a dict with 'train', 'val', 'test' keys")
+        raise ValueError("data_loaders must be a 3-element tuple (train, val, test) or a dict with 'train', 'val', 'test' keys.")
     
     trainer = pl.Trainer(
         logger=wandb_logger_instance,
-        callbacks=callbacks,
+        callbacks=callbacks_list, # Use the list of callbacks
         max_epochs=config.num_epochs,
         accelerator=config.device,
         devices=1 if config.device != 'cpu' else 'auto',
@@ -506,51 +509,30 @@ def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = No
     
     logger.info("Starting model training...")
     try:
-        trainer.fit(
-            model, 
-            train_dataloaders=train_loader,
-            val_dataloaders=val_loader,
-            ckpt_path=resume_from_checkpoint
-        )
+        if resume_from_checkpoint:
+            logger.info(f"Resuming training from checkpoint: {resume_from_checkpoint}")
+            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=resume_from_checkpoint)
+        else:
+            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     except Exception as e:
-        logger.error(f"Error during trainer.fit: {e}")
-        if use_wandb and wandb_logger_instance:
-            logger.info("Attempting to finish wandb run after error in fit.")
-            wandb_logger_instance.finish() # Use the logger instance to finish
-        raise 
+         logger.exception(f"Error during training: {e}")
+         if use_wandb and wandb_logger_instance and wandb_logger_instance.experiment:
+             wandb.finish(exit_code=1) # Ensure W&B run is marked as failed
+         raise # Re-raise the exception
 
     if not (hasattr(config, 'is_quick_test') and config.is_quick_test):
-        logger.info("Starting model testing...")
-        try:
-            trainer.test(model, dataloaders=test_loader, ckpt_path='best') 
-        except Exception as e:
-            logger.error(f"Error during trainer.test: {e}")
-            # Depending on desired behavior, you might want to finish wandb here too
-            # if use_wandb and wandb_logger_instance:
-            #     logger.info("Attempting to finish wandb run after error in test.")
-            #     wandb_logger_instance.finish()
-            # Not re-raising here by default, as training might have been successful
+        if test_loader:
+            logger.info("Starting model testing...")
+            trainer.test(model, dataloaders=test_loader)
+        else:
+            logger.info("No test_loader provided, skipping testing phase.")
     else:
-        logger.info("Skipping testing phase for quick test.")
+        logger.info("Quick test mode: Skipping final testing phase.")
     
     # Finish wandb run if it was started and hasn't been finished due to an error
-    if use_wandb and wandb_logger_instance:
-        # Check if the run is still active before finishing.
-        if wandb.run is not None: 
-             logger.info("Finishing wandb run.")
-             try:
-                 # Log the best model path using the global wandb object
-                 if checkpoint_callback.best_model_path:
-                     wandb.log({"best_model_path": checkpoint_callback.best_model_path})
-                 wandb_logger_instance.finalize("success") # Explicitly finalize
-             except Exception as e:
-                 logger.error(f"Error logging best_model_path or finalizing wandb run: {e}")
-             finally:
-                 # Ensure wandb.finish() is called if the logger's finish doesn't handle it or if an error occurs before.
-                 # However, PTL's logger.finalize() should handle this.
-                 pass # logger.finalize should be sufficient
-        else:
-            logger.info("Wandb run already finished or was not started properly.")
+    if use_wandb and wandb_logger_instance and wandb_logger_instance.experiment: # Check if experiment exists
+        if wandb.run: # Check if a run is active
+             wandb.finish()
 
     # Return the trained model and trainer instance
     return model, trainer
@@ -558,41 +540,125 @@ def train_model(config, data_loaders, resume_from_checkpoint: Optional[str] = No
 
 def main():
     parser = argparse.ArgumentParser(description="Train a transformer model for drum transcription.")
-    parser.add_argument("--config", type=str, default="auto", choices=["local", "cloud", "auto"], help="Configuration profile to use (local, cloud, or auto-detect).")
+    parser.add_argument("--config", type=str, default="auto", help="Configuration profile to use (e.g., local, cloud, overnight_default, or auto-detect).")
     parser.add_argument("--use-wandb", action="store_true", help="Enable WandB logging.")
     parser.add_argument("--quick-test", action="store_true", help="Run a quick test with minimal data and epochs.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (e.g., anomaly detection).")
     parser.add_argument("--experiment-tag", type=str, default=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}", help="A unique tag for this experiment run.")
+    parser.add_argument("--data-dir", type=str, default=None, help="Path to processed data directory (overrides config).")
+    parser.add_argument("--audio-dir", type=str, default=None, help="Path to audio directory (overrides config).")
+    parser.add_argument("--monitor-gpu", action="store_true", help="Flag to indicate GPU monitoring is active (for internal script awareness).")
+    # Add other CLI arguments as needed, e.g., for specific hyperparameters
 
     args = parser.parse_args()
 
     if args.use_wandb:
-        # Check if WANDB_API_KEY is set, if not, prompt for login
-        if not os.getenv('WANDB_API_KEY'):
-            logger.warning("WANDB_API_KEY not found in environment. Attempting wandb.login().")
-            try:
-                wandb.login()
-            except Exception as e:
-                logger.error(f"wandb.login() failed. Please set WANDB_API_KEY or login manually. Error: {e}")
-                # Optionally, you could disable wandb here or exit
-                # args.use_wandb = False 
+        # Potentially initialize wandb here or ensure it's configured if setup_logger doesn't do it fully
+        logger.info("WandB logging enabled via CLI.")
 
-    config = get_config(args.config)
-    config = auto_detect_config(config) # Auto-detect if needed
+    # Load base configuration
+    config_profile_name = args.config
+    if config_profile_name.lower() == "auto":
+        logger.info("Configuration profile set to 'auto'. Auto-detecting configuration...")
+        config = auto_detect_config() # Call without arguments
+    else:
+        logger.info(f"Loading configuration profile: {config_profile_name}")
+        config = get_config(config_profile_name)
+    
+    # --- Apply CLI overrides to the loaded config ---
+    if args.data_dir:
+        config.data_dir = str(Path(args.data_dir).resolve())
+        logger.info(f"Overriding data_dir with CLI argument: {config.data_dir}")
+    elif not hasattr(config, 'data_dir') or not config.data_dir:
+        # Fallback if not in config and not in CLI
+        config.data_dir = str(Path(__file__).resolve().parent.parent / "datasets" / "processed")
+        logger.warning(f"data_dir not found in config or CLI, using default: {config.data_dir}")
+
+    if args.audio_dir:
+        config.audio_dir = str(Path(args.audio_dir).resolve())
+        logger.info(f"Overriding audio_dir with CLI argument: {config.audio_dir}")
+    elif not hasattr(config, 'audio_dir') or not config.audio_dir:
+        # Fallback if not in config and not in CLI
+        config.audio_dir = str(Path(__file__).resolve().parent.parent / "datasets" / "e-gmd-v1.0.0")
+        logger.warning(f"audio_dir not found in config or CLI, using default: {config.audio_dir}")
+        
+    # Ensure model_dir is set, default if not. This is used by ModelCheckpoint.
+    if not hasattr(config, 'model_dir') or not config.model_dir:
+        config.model_dir = str(Path(__file__).resolve().parent / "transformer_models" / args.experiment_tag)
+        logger.warning(f"model_dir not specified in config, defaulting to: {config.model_dir}")
+    else:
+        # Append experiment_tag to user-defined model_dir for better organization
+        config.model_dir = str(Path(config.model_dir).resolve() / args.experiment_tag)
+        logger.info(f"Model checkpoints will be saved in: {config.model_dir}")
+    Path(config.model_dir).mkdir(parents=True, exist_ok=True)
+
+
+    if args.monitor_gpu:
+        config.monitor_gpu = True 
+        logger.info("GPU monitoring flag set via CLI. train_transformer.py is aware.")
+    
+    if args.quick_test:
+        config.is_quick_test = True
+        # Apply quick test specific settings if not already in the 'quick_test' config profile
+        config.num_epochs = getattr(config, 'quick_test_epochs', 1) # Example: use 1 epoch for quick test
+        config.batch_size = getattr(config, 'quick_test_batch_size', min(config.batch_size if hasattr(config, 'batch_size') and config.batch_size else 4, 4))
+        logger.info(f"Quick test mode enabled via CLI. Epochs: {config.num_epochs}, Batch Size: {config.batch_size}")
+
+    if args.debug:
+        config.is_debug_mode = True 
+        if torch.backends.mps.is_available(): # Check if MPS is available
+            # os.environ['PYTORCH_DEBUG'] = '1' # Example debug flag
+            pass # Placeholder for MPS specific debug settings
+        logger.info("Debug mode enabled via CLI.")
+    # --- End CLI overrides ---
 
     # --- Setup Experiment Specific Logging ---
-    # Ensure log_dir exists in config, default if not
     if not hasattr(config, 'log_dir') or not config.log_dir:
-        # Assuming TRAIN_SCRIPT_PATH is defined globally or accessible
-        # If TRAIN_SCRIPT_PATH is Path(__file__).parent / "train_transformer.py"
-        # then CHART_HERO_BASE_DIR would be Path(__file__).parent.parent
-        chart_hero_base_dir = Path(__file__).resolve().parent.parent 
-        config.log_dir = str(chart_hero_base_dir / "logs")
-        Path(config.log_dir).mkdir(parents=True, exist_ok=True)
-        
+        config.log_dir = str(Path(__file__).resolve().parent.parent / "logs")
+        logger.info(f"Log directory not specified in config, defaulting to: {config.log_dir}")
+    else:
+        config.log_dir = str(Path(config.log_dir).resolve())
+    
     setup_experiment_logging(config.log_dir, args.experiment_tag)
     # --- End Experiment Specific Logging Setup ---
 
+    # Validate the final configuration
+    if not hasattr(config, 'data_dir') or not Path(config.data_dir).exists():
+        logger.error(f"Data directory does not exist: {getattr(config, 'data_dir', 'Not Set')}")
+        sys.exit(1)
+    # Add more validation as needed (e.g., for audio_dir)
+    validate_config(config) # Assuming this function exists and is comprehensive
 
-    # Override config with CLI arguments if provided
-    # ...existing code...
+    logger.info(f"Final configuration for run {args.experiment_tag}: {config.__dict__ if hasattr(config, '__dict__') else config}")
+
+    # Create data loaders
+    logger.info("Creating data loaders...")
+    # data_loaders = create_data_loaders(config)
+    data_loaders = create_data_loaders(config, config.data_dir, config.audio_dir)
+
+
+    # Setup Callbacks
+    callbacks_list = setup_callbacks(config) 
+
+    # --- Train the model ---
+    logger.info("Starting model training...")
+    trained_model, trainer_instance = train_model(
+        config, 
+        data_loaders, 
+        resume_from_checkpoint=None, # No resume logic in this version
+        use_wandb=args.use_wandb, 
+        experiment_tag=args.experiment_tag
+    )
+    logger.info(f"Training finished for experiment: {args.experiment_tag}")
+
+    # --- Optionally test the model ---
+    if not (hasattr(config, 'is_quick_test') and config.is_quick_test):
+        logger.info("Starting model testing...")
+        trainer_instance.test(dataloaders=data_loaders['test'])
+    else:
+        logger.info("Quick test mode active, skipping model testing.")
+
+if __name__ == "__main__":
+    # Ensure project root is in sys.path if this script is run directly
+    # This is already handled at the top of the file, but good to be mindful
+    main()

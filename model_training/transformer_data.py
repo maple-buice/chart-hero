@@ -58,8 +58,9 @@ class SpectrogramProcessor:
         mel_spec = self.mel_transform(audio)
         
         # Convert to log scale
-        log_mel_spec = torch.log(mel_spec + 1e-8)
-        
+        # log_mel_spec = torch.log(mel_spec + 1e-8) # Original
+        log_mel_spec = torch.log(torch.clamp(mel_spec, min=1e-8)) # Clamp to avoid log(0)
+
         # Ensure consistent shape: [channels, freq, time] -> [channels, time, freq]
         # MelSpectrogram outputs [channels, n_mels, time_frames]
         # We want [channels, time_frames, n_mels] for consistency
@@ -68,7 +69,18 @@ class SpectrogramProcessor:
             log_mel_spec = log_mel_spec.transpose(1, 2)
         
         # Normalize to [-1, 1] range
-        log_mel_spec = 2 * (log_mel_spec - log_mel_spec.min()) / (log_mel_spec.max() - log_mel_spec.min()) - 1
+        # log_mel_spec = 2 * (log_mel_spec - log_mel_spec.min()) / (log_mel_spec.max() - log_mel_spec.min()) - 1 # Original
+        min_val = log_mel_spec.min()
+        max_val = log_mel_spec.max()
+        if (max_val - min_val) > 1e-8: # Avoid division by zero if all values are the same
+            log_mel_spec = 2 * (log_mel_spec - min_val) / (max_val - min_val) - 1
+        else:
+            log_mel_spec = torch.zeros_like(log_mel_spec) # Set to zero if range is too small
+
+        # Check for NaNs or Infs after normalization and replace them
+        if torch.isnan(log_mel_spec).any() or torch.isinf(log_mel_spec).any():
+            logger.warning("NaN or Inf detected in spectrogram after normalization. Replacing with zeros.")
+            log_mel_spec = torch.nan_to_num(log_mel_spec, nan=0.0, posinf=0.0, neginf=0.0)
         
         return log_mel_spec
     
