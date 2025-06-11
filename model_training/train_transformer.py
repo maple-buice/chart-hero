@@ -443,7 +443,7 @@ def setup_callbacks(config):
     return callbacks # Fix: return the callbacks list
 
 
-def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb: bool = True, experiment_tag: Optional[str] = None):
+def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb: bool = True, experiment_tag: Optional[str] = None): # Add project_name parameter
     """Set up W&B logger or None if disabled."""
     if not use_wandb:
         logger.info("WandB logging disabled")
@@ -455,7 +455,7 @@ def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb
         
     try:
         wandb_logger = WandbLogger(
-            project=project_name,
+            project=project_name, # Use the passed project_name
             name=run_name,
             log_model=True,
             save_dir=config.log_dir
@@ -467,7 +467,7 @@ def setup_logger(config, project_name: str = "chart-hero-transformer", use_wandb
         return None
 
 
-def train_model(config, experiment_tag, use_wandb_logging, monitor_gpu_usage, train_loader, val_loader, test_loader, resume_from_checkpoint=None):
+def train_model(config, project_name: str, experiment_tag: str, use_wandb_logging: bool, monitor_gpu_usage: bool, train_loader, val_loader, test_loader, resume_from_checkpoint=None): # Add project_name
     """Trains the model using PyTorch Lightning."""
     # Determine accelerator
     accelerator_to_use = "cpu"
@@ -498,8 +498,9 @@ def train_model(config, experiment_tag, use_wandb_logging, monitor_gpu_usage, tr
     if use_wandb_logging:
         # Initialize W&B logger if enabled, but don't start a run here if main already did.
         # The WandbLogger instance itself will handle the active run.
-        wandb_logger_instance = setup_logger(config, use_wandb=True, experiment_tag=experiment_tag)
+        wandb_logger_instance = setup_logger(config, project_name=project_name, use_wandb=True, experiment_tag=experiment_tag) # Pass project_name
     
+    # Callbacks
     callbacks = setup_callbacks(config)
 
     trainer = pl.Trainer(
@@ -545,14 +546,50 @@ def train_model(config, experiment_tag, use_wandb_logging, monitor_gpu_usage, tr
     return model, trainer
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a transformer model for drum transcription.")
-    parser.add_argument("--config", type=str, default="auto", help="Configuration profile to use (e.g., local, cloud, overnight_default, or auto-detect).")
-    parser.add_argument("--use-wandb", action="store_true", help="Enable WandB logging.")
-    parser.add_argument("--quick-test", action="store_true", help="Run a quick test with minimal data and epochs.")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode (e.g., anomaly detection).")
-    parser.add_argument("--experiment-tag", type=str, default=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}", help="A unique tag for this experiment run.")
-    parser.add_argument("--data-dir", type=str, default=None, help="Path to processed data directory (overrides config).")
-    parser.add_argument("--audio-dir", type=str, default=None, help="Path to audio directory (overrides config).")
+    parser = argparse.ArgumentParser(description="Train transformer model for drum transcription.")
+    parser.add_argument(
+        "--config", 
+        type=str, 
+        default="auto",  # Default to auto-detection
+        choices=["local", "cloud", "auto", "overnight_default"], # Add overnight_default
+        help="Configuration to use (local, cloud, auto, overnight_default)"
+    )
+    parser.add_argument(
+        "--use-wandb",
+        action='store_true',
+        help="Enable W&B logging (default: False, unless overridden by config)"
+    )
+    parser.add_argument(
+        "--no-wandb",  # Add an option to explicitly disable W&B
+        action='store_true',
+        help="Disable W&B logging, overriding any config settings."
+    )
+    parser.add_argument(
+        "--quick-test",
+        action='store_true',
+        help="Run a quick test with a small subset of data and fewer epochs."
+    )
+    parser.add_argument(
+        "--debug",
+        action='store_true',
+        help="Enable debug mode (more verbose logging, potentially smaller dataset)."
+    )
+    parser.add_argument(
+        "--experiment-tag",
+        type=str,
+        default=None, # Default to None, can be set by user
+        help="Tag for the experiment (e.g., \'initial_run\', \'hyperparam_tuning_X\')"
+    )
+    parser.add_argument(
+        "--project-name",
+        type=str,
+        default="chart-hero-transformer",
+        help="Name of the W&B project."
+    )
+
+    # Allow overriding specific config parameters via command line
+    parser.add_argument("--data-dir", type=str, help="Override data directory")
+    parser.add_argument("--audio-dir", type=str, help="Override audio directory")
     parser.add_argument("--monitor-gpu", action="store_true", help="Flag to indicate GPU monitoring is active (for internal script awareness).")
     parser.add_argument("--batch-size", type=int, help="Override batch size from config.")
     parser.add_argument("--hidden-size", type=int, help="Override hidden size from config.")
@@ -562,8 +599,23 @@ def main():
 
     args = parser.parse_args()
 
-    if args.use_wandb:
-        logger.info("WandB logging enabled via CLI.")
+    # Determine effective W&B usage
+    if args.no_wandb:
+        effective_use_wandb = False
+    elif args.use_wandb:
+        effective_use_wandb = True
+    else:
+        effective_use_wandb = getattr(config, 'use_wandb', False) # Default to config or False
+
+    # Initialize W&B if enabled, before anything else that might log
+    if effective_use_wandb:
+        # Ensure W&B is initialized only once if setup_logger is also called later
+        # The WandbLogger instance will pick up the active run.
+        if wandb.run is None: # Check if a run is already active
+            wandb.init(project=args.project_name, name=f"drum-transformer-{config.device}-{args.experiment_tag or 'default'}", config=config.__dict__, dir=config.log_dir)
+            logger.info(f"W&B run initialized with project: {args.project_name}, name: {wandb.run.name}")
+        else:
+            logger.info(f"W&B run already active: {wandb.run.name}")
 
     config_profile_name = args.config
     if config_profile_name.lower() == "auto":
@@ -670,8 +722,9 @@ def main():
         logger.info("Starting model training...")
         trained_model, trainer_instance = train_model(
             config=config,
+            project_name=args.project_name, # Pass project_name
             experiment_tag=args.experiment_tag,
-            use_wandb_logging=args.use_wandb, # Pass flag, wandb_logger created inside train_model
+            use_wandb_logging=effective_use_wandb,
             monitor_gpu_usage=args.monitor_gpu,
             train_loader=train_loader,
             val_loader=val_loader,
