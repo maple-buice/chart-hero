@@ -32,31 +32,50 @@ def test_config(invoked_config_name: str): # Modified signature
         # 1. Test the invoked configuration (this one MUST pass)
         logger.info(f"--- Validating invoked config: '{invoked_config_name}' ---")
         try:
-            cfg_invoked = get_config(invoked_config_name) # get_config handles "auto"
+            # If invoked is 'auto', resolve it first for the primary test
+            if invoked_config_name == "auto":
+                cfg_invoked = auto_detect_config()
+                logger.info(f"Auto-detected config for invoked test: {type(cfg_invoked).__name__}")
+            else:
+                cfg_invoked = get_config(invoked_config_name)
             validate_config(cfg_invoked) # This must pass
-            logger.info(f"✓ Invoked config '{invoked_config_name}': VALIDATED - device {cfg_invoked.device}, batch_size={cfg_invoked.train_batch_size}")
+            logger.info(f"✓ Invoked config '{invoked_config_name}' (resolved to {type(cfg_invoked).__name__ if invoked_config_name == 'auto' else invoked_config_name}): VALIDATED - device {cfg_invoked.device}, batch_size={cfg_invoked.train_batch_size}")
         except Exception as e:
             logger.error(f"✗ Invoked config '{invoked_config_name}' FAILED validation: {e}")
             return False # Critical failure
 
         # 2. Test other standard configurations for completeness, with conditional MPS check
-        standard_configs_to_check = {"local", "cloud", "auto"} # Set of all standard configs
-        other_configs_to_verify = standard_configs_to_check - {invoked_config_name} # Exclude already tested one
+        standard_configs_to_check = {"local", "cloud", "auto"} 
+        # Determine the actual resolved name of the invoked config if it was 'auto'
+        resolved_invoked_name = None
+        if invoked_config_name == "auto":
+            # This is a bit tricky as auto_detect_config() returns an instance, not a name.
+            # For simplicity in exclusion, we might just always test 'local' and 'cloud' if 'auto' was invoked,
+            # or refine this if a specific name is needed.
+            # For now, let's assume 'auto' detection might resolve to 'local' or 'cloud' (or others).
+            # We will test all explicit standard configs not *literally* matching invoked_config_name.
+            other_configs_to_verify = standard_configs_to_check - {invoked_config_name}
+        else:
+            other_configs_to_verify = standard_configs_to_check - {invoked_config_name}
+
 
         for cfg_name_to_check in other_configs_to_verify:
             logger.info(f"--- Checking standard config: '{cfg_name_to_check}' ---")
             try:
-                cfg = get_config(cfg_name_to_check)
+                if cfg_name_to_check == "auto":
+                    cfg = auto_detect_config()
+                    logger.info(f"Auto-detected config for verification: {type(cfg).__name__}")
+                else:
+                    cfg = get_config(cfg_name_to_check)
+                
                 if cfg.device == "mps" and not mps_available:
                     logger.warning(f"✓ Config '{cfg_name_to_check}' (device: {cfg.device}) specifies MPS, but MPS not available. Loaded but skipping full device validation for this non-invoked config.")
-                    # Perform a "light" validation if possible, or just log it was loaded
-                    # For now, we just note it. If validate_config has device specific checks, this avoids them.
                 else:
-                    validate_config(cfg) # Validate if not MPS or if MPS is available
+                    validate_config(cfg) 
                     logger.info(f"✓ Config '{cfg_name_to_check}': Loaded & Validated - device {cfg.device}, batch_size={cfg.train_batch_size}")
             except Exception as e:
                 logger.error(f"✗ Config '{cfg_name_to_check}' (non-invoked) test generated an error: {e}")
-                overall_test_success = False # Mark as failed but continue testing others
+                overall_test_success = False 
         
         return overall_test_success
     except Exception as e:
