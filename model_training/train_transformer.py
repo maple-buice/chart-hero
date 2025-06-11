@@ -599,24 +599,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Determine effective W&B usage
-    if args.no_wandb:
-        effective_use_wandb = False
-    elif args.use_wandb:
-        effective_use_wandb = True
-    else:
-        effective_use_wandb = getattr(config, 'use_wandb', False) # Default to config or False
-
-    # Initialize W&B if enabled, before anything else that might log
-    if effective_use_wandb:
-        # Ensure W&B is initialized only once if setup_logger is also called later
-        # The WandbLogger instance will pick up the active run.
-        if wandb.run is None: # Check if a run is already active
-            wandb.init(project=args.project_name, name=f"drum-transformer-{config.device}-{args.experiment_tag or 'default'}", config=config.__dict__, dir=config.log_dir)
-            logger.info(f"W&B run initialized with project: {args.project_name}, name: {wandb.run.name}")
-        else:
-            logger.info(f"W&B run already active: {wandb.run.name}")
-
+    # Load configuration first
     config_profile_name = args.config
     if config_profile_name.lower() == "auto":
         logger.info("Configuration profile set to 'auto'. Auto-detecting configuration...")
@@ -624,7 +607,38 @@ def main():
     else:
         logger.info(f"Loading configuration profile: {config_profile_name}")
         config = get_config(config_profile_name)
-    
+
+    # Determine effective W&B usage (now that config is loaded)
+    if args.no_wandb:
+        effective_use_wandb = False
+    elif args.use_wandb:
+        effective_use_wandb = True
+    else:
+        # Default to config or False if not specified in config
+        effective_use_wandb = getattr(config, 'use_wandb', False)
+
+    # Initialize W&B if enabled, before anything else that might log
+    if effective_use_wandb:
+        # Ensure W&B is initialized only once if setup_logger is also called later
+        # The WandbLogger instance will pick up the active run.
+        # Check if a run is already active
+        if wandb.run is None:
+            # Make sure config attributes used for run name and dir are available
+            wandb_run_name = f"drum-transformer-{getattr(config, 'device', 'unknown_device')}-{args.experiment_tag or 'default'}"
+            wandb_log_dir = getattr(config, 'log_dir', './wandb_logs') # Default log_dir if not in config
+            Path(wandb_log_dir).mkdir(parents=True, exist_ok=True) # Ensure log_dir exists
+
+            wandb.init(
+                project=args.project_name,
+                name=wandb_run_name,
+                config=config.__dict__ if hasattr(config, '__dict__') else vars(config), # Handle both class and SimpleNamespace
+                dir=wandb_log_dir
+            )
+            logger.info(f"W&B run initialized with project: {args.project_name}, name: {wandb.run.name}")
+        else:
+            logger.info(f"W&B run already active: {wandb.run.name}")
+
+    # Apply CLI overrides to config AFTER initial load and W&B init (if W&B uses config values)
     if args.data_dir:
         config.data_dir = str(Path(args.data_dir).resolve())
         logger.info(f"Overriding data_dir with CLI argument: {config.data_dir}")
