@@ -720,16 +720,6 @@ def main():
 
     logger.info(f"Final configuration for run {args.experiment_tag}: {config.__dict__ if hasattr(config, '__dict__') else config}")
 
-    # Initialize WandB run here, so it spans train_model and the subsequent test call
-    if args.use_wandb:
-        wandb.init(
-            entity="mbuice-org", # Replace with your entity or remove if using default
-            project="chart-hero-transformer", # Replace with your project name
-            name=f"drum-transformer-{args.experiment_tag}",
-            config=config.__dict__ if hasattr(config, '__dict__') else vars(config),
-            reinit=True # Allow reinitialization if a run is already active (e.g. in notebooks)
-        )
-
     logger.info("Creating data loaders...")
     train_loader, val_loader, test_loader = create_data_loaders(
         config=config,
