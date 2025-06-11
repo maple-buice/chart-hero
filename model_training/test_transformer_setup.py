@@ -88,10 +88,14 @@ def test_model(config_name: str): # Modified signature
     logger.info("Testing model architecture...")
     
     try:
-        from model_training.transformer_config import get_config
+        from model_training.transformer_config import get_config, auto_detect_config # Added auto_detect_config
         from model_training.transformer_model import create_model
         
-        config = get_config(config_name) # Use passed config_name
+        if config_name == "auto":
+            config = auto_detect_config()
+            logger.info(f"Auto-detected config for model test: {type(config).__name__}")
+        else:
+            config = get_config(config_name) # Use passed config_name
         model = create_model(config)
         
         # Test forward pass
@@ -129,10 +133,14 @@ def test_data_processing(config_name: str): # Modified signature
     logger.info("Testing data processing...")
     
     try:
-        from model_training.transformer_config import get_config
+        from model_training.transformer_config import get_config, auto_detect_config # Added auto_detect_config
         from model_training.transformer_data import SpectrogramProcessor, DrumDataset
         
-        config = get_config(config_name) # Use passed config_name
+        if config_name == "auto":
+            config = auto_detect_config()
+            logger.info(f"Auto-detected config for data processing test: {type(config).__name__}")
+        else:
+            config = get_config(config_name) # Use passed config_name
         processor = SpectrogramProcessor(config)
         
         # Test spectrogram processing
@@ -200,10 +208,14 @@ def test_training_module(config_name: str): # Modified signature
     logger.info("Testing training module...")
     
     try:
-        from model_training.transformer_config import get_config
+        from model_training.transformer_config import get_config, auto_detect_config # Added auto_detect_config
         from model_training.train_transformer import DrumTranscriptionModule
         
-        config = get_config(config_name) # Use passed config_name
+        if config_name == "auto":
+            config = auto_detect_config()
+            logger.info(f"Auto-detected config for training module test: {type(config).__name__}")
+        else:
+            config = get_config(config_name) # Use passed config_name
         module = DrumTranscriptionModule(config)
 
         # --- Mock Trainer for self.log() and other trainer-dependent calls ---

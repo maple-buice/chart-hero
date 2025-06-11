@@ -79,17 +79,29 @@ class data_preparation():
                     logger.warning(f"Error getting duration for {filepath}: {e}") # Use warning
                     return None
 
-            # Sequential processing to avoid memory explosion in parallel workers
-            logger.info("Using sequential processing for duration calculation (memory optimization)")
-            durations = []
-            for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating audio durations sequentially")):
-                duration = get_wav_duration(filename, self.directory_path)
-                durations.append(duration)
+            # Parallelize duration calculation
+            if self.n_jobs == 1:
+                logger.info("Using sequential processing for duration calculation (n_jobs=1)")
+                durations = []
+                for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating audio durations sequentially")):
+                    duration = get_wav_duration(filename, self.directory_path)
+                    durations.append(duration)
+                    if i % 200 == 0: # Less frequent GC for sequential
+                        import gc
+                        gc.collect()
+            else:
+                logger.info(f"Using parallel processing for duration calculation with n_jobs={self.n_jobs}")
+                # Determine number of jobs, default to os.cpu_count() if n_jobs is -1 or invalid
+                num_parallel_jobs = self.n_jobs if self.n_jobs > 0 else os.cpu_count()
+                logger.info(f"Effective number of parallel jobs for duration calculation: {num_parallel_jobs}")
                 
-                # Aggressive memory cleanup every 50 files
-                if i % 50 == 0:
-                    import gc
-                    gc.collect()
+                # Prepare arguments for parallel execution
+                tasks = [delayed(get_wav_duration)(filename, self.directory_path) for filename in df['audio_filename']]
+                
+                # Execute in parallel
+                # loky backend is generally more robust for I/O bound tasks like this
+                with parallel_backend('loky', n_jobs=num_parallel_jobs):
+                    durations = Parallel(verbose=10)(tasks)
 
             df['wav_length'] = durations
             duration_calc_end_time = time.perf_counter()
@@ -672,7 +684,7 @@ class data_preparation():
         else:
             max_cores_by_memory = max(1, int(memory_limit_gb / 12))  # 12GB per core for safety
         
-        n_cores = min(available_cores, max_cores_by_memory, 4)  # Cap at 4 cores for memory safety
+        n_cores = min(available_cores, max_cores_by_memory, 16)  # Cap at 16 cores for memory safety (increased from 4)
         
         # Divide total memory limit across processes
         memory_per_process_gb = memory_limit_gb / n_cores
