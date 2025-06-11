@@ -1,4 +1,17 @@
+import sys
 import os
+
+# This is a workaround for joblib/loky in environments like Colab where
+# worker processes might not inherit sys.path modifications correctly.
+# It ensures that the project root is in sys.path so that 'model_training'
+# and its submodules can be imported by the worker processes.
+_PROJECT_ROOT_MARKER_PARENT_DIR = '/content' # In Colab, /content/chart-hero is the typical project location
+_PROJECT_DIR_NAME = 'chart-hero'
+_EXPECTED_PROJECT_ROOT = os.path.join(_PROJECT_ROOT_MARKER_PARENT_DIR, _PROJECT_DIR_NAME)
+
+if os.path.isdir(_EXPECTED_PROJECT_ROOT) and _EXPECTED_PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _EXPECTED_PROJECT_ROOT)
+
 import itertools
 import math
 
