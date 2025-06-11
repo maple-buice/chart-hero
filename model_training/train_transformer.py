@@ -599,6 +599,12 @@ def main():
 
     args = parser.parse_args()
 
+    # Determine the experiment tag to use, defaulting if not provided
+    experiment_tag_to_use = args.experiment_tag
+    if experiment_tag_to_use is None:
+        experiment_tag_to_use = datetime.now().strftime("%Y%m%d_%H%M%S")
+        logger.info(f"No --experiment-tag provided by CLI. Using generated tag for this run: {experiment_tag_to_use}")
+
     # Load configuration first
     config_profile_name = args.config
     if config_profile_name.lower() == "auto":
@@ -624,7 +630,7 @@ def main():
         # Check if a run is already active
         if wandb.run is None:
             # Make sure config attributes used for run name and dir are available
-            wandb_run_name = f"drum-transformer-{getattr(config, 'device', 'unknown_device')}-{args.experiment_tag or 'default'}"
+            wandb_run_name = f"drum-transformer-{getattr(config, 'device', 'unknown_device')}-{experiment_tag_to_use}" # Use experiment_tag_to_use
             wandb_log_dir = getattr(config, 'log_dir', './wandb_logs') # Default log_dir if not in config
             Path(wandb_log_dir).mkdir(parents=True, exist_ok=True) # Ensure log_dir exists
 
@@ -654,10 +660,10 @@ def main():
         logger.warning(f"audio_dir not found in config or CLI, using default: {config.audio_dir}")
         
     if not hasattr(config, 'model_dir') or not config.model_dir:
-        config.model_dir = str(Path(__file__).resolve().parent / "transformer_models" / args.experiment_tag)
+        config.model_dir = str(Path(__file__).resolve().parent / "transformer_models" / experiment_tag_to_use) # Use experiment_tag_to_use
         logger.warning(f"model_dir not specified in config, defaulting to: {config.model_dir}")
     else:
-        config.model_dir = str(Path(config.model_dir).resolve() / args.experiment_tag)
+        config.model_dir = str(Path(config.model_dir).resolve() / experiment_tag_to_use) # Use experiment_tag_to_use
         logger.info(f"Model checkpoints will be saved in: {config.model_dir}")
     Path(config.model_dir).mkdir(parents=True, exist_ok=True)
 
@@ -705,7 +711,7 @@ def main():
     else:
         config.log_dir = str(Path(config.log_dir).resolve())
     
-    setup_experiment_logging(config.log_dir, args.experiment_tag)
+    setup_experiment_logging(config.log_dir, experiment_tag_to_use) # Use experiment_tag_to_use
 
     if not hasattr(config, 'data_dir') or not Path(config.data_dir).exists():
         logger.error(f"Data directory does not exist: {getattr(config, 'data_dir', 'Not Set')}")
@@ -737,7 +743,7 @@ def main():
         trained_model, trainer_instance = train_model(
             config=config,
             project_name=args.project_name, # Pass project_name
-            experiment_tag=args.experiment_tag,
+            experiment_tag=experiment_tag_to_use, # Use experiment_tag_to_use
             use_wandb_logging=effective_use_wandb,
             monitor_gpu_usage=args.monitor_gpu,
             train_loader=train_loader,
