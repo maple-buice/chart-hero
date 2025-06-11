@@ -330,6 +330,13 @@ class data_preparation():
     
     # --- Optimization: Helper function for parallel processing of one file pair ---
     def _process_file_pair(self, row, pad_before, pad_after, fix_length, memory_limit_gb=None):
+        # Ensure model_training module can be found by loky workers in Colab
+        import sys
+        import os
+        colab_project_path = '/content/chart-hero'  # Path used in the notebook
+        if colab_project_path not in sys.path:
+            sys.path.insert(0, colab_project_path) # Insert at beginning to be safe
+
         pair_start_time = time.perf_counter()
         midi_file = row['midi_filename']
         audio_file = row['audio_filename']
