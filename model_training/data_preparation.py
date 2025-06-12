@@ -1,17 +1,6 @@
 import sys
 import os
 
-# This is a workaround for joblib/loky in environments like Colab where
-# worker processes might not inherit sys.path modifications correctly.
-# It ensures that the project root is in sys.path so that 'model_training'
-# and its submodules can be imported by the worker processes.
-_PROJECT_ROOT_MARKER_PARENT_DIR = '/content' # In Colab, /content/chart-hero is the typical project location
-_PROJECT_DIR_NAME = 'chart-hero'
-_EXPECTED_PROJECT_ROOT = os.path.join(_PROJECT_ROOT_MARKER_PARENT_DIR, _PROJECT_DIR_NAME)
-
-if os.path.isdir(_EXPECTED_PROJECT_ROOT) and _EXPECTED_PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _EXPECTED_PROJECT_ROOT)
-
 import itertools
 import math
 
@@ -104,15 +93,13 @@ class data_preparation():
                         gc.collect()
             else:
                 logger.info(f"Using parallel processing for duration calculation with n_jobs={self.n_jobs}")
-                # Determine number of jobs, default to os.cpu_count() if n_jobs is -1 or invalid
                 num_parallel_jobs = self.n_jobs if self.n_jobs > 0 else os.cpu_count()
                 logger.info(f"Effective number of parallel jobs for duration calculation: {num_parallel_jobs}")
                 
-                # Prepare arguments for parallel execution
-                tasks = [delayed(get_wav_duration)(filename, self.directory_path) for filename in df['audio_filename']]
-                
-                # Execute in parallel
-                # loky backend is generally more robust for I/O bound tasks like this
+                # tasks = [delayed(get_wav_duration)(filename, self.directory_path) for filename in df['audio_filename']]
+                # Use a wrapper function for pickling compatibility
+                tasks = [delayed(self._get_wav_duration_wrapper)(filename) for filename in df['audio_filename']]
+
                 with parallel_backend('loky', n_jobs=num_parallel_jobs):
                     durations = Parallel(verbose=10)(tasks)
 
@@ -206,6 +193,16 @@ class data_preparation():
             return librosa.get_duration(y=wav, sr=sr)
         except Exception as e:
             print(f"Librosa error loading {x}: {e}")
+            return None
+
+    # Wrapper function for get_wav_duration to ensure it's picklable by joblib
+    def _get_wav_duration_wrapper(self, filepath):
+        # This method is part of the class, so self.directory_path is accessible
+        try:
+            info = sf.info(os.path.join(self.directory_path, filepath))
+            return info.duration
+        except Exception as e:
+            logger.warning(f"Error getting duration for {filepath}: {e}")
             return None
 
     def notes_extraction(self, midi_file):
