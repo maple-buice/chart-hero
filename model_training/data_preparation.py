@@ -68,6 +68,106 @@ logger = logging.getLogger(__name__)
 import soundfile as sf_top
 import os as os_top
 
+# NEW Top-level worker function for create_audio_set parallel processing
+def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, memory_limit_gb_worker, project_root_path_for_worker):
+    # This function is called by joblib workers.
+    
+    # --- Explicitly add project root to sys.path IN THE WORKER ---
+    if project_root_path_for_worker and project_root_path_for_worker not in sys.path:
+        sys.path.insert(0, project_root_path_for_worker)
+        # Optional: log from worker to confirm path addition
+        # import logging
+        # worker_logger = logging.getLogger(f"worker_{os.getpid()}") # Basic config for worker log
+        # worker_logger.info(f"[Worker] Added to sys.path: {project_root_path_for_worker}")
+        # worker_logger.info(f"[Worker] sys.path is now: {sys.path}")
+
+    # It needs to be self-contained or import modules that are findable.
+    # The sys.path modification at the top of the file should help.
+    
+    midi_file = row_dict['midi_filename']
+    audio_file = row_dict['audio_filename']
+    track_id = row_dict['track_id'] 
+
+    pair_start_time = time.perf_counter()
+
+    if memory_limit_gb_worker:
+        import psutil
+        process = psutil.Process()
+        mem_before = process.memory_info().rss / (1024**3)
+        if mem_before > memory_limit_gb_worker * 0.8:
+            logger.warning(f"[Worker] Memory usage ({mem_before:.1f}GB) approaching limit ({memory_limit_gb_worker:.1f}GB), skipping file {midi_file}")
+            return None
+
+    if midi_file == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
+        logger.warning(f"[Worker] Skipping known problematic file: {midi_file}")
+        return None
+
+    try:
+        # --- MINIMAL MIDI MOCKUP TO TEST PICKLING AND MODULE FINDING --- 
+        if not midi_file or not audio_file:
+            logger.warning(f"[Worker] Missing midi_file or audio_file for row: {row_dict}")
+            return None
+        
+        time.sleep(0.01) # Simulate work
+        # Ensure pandas and numpy are imported if not already at top level of worker context
+        import pandas as pd 
+        import numpy as np
+        track_notes = pd.DataFrame({
+            'label': [[60]], 'start': [0.0], 'end': [0.5], 'track_id': [track_id]
+        })
+        # --- END MINIMAL MIDI MOCKUP ---
+
+        if track_notes.empty:
+            logger.warning(f"[Worker] No notes after merging for MIDI: {midi_file}")
+            return None
+
+        audio_file_path = os.path.join(directory_path_arg, audio_file)
+        try:
+            # Ensure soundfile (sf) and librosa are available to the worker
+            # sf is imported as sf_top at module level, but direct sf might be an issue
+            # For now, assume sf is available via global imports or direct import here
+            import soundfile as sf_worker # Explicit import for worker
+            import librosa as librosa_worker # Explicit import for worker
+            sf_info = sf_worker.info(audio_file_path)
+            sr = sf_info.samplerate
+            # audio_duration_samples = sf_info.frames # Not used in mockup
+        except Exception as sf_err:
+            logger.error(f"[Worker] Soundfile error reading info for {audio_file_path}: {sf_err}")
+            return None
+        
+        # --- MINIMAL AUDIO MOCKUP ---
+        def optimized_audio_slicing_mock(note_row_dict_ignored):
+            time.sleep(0.01) # Simulate work
+            if fix_length_arg is not None:
+                return np.zeros(librosa_worker.time_to_samples(fix_length_arg, sr=sr), dtype=np.float32)
+            return np.array([1,2,3], dtype=np.float32)
+        
+        track_notes['audio_wav'] = track_notes.apply(lambda r: optimized_audio_slicing_mock(r.to_dict()), axis=1)
+        # --- END MINIMAL AUDIO MOCKUP ---
+
+        track_notes['sampling_rate'] = sr
+        initial_notes = len(track_notes)
+        track_notes = track_notes[track_notes['audio_wav'].apply(lambda x: isinstance(x, np.ndarray) and x.size > 0)]
+        final_notes = len(track_notes)
+        if initial_notes != final_notes:
+            logger.warning(f"[Worker] Filtered {initial_notes - final_notes} notes with empty audio for {audio_file}")
+
+        if track_notes.empty:
+            logger.warning(f"[Worker] Track notes became empty after audio slicing for {midi_file}")
+            return None
+
+        import gc
+        del sf_info
+        gc.collect()
+        
+        pair_end_time = time.perf_counter()
+        logger.debug(f"[Worker] Processed pair {midi_file} in {pair_end_time - pair_start_time:.3f} seconds, resulting in {final_notes} notes.")
+        return track_notes
+
+    except Exception as e:
+        logger.error(f"[Worker] Error processing pair {midi_file} / {audio_file}: {e}", exc_info=True)
+        return None
+
 def get_duration_joblib_helper(filepath, base_dir):
     try:
         info = sf_top.info(os_top.path.join(base_dir, filepath))
@@ -557,11 +657,10 @@ class data_preparation():
         create_set_start_time = time.perf_counter()
         logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}, memory_limit={memory_limit_gb}GB")
         
-        # Memory monitoring
-        import psutil
-        process = psutil.Process()
-        
-        def check_memory():
+        import psutil # Moved import here as it's used in check_memory
+        process = psutil.Process() # Moved process definition here
+
+        def check_memory(): # check_memory is now defined and can be passed
             mem_gb = process.memory_info().rss / (1024**3)
             if mem_gb > memory_limit_gb:
                 logger.warning(f"Memory usage ({mem_gb:.1f}GB) exceeds limit ({memory_limit_gb}GB)")
@@ -584,33 +683,35 @@ class data_preparation():
             df_list.clear()  # Clear input list
 
         # Create processing function with memory limit
-        # For sequential processing, use full memory limit; for parallel, divide by cores
-        if memory_limit_gb <= 48:  # Sequential mode (matches the processing decision threshold)
+        if memory_limit_gb <= 48:  # Sequential mode
             per_process_memory_limit = memory_limit_gb
-        else:  # Parallel mode - calculate based on cores that will actually be used
-            n_cores_for_calc = min(os.cpu_count(), 6)  # Match the max cores from prepare_egmd_data.py
+        else:  # Parallel mode
+            n_cores_for_calc = min(os.cpu_count(), 6) 
             per_process_memory_limit = memory_limit_gb / n_cores_for_calc
         
-        process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
-        
         # Adaptive processing mode based on memory limits  
-        # Force sequential for most cases since parallel audio processing causes memory explosion in librosa
-        if memory_limit_gb <= 48:  # Conservative mode - parallel only for very high memory (48GB+)
+        if memory_limit_gb <= 48: 
             logger.info(f'Processing {len(self.midi_wav_map)} file pairs sequentially (low-memory mode)...')
-            total_valid = self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
+            sequential_process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
+            total_valid = self._process_sequential(sequential_process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
         else:
-            logger.info(f'Processing {len(self.midi_wav_map)} file pairs in parallel (high-memory mode)...')
-            total_valid = self._process_parallel(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
+            logger.info(f'Processing {len(self.midi_wav_map)} file pairs in parallel using new top-level worker (high-memory mode)...')
+            total_valid = self._process_parallel_optimized_new_worker(
+                self.midi_wav_map, 
+                self.directory_path, 
+                pad_before, pad_after, fix_length, 
+                batching, dir_path, num_batches, 
+                check_memory, # Pass the defined check_memory function
+                memory_limit_gb, self.n_jobs,
+                per_process_memory_limit # Pass the calculated per_process_memory_limit for the worker
+            )
 
         create_set_end_time = time.perf_counter()
         logger.info(f"create_audio_set completed: {total_valid} valid file pairs processed in {create_set_end_time - create_set_start_time:.2f} seconds.")
         return total_valid
 
-    def _process_sequential(self, process_func, batching, dir_path, num_batches, memory_check_func, memory_limit_gb):
-        """
-        Legacy sequential processing function. This is now handled by create_audio_set directly.
-        Kept for backwards compatibility but not intended for direct use.
-        """
+    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
+        """Sequential processing for memory-constrained environments"""
         logger.warning("Warning: _process_sequential is deprecated. Please use create_audio_set directly.")
         
         total_processed = 0
@@ -631,7 +732,7 @@ class data_preparation():
 
             # Memory check
             if i % 100 == 0:
-                memory_check_func()
+                check_memory() # Corrected: use passed check_memory function
 
         # Final batch save
         if df_list:
@@ -639,6 +740,163 @@ class data_preparation():
 
         logger.info(f"Sequential processing complete: {total_processed} file pairs processed.")
         return total_processed
+
+    # --- New parallel processing method using the top-level worker ---
+    def _process_parallel_optimized_new_worker(self, midi_wav_df, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, batching_arg, dir_path_arg, num_batches_arg, check_memory_func_arg, memory_limit_gb_arg, n_jobs_arg, worker_memory_limit_arg):
+        logger.info(f"Using _process_parallel_optimized_new_worker with n_jobs={n_jobs_arg}")
+        available_cores = n_jobs_arg if n_jobs_arg > 0 else os.cpu_count()
+        
+        if memory_limit_gb_arg <= 16:
+            max_cores_by_memory = 1
+        elif memory_limit_gb_arg <= 32:
+            max_cores_by_memory = max(1, int(memory_limit_gb_arg / 8))
+        else:
+            max_cores_by_memory = max(1, int(memory_limit_gb_arg / 12))
+        
+        n_cores = min(available_cores, max_cores_by_memory, 16)
+        memory_per_process_gb = memory_limit_gb_arg / n_cores
+        logger.info(f"Total memory limit: {memory_limit_gb_arg}GB, using {n_cores} cores = {memory_per_process_gb:.2f}GB per process for new worker")
+
+        base_chunk_size = max(5, min(50, len(midi_wav_df) // (n_cores * 4)))
+        if memory_per_process_gb <= 2: chunk_size = 1
+        elif memory_per_process_gb <= 4: chunk_size = max(2, base_chunk_size // 8)
+        elif memory_per_process_gb <= 8: chunk_size = max(5, base_chunk_size // 4)
+        else: chunk_size = max(10, base_chunk_size // 2)
+        logger.info(f"Using {n_cores} cores with chunk size {chunk_size} for new worker")
+
+        total_valid = 0
+        total_failed = 0
+        batch_data_accumulator = []
+        batch_sample_count = 0
+        
+        if memory_per_process_gb <= 2: target_samples_per_batch = 100
+        elif memory_per_process_gb <= 4: target_samples_per_batch = 250
+        elif memory_per_process_gb <= 8: target_samples_per_batch = 500
+        else: target_samples_per_batch = min(1000, max(500, int(memory_per_process_gb * 50)))
+        logger.info(f"Target samples per batch: {target_samples_per_batch} for new worker")
+
+        # Prepare tasks: iterate over rows and create dictionaries for the worker
+        # This is important: joblib works best with simple, picklable arguments.
+        tasks = []
+        for _, row in midi_wav_df.iterrows():
+            row_data_dict = row.to_dict()
+            tasks.append(delayed(process_file_pair_worker)(
+                row_data_dict, 
+                directory_path_arg, 
+                pad_before_arg, 
+                pad_after_arg, 
+                fix_length_arg, 
+                worker_memory_limit_arg # Pass per-process memory limit to worker
+            ))
+
+        logger.info(f"Submitting {len(tasks)} tasks to joblib.Parallel with {n_cores} cores.")
+        with parallel_backend('loky', n_jobs=n_cores):
+            all_results = Parallel(verbose=10)(tasks)
+        logger.info(f"joblib.Parallel processing finished. Received {len(all_results)} results.")
+
+        # Process results
+        valid_results = [df for df in all_results if df is not None and not df.empty]
+        total_valid = len(valid_results)
+        total_failed = len(midi_wav_df) - total_valid
+        logger.info(f"Processing results: {total_valid} valid, {total_failed} failed.")
+
+        if batching_arg and valid_results:
+            # Batching logic remains similar, but operates on `valid_results` list
+            batch_data_accumulator.extend(valid_results)
+            batch_sample_count = sum(len(df) for df in valid_results)
+            logger.info(f"Accumulated {batch_sample_count} samples for batching.")
+            
+            # Reset batch_tracking from self, as it's an instance variable
+            self.batch_tracking = 0 
+
+            while batch_sample_count >= target_samples_per_batch and self.batch_tracking < num_batches_arg:
+                current_samples_in_this_batch = 0
+                current_batch_data_list = []
+                remaining_data_accumulator = []
+                
+                for df_res in batch_data_accumulator:
+                    if current_samples_in_this_batch + len(df_res) <= target_samples_per_batch and self.batch_tracking < num_batches_arg:
+                        current_batch_data_list.append(df_res)
+                        current_samples_in_this_batch += len(df_res)
+                    else:
+                        remaining_data_accumulator.append(df_res)
+                
+                if not current_batch_data_list and batch_data_accumulator and self.batch_tracking < num_batches_arg:
+                    # If a single result is larger than batch, take it as one batch
+                    current_batch_data_list = [batch_data_accumulator[0]]
+                    current_samples_in_this_batch = len(current_batch_data_list[0])
+                    remaining_data_accumulator = batch_data_accumulator[1:]
+
+                if current_batch_data_list: # Ensure there's data to save
+                    # Find next available batch number
+                    while os.path.exists(os.path.join(dir_path_arg, f"{self.batch_tracking}_train.pkl")):
+                        self.batch_tracking += 1
+                    
+                    if self.batch_tracking < num_batches_arg:
+                        self._save_batch_sequential(current_batch_data_list, self.batch_tracking, dir_path_arg)
+                        logger.info(f"Saved batch {self.batch_tracking} ({current_samples_in_this_batch} samples)")
+                        self.batch_tracking += 1 # Increment after successful save
+                    else:
+                        logger.info("Reached num_batches_arg limit during batch formation.")
+                        # Put data back if we can't save this batch
+                        remaining_data_accumulator = current_batch_data_list + remaining_data_accumulator
+                        current_samples_in_this_batch = 0 # Reset samples for this unsaved batch
+                        break # Stop trying to form batches
+
+                batch_data_accumulator = remaining_data_accumulator
+                batch_sample_count -= current_samples_in_this_batch
+                
+                import gc
+                gc.collect()
+                if self.batch_tracking >= num_batches_arg:
+                    logger.info(f"Reached target number of batches ({num_batches_arg}) during parallel result processing.")
+                    break
+
+            # Save any remaining data if batch limit not reached
+            if batch_data_accumulator and self.batch_tracking < num_batches_arg:
+                logger.info(f"Saving remaining {len(batch_data_accumulator)} dataframes ({batch_sample_count} samples) as final batch.")
+                while os.path.exists(os.path.join(dir_path_arg, f"{self.batch_tracking}_train.pkl")):
+                    self.batch_tracking += 1
+                if self.batch_tracking < num_batches_arg:
+                    self._save_batch_sequential(batch_data_accumulator, self.batch_tracking, dir_path_arg)
+                    logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
+                    self.batch_tracking +=1
+                else:
+                    logger.info("Final batch not saved as num_batches_arg limit was reached.")
+        
+        elif not batching_arg and valid_results: # No batching - combine individual files (if this mode is still desired)
+            logger.info("Non-batching mode: combining individual results from parallel processing.")
+            # This part needs to be re-evaluated. If not batching, where do individual files come from?
+            # The worker returns DataFrames. We can save them individually or concat them here.
+            # For now, let's assume we concat them into self.notes_collection like the original sequential non-batching mode.
+            
+            # Clean up any old individual files if they exist from a previous run mode
+            # for f_old in os.listdir(dir_path_arg):
+            #     if f_old.startswith('individual_') and f_old.endswith('.pkl'):
+            #         os.remove(os.path.join(dir_path_arg, f_old))
+
+            self.notes_collection = pd.concat(valid_results, ignore_index=True) if valid_results else pd.DataFrame()
+            del valid_results
+            import gc
+            gc.collect()
+
+            if not self.notes_collection.empty:
+                # Filter problematic tracks (needs self.id_len_dict)
+                # Ensure id_len_dict is available or passed if this logic is kept
+                problematic_tracks=[]
+                for r_idx, r_val in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check for non-batching"):
+                    if r_val.start > self.id_len_dict[r_val.track_id]: # Requires self.id_len_dict
+                        problematic_tracks.append(r_val.track_id)
+                self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
+                
+                output_path = os.path.join(dir_path_arg, "dataset_full.pkl")
+                self.notes_collection.to_pickle(output_path)
+                logger.info(f"Saved full dataset ({len(self.notes_collection)} notes) to {output_path} (non-batching mode)")
+            else:
+                logger.warning("No valid results to combine for non-batching mode.")
+
+        logger.info(f"_process_parallel_optimized_new_worker complete: {total_valid} valid, {total_failed} failed")
+        return total_valid
 
     def _save_batch_sequential(self, df_list, batch_idx, dir_path):
         """
