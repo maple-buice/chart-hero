@@ -1,15 +1,44 @@
 import sys
 import os
 
-# Add project root to sys.path to ensure model_training can be found by workers
-# __file__ is model_training/data_preparation.py
-# os.path.dirname(__file__) is the directory of this file (model_training)
-# os.path.join(os.path.dirname(__file__), '..') is the parent directory (project root)
-_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-    # print(f"[data_preparation.py top-level] Added to sys.path: {_PROJECT_ROOT}") # For debugging
+# Explicitly add project root to sys.path for Colab and local
+# This needs to run successfully in the main process AND in each joblib worker process
+# when they import this module.
 
+_DRIVE_PATH_CHART_HERO = '/content/drive/MyDrive/chart-hero' # Standard Colab path for this project
+
+def _add_project_root_to_path():
+    # Try to determine project root and add to sys.path
+    # This function will be called when the module is imported.
+    project_root_to_add = None
+    try:
+        if 'google.colab' in sys.modules:
+            project_root_to_add = _DRIVE_PATH_CHART_HERO
+        else: # Local execution
+            # Assumes data_preparation.py is in chart-hero/model_training/
+            # __file__ should be defined when the module is imported.
+            current_file_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root_to_add = os.path.abspath(os.path.join(current_file_dir, '..'))
+
+        if project_root_to_add and project_root_to_add not in sys.path:
+            sys.path.insert(0, project_root_to_add)
+            # print(f"[data_preparation module] Added to sys.path: {project_root_to_add}", flush=True) # Debug
+        # else:
+            # print(f"[data_preparation module] Project root {project_root_to_add} already in sys.path or not determined.", flush=True) # Debug
+            
+    except Exception as e:
+        # print(f"[data_preparation module] Error in _add_project_root_to_path: {e}", flush=True) # Debug
+        pass # Avoid crashing import if path logic fails
+
+_add_project_root_to_path()
+
+# Remove the previous sys.path modification block if it exists below to avoid redundancy.
+# The old block looked like:
+# _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# if _PROJECT_ROOT not in sys.path:
+#    sys.path.insert(0, _PROJECT_ROOT)
+
+# Now proceed with other imports
 import itertools
 import math
 
@@ -569,342 +598,99 @@ class data_preparation():
         if memory_limit_gb <= 48:  # Conservative mode - parallel only for very high memory (48GB+)
             logger.info(f'Processing {len(self.midi_wav_map)} file pairs sequentially (low-memory mode)...')
             total_valid = self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
-        else:  # High-performance mode
-            logger.info(f'Processing {len(self.midi_wav_map)} file pairs with optimized parallel processing (high-performance mode)...')
-            total_valid = self._process_parallel_optimized(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
-
-        if total_valid == 0:
-             logger.warning("No valid dataframes were generated. Check logs for errors during processing.")
-             return
-
-        if batching:
-            logger.info(f"Batching complete: saved {self.batch_tracking} batches")
-
-        else: # No batching - combine individual files
-            logger.info("Non-batching mode: combining individual files")
-            individual_files = [f for f in os.listdir(dir_path) if f.startswith('individual_') and f.endswith('.pkl')]
-            
-            if individual_files:
-                logger.info(f"Combining {len(individual_files)} individual files")
-                combined_dfs = []
-                for file in tqdm(individual_files, desc="Loading individual files"):
-                    df = pd.read_pickle(os.path.join(dir_path, file))
-                    combined_dfs.append(df)
-                    # Clean up file after loading
-                    os.remove(os.path.join(dir_path, file))
-                
-                self.notes_collection = pd.concat(combined_dfs, ignore_index=True)
-                del combined_dfs
-                import gc
-                gc.collect()
-                
-                # Filter out problematic tracks
-                problematic_tracks=[]
-                for r in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check"):
-                    if r[1].start>self.id_len_dict[r[1].track_id]:
-                        problematic_tracks.append(r[1].track_id)
-                self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
-                
-                output_path = os.path.join(dir_path, "dataset_full.pkl")
-                self.notes_collection.to_pickle(output_path)
-                logger.info(f"Saved full dataset ({len(self.notes_collection)} notes) to {output_path}")
-            else:
-                logger.warning("No individual files found to combine")
+        else:
+            logger.info(f'Processing {len(self.midi_wav_map)} file pairs in parallel (high-memory mode)...')
+            total_valid = self._process_parallel(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
 
         create_set_end_time = time.perf_counter()
-        logger.info(f'create_audio_set finished in {create_set_end_time - create_set_start_time:.2f} seconds.')
-    
-    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
-        """Sequential processing for memory-constrained environments"""
-        total_valid = 0
-        total_failed = 0
-        current_batch_data = []
-        batch_sample_count = 0
-        target_samples_per_batch = 200  # Very small batches for memory efficiency
+        logger.info(f"create_audio_set completed: {total_valid} valid file pairs processed in {create_set_end_time - create_set_start_time:.2f} seconds.")
+        return total_valid
+
+    def _process_sequential(self, process_func, batching, dir_path, num_batches, memory_check_func, memory_limit_gb):
+        """
+        Legacy sequential processing function. This is now handled by create_audio_set directly.
+        Kept for backwards compatibility but not intended for direct use.
+        """
+        logger.warning("Warning: _process_sequential is deprecated. Please use create_audio_set directly.")
         
-        for idx, (_, row) in enumerate(tqdm(self.midi_wav_map.iterrows(), total=len(self.midi_wav_map), desc="Processing files sequentially")):
-            # Aggressive memory check before each file
-            mem_before = check_memory()
-            if mem_before > memory_limit_gb * 0.8:  # 80% threshold
-                logger.warning(f"Memory usage ({mem_before:.1f}GB) high before processing file {idx}, forcing cleanup")
-                import gc
-                gc.collect()
-                gc.collect()  # Double collection
-                mem_after_cleanup = check_memory()
-                logger.info(f"Memory after cleanup: {mem_after_cleanup:.1f}GB")
-                
-                # If still too high, skip processing
-                if mem_after_cleanup > memory_limit_gb * 0.9:
-                    logger.error(f"Memory usage still too high ({mem_after_cleanup:.1f}GB), skipping file")
-                    total_failed += 1
-                    continue
-            
+        total_processed = 0
+        df_list = []
+        batch_idx = 0
+
+        for i, row in enumerate(tqdm(self.midi_wav_map.itertuples(index=False), desc="Processing file pairs")):
             result = process_func(row)
-            
-            if result is not None and not result.empty:
-                total_valid += 1
-                
-                if batching:
-                    current_batch_data.append(result)
-                    batch_sample_count += len(result)
-                    
-                    # Save when batch reaches target size, but only if we haven't reached max batches
-                    if batch_sample_count >= target_samples_per_batch and self.batch_tracking < num_batches:
-                        # Find next available batch number (no overwriting)
-                        while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
-                            self.batch_tracking += 1
-                        
-                        self._save_batch_sequential(current_batch_data, self.batch_tracking, dir_path)
-                        logger.info(f"Saved batch {self.batch_tracking} ({batch_sample_count} samples)")
-                        
-                        # Reset for next batch
-                        current_batch_data = []
-                        batch_sample_count = 0
-                        self.batch_tracking += 1
-                        
-                        import gc
-                        gc.collect()
-                    elif self.batch_tracking >= num_batches:
-                        # Stop processing once we reach the desired number of batches
-                        logger.info(f"Reached target number of batches ({num_batches}), stopping processing")
-                        break
-                else:
-                    # Save individual files
-                    individual_file = os.path.join(dir_path, f"individual_{idx}.pkl")
-                    result.to_pickle(individual_file)
-                
-                del result
-            else:
-                total_failed += 1
-            
-            # More frequent garbage collection for memory management
-            if idx % 10 == 0:  # Every 10 files instead of 50
-                import gc
-                gc.collect()
-                gc.collect()  # Double collection
-                current_mem = check_memory()
-                logger.debug(f"Memory after processing {idx} files: {current_mem:.1f}GB")
-        
-        # Save remaining data only if we haven't reached the batch limit
-        if batching and current_batch_data and self.batch_tracking < num_batches:
-            while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
-                self.batch_tracking += 1
-            self._save_batch_sequential(current_batch_data, self.batch_tracking, dir_path)
-            logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
-        
-        logger.info(f"Sequential processing complete: {total_valid} valid, {total_failed} failed")
-        return total_valid
-    
-    def _process_parallel_optimized(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
-        """Optimized parallel processing for high-resource environments"""
-        # Calculate optimal cores and chunk size based on memory constraints
-        available_cores = self.n_jobs if self.n_jobs > 0 else os.cpu_count()
-        
-        # Much more aggressive memory-based core limiting
-        # Each audio processing worker can use 10-20GB easily, so be very conservative
-        if memory_limit_gb <= 16:
-            max_cores_by_memory = 1  # Force sequential for low memory
-        elif memory_limit_gb <= 32:
-            max_cores_by_memory = max(1, int(memory_limit_gb / 8))  # 8GB per core minimum
-        else:
-            max_cores_by_memory = max(1, int(memory_limit_gb / 12))  # 12GB per core for safety
-        
-        n_cores = min(available_cores, max_cores_by_memory, 16)  # Cap at 16 cores for memory safety (increased from 4)
-        
-        # Divide total memory limit across processes
-        memory_per_process_gb = memory_limit_gb / n_cores
-        logger.info(f"Total memory limit: {memory_limit_gb}GB, using {n_cores} cores = {memory_per_process_gb:.2f}GB per process")
-        
-        # Aggressively scale chunk size based on memory constraints
-        base_chunk_size = max(5, min(50, len(self.midi_wav_map) // (n_cores * 4)))
-        
-        # Much more aggressive memory-based scaling
-        if memory_per_process_gb <= 2:
-            chunk_size = 1  # Process one file at a time
-            logger.warning(f"Very low memory per process ({memory_per_process_gb:.2f}GB), using chunk_size=1")
-        elif memory_per_process_gb <= 4:
-            chunk_size = max(2, base_chunk_size // 8)  # Very small chunks
-            logger.info(f"Low memory per process ({memory_per_process_gb:.2f}GB), using chunk_size={chunk_size}")
-        elif memory_per_process_gb <= 8:
-            chunk_size = max(5, base_chunk_size // 4)  # Small chunks
-            logger.info(f"Medium memory per process ({memory_per_process_gb:.2f}GB), using chunk_size={chunk_size}")
-        else:
-            chunk_size = max(10, base_chunk_size // 2)  # Moderate chunks
-            logger.info(f"Good memory per process ({memory_per_process_gb:.2f}GB), using chunk_size={chunk_size}")
-        
-        # Create per-process memory check function
-        def check_memory_per_process():
-            import psutil
-            process = psutil.Process()
-            mem_gb = process.memory_info().rss / (1024**3)
-            if mem_gb > memory_per_process_gb:
-                logger.warning(f"Process memory usage ({mem_gb:.1f}GB) exceeds per-process limit ({memory_per_process_gb:.2f}GB)")
-            return mem_gb
-        
-        logger.info(f"Using {n_cores} cores with chunk size {chunk_size}")
-        
-        total_valid = 0
-        total_failed = 0
-        batch_data_accumulator = []
-        batch_sample_count = 0
-        
-        # Much more conservative batch sizing based on memory
-        if memory_per_process_gb <= 2:
-            target_samples_per_batch = 100  # Very small batches
-        elif memory_per_process_gb <= 4:
-            target_samples_per_batch = 250  # Small batches
-        elif memory_per_process_gb <= 8:
-            target_samples_per_batch = 500  # Medium batches
-        else:
-            target_samples_per_batch = min(1000, max(500, int(memory_per_process_gb * 50)))  # Larger batches
-        
-        logger.info(f"Target samples per batch: {target_samples_per_batch} (based on {memory_per_process_gb:.2f}GB per process)")
-        
-        # Process in optimized chunks
-        for chunk_start in tqdm(range(0, len(self.midi_wav_map), chunk_size), desc="Processing chunks"):
-            chunk_end = min(chunk_start + chunk_size, len(self.midi_wav_map))
-            chunk_df = self.midi_wav_map.iloc[chunk_start:chunk_end]
-            
-            mem_before = check_memory_per_process()
-            
-            # Parallel processing of chunk
-            with parallel_backend('loky', n_jobs=n_cores):
-                chunk_results = Parallel()(
-                    delayed(process_func)(row)
-                    for _, row in chunk_df.iterrows()
-                )
-            
-            # Process results
-            valid_chunk_results = [df for df in chunk_results if df is not None and not df.empty]
-            chunk_valid = len(valid_chunk_results)
-            chunk_failed = len(chunk_df) - chunk_valid
-            total_valid += chunk_valid
-            total_failed += chunk_failed
-            
-            if batching and valid_chunk_results:
-                batch_data_accumulator.extend(valid_chunk_results)
-                batch_sample_count += sum(len(df) for df in valid_chunk_results)
-                
-                # Save batches when they reach target size, but only if we haven't reached max batches
-                while batch_sample_count >= target_samples_per_batch and self.batch_tracking < num_batches:
-                    # Extract one batch worth of data
-                    current_samples = 0
-                    batch_data = []
-                    remaining_data = []
-                    
-                    for df in batch_data_accumulator:
-                        if current_samples + len(df) <= target_samples_per_batch:
-                            batch_data.append(df)
-                            current_samples += len(df)
-                        else:
-                            remaining_data.append(df)
-                    
-                    if not batch_data:
-                        # If single dataframe is larger than target, save it anyway
-                        batch_data = batch_data_accumulator[:1]
-                        remaining_data = batch_data_accumulator[1:]
-                        current_samples = len(batch_data[0]) if batch_data else 0
-                    
-                    # Find next available batch number
-                    while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
-                        self.batch_tracking += 1
-                    
-                    self._save_batch_sequential(batch_data, self.batch_tracking, dir_path)
-                    logger.info(f"Saved batch {self.batch_tracking} ({current_samples} samples)")
-                    
-                    # Update accumulators
-                    batch_data_accumulator = remaining_data
-                    batch_sample_count -= current_samples
-                    self.batch_tracking += 1
-                    
-                    import gc
-                    gc.collect()
-            
-            # Check if we've reached target number of batches
-            if batching and self.batch_tracking >= num_batches:
-                logger.info(f"Reached target number of batches ({num_batches}), stopping chunk processing")
-                break
-            
-            # Memory cleanup
-            del chunk_results, valid_chunk_results
-            import gc
-            gc.collect()
-            
-            mem_after = check_memory_per_process()
-            logger.debug(f"Chunk {chunk_start//chunk_size + 1}: {chunk_valid} valid, {chunk_failed} failed, memory: {mem_before:.1f}GB -> {mem_after:.1f}GB")
-        
-        # Save remaining data only if we haven't reached the batch limit
-        if batching and batch_data_accumulator and self.batch_tracking < num_batches:
-            while os.path.exists(os.path.join(dir_path, f"{self.batch_tracking}_train.pkl")):
-                self.batch_tracking += 1
-            self._save_batch_sequential(batch_data_accumulator, self.batch_tracking, dir_path)
-            logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
-        
-        logger.info(f"Parallel processing complete: {total_valid} valid, {total_failed} failed")
-        return total_valid
-    
+            if result is not None:
+                df_list.append(result)
+                total_processed += 1
+
+            # Batch saving logic
+            if batching and len(df_list) >= 1000:
+                self._save_batch_sequential(df_list, batch_idx, dir_path)
+                batch_idx += 1
+                df_list.clear()  # Clear list after saving
+
+            # Memory check
+            if i % 100 == 0:
+                memory_check_func()
+
+        # Final batch save
+        if df_list:
+            self._save_batch_sequential(df_list, batch_idx, dir_path)
+
+        logger.info(f"Sequential processing complete: {total_processed} file pairs processed.")
+        return total_processed
+
     def _save_batch_sequential(self, df_list, batch_idx, dir_path):
-        """Save batch without modifying the input list"""
+        """
+        Save a batch of DataFrames to disk as pickle files.
+        
+        :param df_list: List of DataFrames to save
+        :param batch_idx: Index of the batch (used for naming the output file)
+        :param dir_path: Directory path where the pickle files will be saved
+        """
         if not df_list:
             return
-        
-        notes_collection_batch = pd.concat(df_list, ignore_index=True)
-        
-        # Train/Val/Test Split
-        train_frac, val_frac = 0.6, 0.2
-        shuffled_batch = notes_collection_batch.sample(frac=1, random_state=42).reset_index(drop=True)
-        
-        n_total = len(shuffled_batch)
-        n_train = int(train_frac * n_total)
-        n_val = int(val_frac * n_total)
-        
-        train_df = shuffled_batch.iloc[:n_train].copy()
-        val_df = shuffled_batch.iloc[n_train:n_train + n_val].copy()
-        test_df = shuffled_batch.iloc[n_train + n_val:].copy()
-        
-        # Save files
-        train_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_train.pkl"))
-        val_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_val.pkl"))
-        test_df.to_pickle(os.path.join(dir_path, f"{batch_idx}_test.pkl"))
-        
-        # Cleanup
-        del notes_collection_batch, shuffled_batch, train_df, val_df, test_df
-        import gc
-        gc.collect()
 
-    def augment_audio(self, audio_col='audio_wav', aug_col_names=None, aug_param_dict={}, train_only=False):
-        aug_start_time = time.perf_counter()
-        target_df_name = 'train' if train_only else 'notes_collection'
-        logger.info(f"Starting audio augmentation on '{target_df_name}' (train_only={train_only}). Using params: {aug_param_dict or 'default'}")
+        combined_df = pd.concat(df_list, ignore_index=True)
+        output_file = os.path.join(dir_path, f"audio_set_batch_{batch_idx}.pkl")
+        combined_df.to_pickle(output_file)
 
-        if not aug_param_dict:
-            # --- Updated Default Augmentation Parameters --- 
-            print("Using default augmentation parameters with randomization.")
-            aug_param_dict = {
-                'add_white_noise': {'snr_db_range': (10, 30)}, # Use randomized SNR
-                'augment_pitch': {'n_steps_range': (-2, 2)}, # Use randomized pitch steps
-                'add_pedalboard_effects': { # Use randomized reverb/lowpass
-                    'room_size_range': (0.1, 0.8),
-                    'cutoff_freq_hz_range': (1000, 6000)
-                },
-                # Example: Add lowpass filter separately sometimes
-                # 'add_lowpass_filter': {'cutoff_freq_hz_range': (1500, 7000)}
-            }
-            # --- End Updated Defaults --- 
-            
-        # The rest of the function remains the same, calling the updated apply_augmentations
-        if train_only:
-             if hasattr(self, 'train') and not self.train.empty:
-                 logger.info(f"Applying augmentations to training set ({len(self.train)} samples)...")
-                 self.train = apply_augmentations(self.train, audio_col, aug_col_names, **aug_param_dict)
-             else:
-                 logger.warning("Skipping augmentation: 'train_only' is True, but self.train is not available or empty.")
-        else:
-             if not self.notes_collection.empty:
-                 logger.info(f"Applying augmentations to entire dataset ({len(self.notes_collection)} samples)...")
-                 self.notes_collection = apply_augmentations(self.notes_collection, audio_col, aug_col_names, **aug_param_dict)
-             else:
-                 logger.warning("Skipping augmentation: self.notes_collection is empty.")
+        logger.info(f"Saved batch {batch_idx}: {len(combined_df)} records to {output_file}")
 
-        aug_end_time = time.perf_counter()
-        logger.info(f"Audio augmentation finished in {aug_end_time - aug_start_time:.2f} seconds.")
+    # --- Deprecated: Legacy parallel processing function ---
+    def _process_parallel(self, process_func, batching, dir_path, num_batches, memory_check_func, memory_limit_gb):
+        """
+        Legacy parallel processing function. This is now handled by create_audio_set directly.
+        Kept for backwards compatibility but not intended for direct use.
+        """
+        logger.warning("Warning: _process_parallel is deprecated. Please use create_audio_set directly.")
+        
+        total_processed = 0
+        df_list = []
+        batch_idx = 0
+
+        num_parallel_jobs = min(os.cpu_count(), 6)  # Limit to 6 parallel jobs
+
+        with parallel_backend('loky', n_jobs=num_parallel_jobs):
+            for i, row in enumerate(tqdm(self.midi_wav_map.itertuples(index=False), desc="Processing file pairs")):
+                result = process_func(row)
+                if result is not None:
+                    df_list.append(result)
+                    total_processed += 1
+
+                # Batch saving logic
+                if batching and len(df_list) >= 1000:
+                    self._save_batch_sequential(df_list, batch_idx, dir_path)
+                    batch_idx += 1
+                    df_list.clear()  # Clear list after saving
+
+                # Memory check
+                if i % 100 == 0:
+                    memory_check_func()
+
+        # Final batch save
+        if df_list:
+            self._save_batch_sequential(df_list, batch_idx, dir_path)
+
+        logger.info(f"Parallel processing complete: {total_processed} file pairs processed.")
+        return total_processed
