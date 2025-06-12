@@ -1,6 +1,15 @@
 import sys
 import os
 
+# Add project root to sys.path to ensure model_training can be found by workers
+# __file__ is model_training/data_preparation.py
+# os.path.dirname(__file__) is the directory of this file (model_training)
+# os.path.join(os.path.dirname(__file__), '..') is the parent directory (project root)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+    # print(f"[data_preparation.py top-level] Added to sys.path: {_PROJECT_ROOT}") # For debugging
+
 import itertools
 import math
 
@@ -19,13 +28,27 @@ from model_training.augment_audio import apply_augmentations
 
 import soundfile as sf
 from joblib import Parallel, delayed, parallel_backend
-import math
 from functools import partial
 import logging
 import time
 
 # Configure logging at the module level
 logger = logging.getLogger(__name__)
+
+# Aliased imports for top-level helper
+import soundfile as sf_top
+import os as os_top
+
+def get_duration_joblib_helper(filepath, base_dir):
+    try:
+        info = sf_top.info(os_top.path.join(base_dir, filepath))
+        return info.duration
+    except Exception as e:
+        # Using logger, but ensure logger is configured to be multiprocess-safe if issues persist
+        # For now, direct print might be more visible from workers in Colab if logger isn't showing up
+        # print(f"[Worker] Error in get_duration_joblib_helper for {filepath}: {e}")
+        logger.warning(f"Error getting duration for {filepath} in get_duration_joblib_helper: {e}")
+        return None
 
 def get_number_of_audio_set_batches() -> int:
     return 50
@@ -73,35 +96,36 @@ class data_preparation():
             logger.info("Calculating audio durations using soundfile...")
             duration_calc_start_time = time.perf_counter()
 
-            def get_wav_duration(filepath, base_dir): # Pass base_dir explicitly
-                try:
-                    info = sf.info(os.path.join(base_dir, filepath))
-                    return info.duration
-                except Exception as e:
-                    logger.warning(f"Error getting duration for {filepath}: {e}") # Use warning
-                    return None
-
             # Parallelize duration calculation
             if self.n_jobs == 1:
                 logger.info("Using sequential processing for duration calculation (n_jobs=1)")
                 durations = []
                 for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating audio durations sequentially")):
-                    duration = get_wav_duration(filename, self.directory_path)
+                    duration = get_duration_joblib_helper(filename, self.directory_path) # Use top-level helper
                     durations.append(duration)
                     if i % 200 == 0: # Less frequent GC for sequential
                         import gc
                         gc.collect()
             else:
-                logger.info(f"Using parallel processing for duration calculation with n_jobs={self.n_jobs}")
-                num_parallel_jobs = self.n_jobs if self.n_jobs > 0 else os.cpu_count()
+                logger.info(f"Using joblib.Parallel for duration calculation with n_jobs={self.n_jobs}")
+                num_parallel_jobs = self.n_jobs if self.n_jobs > 0 else os_top.cpu_count()
                 logger.info(f"Effective number of parallel jobs for duration calculation: {num_parallel_jobs}")
                 
-                # tasks = [delayed(get_wav_duration)(filename, self.directory_path) for filename in df['audio_filename']]
-                # Use a wrapper function for pickling compatibility
-                tasks = [delayed(self._get_wav_duration_wrapper)(filename) for filename in df['audio_filename']]
+                tasks = [delayed(get_duration_joblib_helper)(filename, self.directory_path) for filename in df['audio_filename']]
 
-                with parallel_backend('loky', n_jobs=num_parallel_jobs):
-                    durations = Parallel(verbose=10)(tasks)
+                try:
+                    with parallel_backend('loky', n_jobs=num_parallel_jobs):
+                        durations = Parallel(verbose=10)(tasks)
+                except Exception as joblib_error:
+                    logger.error(f"Error during joblib.Parallel execution for durations: {joblib_error}", exc_info=True)
+                    # Attempt to diagnose if the module is importable in the main process context after failure
+                    try:
+                        import model_training.data_preparation
+                        logger.info("DIAGNOSTIC: Successfully imported model_training.data_preparation in main process after joblib error.")
+                    except ImportError as ie:
+                        logger.error(f"DIAGNOSTIC: Failed to import model_training.data_preparation in main process after joblib error: {ie}")
+                    raise
+
 
             df['wav_length'] = durations
             duration_calc_end_time = time.perf_counter()
@@ -185,7 +209,7 @@ class data_preparation():
         init_end_time = time.perf_counter()
         logger.info(f"data_preparation initialization finished in {init_end_time - init_start_time:.2f} seconds.")
 
-    # Keep get_length in case it's used elsewhere, but __init__ now uses soundfile
+    # Keep get_length in case it\'s used elsewhere, but __init__ now uses soundfile
     def get_length(self,x):
         # This is now less efficient than sf.info(path).duration
         try:
@@ -193,16 +217,6 @@ class data_preparation():
             return librosa.get_duration(y=wav, sr=sr)
         except Exception as e:
             print(f"Librosa error loading {x}: {e}")
-            return None
-
-    # Wrapper function for get_wav_duration to ensure it's picklable by joblib
-    def _get_wav_duration_wrapper(self, filepath):
-        # This method is part of the class, so self.directory_path is accessible
-        try:
-            info = sf.info(os.path.join(self.directory_path, filepath))
-            return info.duration
-        except Exception as e:
-            logger.warning(f"Error getting duration for {filepath}: {e}")
             return None
 
     def notes_extraction(self, midi_file):
@@ -340,12 +354,6 @@ class data_preparation():
     
     # --- Optimization: Helper function for parallel processing of one file pair ---
     def _process_file_pair(self, row, pad_before, pad_after, fix_length, memory_limit_gb=None):
-        # Ensure model_training module can be found by loky workers in Colab
-        import sys
-        import os
-        colab_project_path = '/content/chart-hero'  # Path used in the notebook
-        if colab_project_path not in sys.path:
-            sys.path.insert(0, colab_project_path) # Insert at beginning to be safe
 
         pair_start_time = time.perf_counter()
         midi_file = row['midi_filename']
