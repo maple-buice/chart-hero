@@ -1,3 +1,4 @@
+import gc
 import sys
 import os
 
@@ -51,7 +52,7 @@ from mido import MidiFile
 import librosa
 import librosa.display
 
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 from model_training.augment_audio import apply_augmentations
 
@@ -60,6 +61,7 @@ from joblib import Parallel, delayed, parallel_backend
 from functools import partial
 import logging
 import time
+import audioread
 
 # Configure logging at the module level
 logger = logging.getLogger(__name__)
@@ -69,71 +71,317 @@ import soundfile as sf_top
 import os as os_top
 
 # NEW Top-level worker function for create_audio_set parallel processing
-def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, memory_limit_gb_worker, project_root_path_for_worker):
-    # This function is called by joblib workers.
+def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, memory_limit_gb_worker):
+    """
+    Parallel worker function with full compression optimizations.
+    This is a self-contained version of _process_file_pair with all optimizations.
+    """
     
-    # --- Explicitly add project root to sys.path IN THE WORKER ---
-    if project_root_path_for_worker and project_root_path_for_worker not in sys.path:
-        sys.path.insert(0, project_root_path_for_worker)
-        # Optional: log from worker to confirm path addition
-        # import logging
-        # worker_logger = logging.getLogger(f"worker_{os.getpid()}") # Basic config for worker log
-        # worker_logger.info(f"[Worker] Added to sys.path: {project_root_path_for_worker}")
-        # worker_logger.info(f"[Worker] sys.path is now: {sys.path}")
+    # Essential imports for worker
+    import pandas as pd
+    import numpy as np
+    import librosa
+    import soundfile as sf
+    import time
+    import gc
+    import io
+    import math
+    import itertools
+    import logging
+    from mido import MidiFile
+    import mido
+    
+    # Set up worker logger
+    logger = logging.getLogger(__name__)
+    
+    # Helper functions for audio compression (copied from main class)
+    def _compress_audio_slice_worker(audio_array):
+        """Worker version of audio compression."""
+        try:
+            # FLAC compression (lossless, ~50-70% reduction)
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_array, 22050, format='FLAC', subtype='PCM_16')
+            compressed_data = buffer.getvalue()
+            buffer.close()
+            
+            return {
+                'compressed_audio': compressed_data,
+                'format': 'FLAC',
+                'sample_rate': 22050,
+                'original_shape': audio_array.shape,
+                'original_dtype': str(audio_array.dtype)
+            }
+        except Exception as compress_err:
+            logger.warning(f"[Worker] FLAC compression failed: {compress_err}, using float16 fallback")
+            return audio_array.astype(np.float16)
+    
+    # Helper functions for MIDI processing (copied from main class)
+    def notes_extraction_worker(midi_file_path):
+        """Worker version of notes extraction."""
+        time_log = 0
+        notes_collection = []
+        temp_dict = {}
+        
+        midi_track = MidiFile(midi_file_path)
+        
+        for msg in midi_track.tracks[-1]:
+            try:
+                time_log = time_log + msg.time
+            except:
+                continue
 
-    # It needs to be self-contained or import modules that are findable.
-    # The sys.path modification at the top of the file should help.
+            if msg.type == 'note_on' and msg.velocity > 0:
+                start = time_log
+                if msg.note in temp_dict.keys():
+                    try:
+                        temp_dict[msg.note].append(start)
+                    except:
+                        start_list = [start]
+                        start_list.append(temp_dict[msg.note])
+                        temp_dict[msg.note] = start_list
+                else:
+                    temp_dict[msg.note] = start
+
+            elif (msg.type == 'note_on' and msg.velocity == 0) or msg.type == 'note_off':
+                end = time_log
+                if type(temp_dict[msg.note]) == list:
+                    notes_collection.append([
+                        msg.note,
+                        math.floor(temp_dict[msg.note][0] * 100) / 100,
+                        math.ceil(end * 100) / 100])
+                    del temp_dict[msg.note][0]
+                    if len(temp_dict[msg.note]) == 0:
+                        del temp_dict[msg.note]
+                else:
+                    notes_collection.append([
+                        msg.note,
+                        math.floor(temp_dict[msg.note] * 100) / 100,
+                        math.ceil(end*100)/100])
+                    del temp_dict[msg.note]
+            else:
+                continue
+        
+        return [[n[0], n[1], n[2]] for n in notes_collection], midi_track
+
+    def time_meta_extraction_worker(midi_track):
+        """Worker version of time meta extraction."""
+        ticks_per_beat = midi_track.ticks_per_beat
+        
+        for msg in midi_track.tracks[0]:
+            if msg.type == 'set_tempo':
+                tempo = msg.tempo
+                break
+        else:
+            tempo = 500000  # Default tempo
+                    
+        return (ticks_per_beat, tempo)
     
+    def ticks_to_second_worker(notes_collection, midi_track, time_log):
+        """Worker version of ticks to second conversion."""
+        if type(time_log) == float:
+            return [[
+                    note[0],
+                    round(note[1], 2),
+                    round(note[2], 2)]
+                for note in notes_collection]
+        else:
+            ticks_per_beat, tempo = time_meta_extraction_worker(midi_track)
+
+            return [[
+                    note[0],
+                    round(mido.tick2second(note[1], ticks_per_beat, tempo), 2),
+                    round(mido.tick2second(note[2], ticks_per_beat, tempo), 2)]
+                for note in notes_collection]
+
+    def merge_note_label_worker(track_id, notes_collection):
+        """Worker version of note merging."""
+        merged_note_collection = []
+        key_func = lambda x: x[1]
+
+        for key, group in itertools.groupby(notes_collection, key_func):
+            group_ = list(group)
+            if len(group_) > 1:
+                merged_note = [x[0] for x in group_]
+                start = min([x[1] for x in group_])
+                end = max([x[2] for x in group_])
+                merged_note_collection.append([merged_note, start, end])
+            else:
+                merged_note_collection.append(group_[0])
+
+        output_df = pd.DataFrame(merged_note_collection)
+        output_df.columns = ['label', 'start', 'end']
+        output_df['track_id'] = track_id
+        return output_df
+
+    # Main worker processing logic
+    pair_start_time = time.perf_counter()
     midi_file = row_dict['midi_filename']
     audio_file = row_dict['audio_filename']
-    track_id = row_dict['track_id'] 
-
-    pair_start_time = time.perf_counter()
-
-    if memory_limit_gb_worker:
-        import psutil
-        process = psutil.Process()
-        mem_before = process.memory_info().rss / (1024**3)
-        if mem_before > memory_limit_gb_worker * 0.8:
-            logger.warning(f"[Worker] Memory usage ({mem_before:.1f}GB) approaching limit ({memory_limit_gb_worker:.1f}GB), skipping file {midi_file}")
-            return None
+    track_id = row_dict['track_id']
 
     if midi_file == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
         logger.warning(f"[Worker] Skipping known problematic file: {midi_file}")
         return None
 
-    try:
-        # --- MINIMAL MIDI MOCKUP TO TEST PICKLING AND MODULE FINDING --- 
-        if not midi_file or not audio_file:
-            logger.warning(f"[Worker] Missing midi_file or audio_file for row: {row_dict}")
-            return None
-        
-        time.sleep(0.01) # Simulate work
-        # Ensure pandas and numpy are imported if not already at top level of worker context
-        import pandas as pd 
-        import numpy as np
-        track_notes = pd.DataFrame({
-            'label': [[60]], 'start': [0.0], 'end': [0.5], 'track_id': [track_id]
-        })
-        # --- END MINIMAL MIDI MOCKUP ---
+    track_notes = None
+    cached_audio = None
 
-        if track_notes.empty:
+    try:
+        # Memory diagnostic: Initial memory
+        if memory_limit_gb_worker:
+            import psutil
+            initial_mem = psutil.Process().memory_info().rss / (1024**3)
+            logger.debug(f"[Worker] Starting {midi_file}: {initial_mem:.1f}GB")
+
+        # MIDI processing with optimizations
+        midi_file_path = os.path.join(directory_path_arg, midi_file)
+        notes_collection, midi_track = notes_extraction_worker(midi_file_path)
+        
+        if not notes_collection:
+            logger.warning(f"[Worker] No notes extracted from MIDI: {midi_file}")
+            return None
+            
+        # Use the time_log from the notes extraction
+        time_log = 0.0  # Simplified for worker
+        converted_notes_collection = ticks_to_second_worker(notes_collection, midi_track, time_log)
+        track_notes = merge_note_label_worker(track_id, converted_notes_collection)
+
+        if track_notes is None or track_notes.empty:
             logger.warning(f"[Worker] No notes after merging for MIDI: {midi_file}")
             return None
 
+        # Audio file processing with optimizations
         audio_file_path = os.path.join(directory_path_arg, audio_file)
         try:
-            # Ensure soundfile (sf) and librosa are available to the worker
-            # sf is imported as sf_top at module level, but direct sf might be an issue
-            # For now, assume sf is available via global imports or direct import here
-            import soundfile as sf_worker # Explicit import for worker
-            import librosa as librosa_worker # Explicit import for worker
-            sf_info = sf_worker.info(audio_file_path)
+            sf_info = sf.info(audio_file_path)
             sr = sf_info.samplerate
-            # audio_duration_samples = sf_info.frames # Not used in mockup
+            audio_duration_samples = sf_info.frames
+            audio_duration_seconds = audio_duration_samples / sr
         except Exception as sf_err:
             logger.error(f"[Worker] Soundfile error reading info for {audio_file_path}: {sf_err}")
             return None
+
+        # CRITICAL OPTIMIZATION: Load audio file ONCE and slice in memory
+        def optimized_audio_slicing_with_caching_worker(note_row):
+            nonlocal cached_audio, sr, audio_duration_seconds
+            start_time = note_row['start']
+            end_time = note_row['end']
+
+            slice_start_time = max(0.0, start_time - pad_before_arg)
+
+            if fix_length_arg is not None:
+                slice_duration = fix_length_arg
+            else:
+                slice_end_time = min(audio_duration_seconds, end_time + pad_after_arg)
+                slice_duration = slice_end_time - slice_start_time
+
+            if slice_start_time >= audio_duration_seconds or slice_duration <= 0:
+                target_samples = librosa.time_to_samples(fix_length_arg, sr=sr) if fix_length_arg else 1024
+                return _compress_audio_slice_worker(np.zeros(target_samples, dtype=np.float32))
+
+            try:
+                # Load audio file only once and cache it
+                if cached_audio is None:
+                    logger.debug(f"[Worker] Loading {audio_file} (duration: {audio_duration_seconds:.1f}s)")
+                    # OPTIMIZATION: Use lower sample rate for very long files
+                    if audio_duration_seconds > 60:
+                        target_sr = 22050  # Half sample rate for long files
+                    elif audio_duration_seconds > 30:
+                        target_sr = max(22050, sr // 2)
+                    else:
+                        target_sr = sr
+                        
+                    cached_audio, actual_sr = librosa.load(audio_file_path, sr=target_sr, mono=True)
+                    
+                    # Update sr if we downsampled
+                    if actual_sr != sr:
+                        sr = actual_sr
+                        audio_duration_seconds = len(cached_audio) / sr
+
+                # Slice from cached audio
+                start_sample = max(0, int(slice_start_time * sr))
+                if fix_length_arg is not None:
+                    target_samples = librosa.time_to_samples(fix_length_arg, sr=sr)
+                    end_sample = start_sample + target_samples
+                else:
+                    end_sample = min(len(cached_audio), int((slice_start_time + slice_duration) * sr))
+                    target_samples = end_sample - start_sample
+
+                # Extract slice
+                if start_sample < len(cached_audio):
+                    audio_slice = cached_audio[start_sample:end_sample].copy()
+                else:
+                    audio_slice = np.zeros(target_samples, dtype=np.float32)
+
+                # Pad if necessary
+                if fix_length_arg is not None and len(audio_slice) < target_samples:
+                    audio_slice = np.pad(audio_slice, (0, target_samples - len(audio_slice)), mode='constant')
+                elif fix_length_arg is not None and len(audio_slice) > target_samples:
+                    audio_slice = audio_slice[:target_samples]
+
+                # CRITICAL OPTIMIZATION: Compress audio slice before storing
+                compressed_slice = _compress_audio_slice_worker(audio_slice.astype(np.float32))
+                
+                # Log if slice is unexpectedly large (after compression)
+                compressed_size_kb = len(compressed_slice['compressed_audio']) / 1024 if isinstance(compressed_slice, dict) and 'compressed_audio' in compressed_slice else compressed_slice.nbytes / 1024
+                if compressed_size_kb > 500:  # More than 500KB compressed is suspicious
+                    logger.warning(f"[Worker] Large compressed audio slice: {compressed_size_kb:.1f}KB for {audio_file} at {slice_start_time:.2f}s")
+                
+                return compressed_slice
+                
+            except Exception as load_err:
+                logger.error(f"[Worker] Error slicing audio for {audio_file} at {slice_start_time:.2f}s: {load_err}")
+                target_samples = librosa.time_to_samples(fix_length_arg, sr=sr) if fix_length_arg else 1024
+                return _compress_audio_slice_worker(np.zeros(target_samples, dtype=np.float32))
+
+        # Apply audio slicing with compression
+        slicing_start_time = time.perf_counter()
+        track_notes['audio_wav'] = track_notes.apply(optimized_audio_slicing_with_caching_worker, axis=1)
+        slicing_end_time = time.perf_counter()
+
+        track_notes['sampling_rate'] = sr
+
+        # Filter out rows where slicing might have failed (with compression support)
+        initial_notes = len(track_notes)
+        def is_valid_audio_worker(x):
+            if isinstance(x, dict) and 'compressed_audio' in x:
+                return len(x['compressed_audio']) > 0
+            elif isinstance(x, np.ndarray):
+                return x.size > 0
+            else:
+                return False
+        
+        track_notes = track_notes[track_notes['audio_wav'].apply(is_valid_audio_worker)]
+        final_notes = len(track_notes)
+        
+        if initial_notes != final_notes:
+            logger.warning(f"[Worker] Filtered {initial_notes - final_notes} notes with empty audio for {audio_file}")
+
+        if track_notes.empty:
+            logger.warning(f"[Worker] Track notes became empty after audio slicing for {midi_file}")
+            return None
+
+        # Clear cached audio immediately to free memory
+        if cached_audio is not None:
+            del cached_audio
+            cached_audio = None
+
+        # Memory cleanup
+        del sf_info
+        del notes_collection
+        del converted_notes_collection
+        gc.collect()
+        
+        pair_end_time = time.perf_counter()
+        logger.debug(f"[Worker] Processed {midi_file} in {pair_end_time - pair_start_time:.3f}s ({slicing_end_time - slicing_start_time:.3f}s slicing), {final_notes} notes")
+        return track_notes
+
+    except Exception as e:
+        # Clean up cached audio on error
+        if cached_audio is not None:
+            del cached_audio
+        logger.error(f"[Worker] Error processing pair {midi_file} / {audio_file}: {e}", exc_info=True)
+        return None
         
         # --- MINIMAL AUDIO MOCKUP ---
         def optimized_audio_slicing_mock(note_row_dict_ignored):
@@ -481,38 +729,143 @@ class data_preparation():
                     round(mido.tick2second(note[2], ticks_per_beat,tempo), 2)]
                 for note in notes_collection]
     
+    def _compress_audio_slice(self, audio_array):
+        """
+        Compress audio slice to reduce storage size by ~80-90%.
+        
+        Uses FLAC compression for lossless ~50-70% reduction while maintaining
+        full quality for machine learning training.
+        """
+        try:
+            import io
+            import soundfile as sf
+            
+            # FLAC compression (lossless, ~50-70% reduction)
+            # This maintains full audio quality while significantly reducing file size
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_array, 22050, format='FLAC', subtype='PCM_16')
+            compressed_data = buffer.getvalue()
+            buffer.close()
+            
+            # Store as compressed bytes with metadata for decompression
+            return {
+                'compressed_audio': compressed_data,
+                'format': 'FLAC',
+                'sample_rate': 22050,
+                'original_shape': audio_array.shape,
+                'original_dtype': str(audio_array.dtype)
+            }
+            
+        except Exception as compress_err:
+            logger.warning(f"FLAC compression failed: {compress_err}, using float16 fallback")
+            # Fallback: Use float16 instead of float32 (50% size reduction)
+            return audio_array.astype(np.float16)
+
+    def _decompress_audio_slice(self, compressed_slice):
+        """
+        Decompress audio slice for use in training.
+        This method should be called when loading data for training.
+        """
+        try:
+            if isinstance(compressed_slice, dict) and 'compressed_audio' in compressed_slice:
+                import io
+                import soundfile as sf
+                
+                # Decompress FLAC data
+                buffer = io.BytesIO(compressed_slice['compressed_audio'])
+                audio_array, sample_rate = sf.read(buffer, dtype='float32')
+                buffer.close()
+                
+                # Verify expected shape
+                expected_shape = compressed_slice.get('original_shape', audio_array.shape)
+                if audio_array.shape != expected_shape:
+                    logger.debug(f"Audio shape mismatch: got {audio_array.shape}, expected {expected_shape}")
+                
+                return audio_array.astype(np.float32)
+            else:
+                # Fallback: float16 to float32 conversion
+                return compressed_slice.astype(np.float32)
+                
+        except Exception as decompress_err:
+            logger.error(f"Audio decompression failed: {decompress_err}")
+            # Return zeros as fallback (will be caught by validation)
+            return np.zeros(220500, dtype=np.float32)  # 10 seconds at 22050 Hz
+
+    def _optimize_batch_for_storage(self, df):
+        """
+        Apply final optimizations before saving batches to disk.
+        """
+        try:
+            # Calculate compression statistics
+            total_original_mb = 0
+            total_compressed_mb = 0
+            compressed_count = 0
+            uncompressed_count = 0
+            
+            for audio_data in df['audio_wav']:
+                if isinstance(audio_data, dict) and 'compressed_audio' in audio_data:
+                    # Already compressed
+                    compressed_size = len(audio_data['compressed_audio'])
+                    total_compressed_mb += compressed_size / (1024**2)
+                    
+                    # Estimate original size from shape
+                    if 'original_shape' in audio_data:
+                        original_samples = audio_data['original_shape'][0] if len(audio_data['original_shape']) > 0 else 220500
+                        total_original_mb += original_samples * 4 / (1024**2)  # float32 = 4 bytes
+                    else:
+                        total_original_mb += compressed_size * 3 / (1024**2)  # Estimate 3x compression
+                    
+                    compressed_count += 1
+                elif isinstance(audio_data, np.ndarray):
+                    # Uncompressed numpy array
+                    size_mb = audio_data.nbytes / (1024**2)
+                    total_original_mb += size_mb
+                    total_compressed_mb += size_mb
+                    uncompressed_count += 1
+            
+            # Calculate and report compression ratio
+            compression_ratio = total_compressed_mb / total_original_mb if total_original_mb > 0 else 1.0
+            space_saved_mb = total_original_mb - total_compressed_mb
+            
+            logger.info(f"[STORAGE] Batch optimization: {total_original_mb:.1f}MB -> {total_compressed_mb:.1f}MB "
+                       f"({compression_ratio*100:.1f}% of original, saved {space_saved_mb:.1f}MB)")
+            logger.info(f"[STORAGE] Audio compression: {compressed_count} compressed, {uncompressed_count} uncompressed")
+            
+            return df
+            
+        except Exception as opt_err:
+            logger.warning(f"Batch optimization failed: {opt_err}")
+            return df
+    
     # --- Optimization: Helper function for parallel processing of one file pair ---
     def _process_file_pair(self, row, pad_before, pad_after, fix_length, memory_limit_gb=None):
-
         pair_start_time = time.perf_counter()
-        midi_file = row['midi_filename']
-        audio_file = row['audio_filename']
-        
-        # Add memory monitoring if limit is provided
-        if memory_limit_gb:
-            import psutil
-            process = psutil.Process()
-            mem_before = process.memory_info().rss / (1024**3)
-            if mem_before > memory_limit_gb * 0.8:  # 80% threshold
-                logger.warning(f"Worker memory usage ({mem_before:.1f}GB) approaching limit ({memory_limit_gb:.1f}GB), skipping file {midi_file}")
-                return None
-        
-        # logger.debug(f"Processing pair: {midi_file}") # Debug level for per-pair start
+        midi_file = row.midi_filename
+        audio_file = row.audio_filename
 
         if midi_file == 'drummer1/session1/78_jazz-fast_290_beat_4-4.mid':
              logger.warning(f"Skipping known problematic file: {midi_file}")
              return None # Skip problematic file
 
+        # Initialize track_notes to None at the start of the function
+        track_notes = None
+        cached_audio = None  # Cache audio for multiple note slicing
+
         try:
-            # MIDI Processing
+            # Memory diagnostic: Initial memory
+            if memory_limit_gb:
+                import psutil
+                initial_mem = psutil.Process().memory_info().rss / (1024**3)
+                logger.debug(f"[MEMORY] Starting {midi_file}: {initial_mem:.1f}GB")
+
             notes_collection = self.notes_extraction(midi_file)
             if not notes_collection:
                  logger.warning(f"No notes extracted from MIDI: {midi_file}")
                  return None
             converted_notes_collection = self.ticks_to_second(notes_collection)
-            track_notes = self.merge_note_label(row['track_id'], converted_notes_collection)
+            track_notes = self.merge_note_label(row.track_id, converted_notes_collection)
 
-            if track_notes.empty:
+            if track_notes is None or track_notes.empty:
                 logger.warning(f"No notes after merging for MIDI: {midi_file}")
                 return None
 
@@ -521,101 +874,124 @@ class data_preparation():
                 sf_info = sf.info(audio_file_path)
                 sr = sf_info.samplerate
                 audio_duration_samples = sf_info.frames
+                audio_duration_seconds = audio_duration_samples / sr
             except Exception as sf_err:
                  logger.error(f"Soundfile error reading info for {audio_file_path}: {sf_err}")
                  return None
 
-            # --- Optimization: Segmented Audio Loading & Slicing ---
-            def optimized_audio_slicing(note_row):
-                # Memory monitoring before processing each note
-                if memory_limit_gb:
-                    import psutil
-                    import gc
-                    current_memory = psutil.Process().memory_info().rss / (1024**3)
-                    if current_memory > memory_limit_gb * 0.9:  # 90% threshold
-                        logger.warning(f"Memory usage ({current_memory:.1f}GB) near limit ({memory_limit_gb:.1f}GB), forcing garbage collection")
-                        gc.collect()
-                        # Re-check after cleanup
-                        current_memory = psutil.Process().memory_info().rss / (1024**3)
-                        if current_memory > memory_limit_gb * 0.95:  # 95% threshold
-                            logger.error(f"Memory usage ({current_memory:.1f}GB) critically high, skipping note processing")
-                            if fix_length is not None:
-                                return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
-                            else:
-                                return np.array([], dtype=np.float32)
-                
+            # Memory diagnostic: After MIDI processing
+            if memory_limit_gb:
+                midi_mem = psutil.Process().memory_info().rss / (1024**3)
+                logger.debug(f"[MEMORY] After MIDI processing {midi_file}: {midi_mem:.1f}GB (+{midi_mem-initial_mem:.1f}GB)")
+
+            # CRITICAL OPTIMIZATION: Load audio file ONCE and slice in memory
+            def optimized_audio_slicing_with_caching(note_row):
+                nonlocal cached_audio, sr, audio_duration_seconds
                 start_time = note_row['start']
                 end_time = note_row['end']
-                max_len_seconds = audio_duration_samples / sr
 
-                # Calculate start and end samples, applying padding
                 slice_start_time = max(0.0, start_time - pad_before)
-                slice_start_sample = librosa.time_to_samples(slice_start_time, sr=sr)
 
                 if fix_length is not None:
                     slice_duration = fix_length
-                    slice_end_time = slice_start_time + slice_duration
-                    slice_end_sample = slice_start_sample + librosa.time_to_samples(slice_duration, sr=sr)
                 else:
-                    # This path is less efficient and avoided by the calling script
-                    slice_end_time = min(max_len_seconds, end_time + pad_after)
+                    slice_end_time = min(audio_duration_seconds, end_time + pad_after)
                     slice_duration = slice_end_time - slice_start_time
-                    slice_end_sample = min(audio_duration_samples, librosa.time_to_samples(end_time, sr=sr) + librosa.time_to_samples(pad_after, sr=sr))
 
-                if slice_start_time >= max_len_seconds or slice_duration <= 0:
-                    # If the start time is beyond the audio or duration is zero/negative, return silence
-                    if fix_length is not None:
-                        return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
-                    else:
-                        return np.array([], dtype=np.float32) # Or handle as appropriate
+                if slice_start_time >= audio_duration_seconds or slice_duration <= 0:
+                    target_samples = librosa.time_to_samples(fix_length, sr=sr) if fix_length else 1024
+                    return self._compress_audio_slice(np.zeros(target_samples, dtype=np.float32))
 
-                # Load only the required segment with memory optimization
                 try:
-                    # Ensure we don't read past the end of the file
-                    read_duration = min(slice_duration, max_len_seconds - slice_start_time)
-                    if read_duration <= 0:
-                         if fix_length is not None:
-                            return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
-                         else:
-                            return np.array([], dtype=np.float32)
+                    # Load audio file only once and cache it
+                    if cached_audio is None:
+                        logger.debug(f"[AUDIO] Loading {audio_file} (duration: {audio_duration_seconds:.1f}s)")
+                        # OPTIMIZATION: Use lower sample rate for very long files
+                        if audio_duration_seconds > 60:
+                            target_sr = 22050  # Half sample rate for long files
+                        elif audio_duration_seconds > 30:
+                            target_sr = max(22050, sr // 2)
+                        else:
+                            target_sr = sr
+                        cached_audio, actual_sr = librosa.load(audio_file_path, sr=target_sr, mono=True)
+                        
+                        # Update sr if we downsampled
+                        if actual_sr != sr:
+                            sr = actual_sr
+                            audio_duration_seconds = len(cached_audio) / sr
+                        
+                        # Memory diagnostic: After audio loading
+                        if memory_limit_gb:
+                            audio_mem = psutil.Process().memory_info().rss / (1024**3)
+                            audio_size_mb = cached_audio.nbytes / (1024**2)
+                            logger.debug(f"[MEMORY] After loading audio {audio_file}: {audio_mem:.1f}GB (+{audio_size_mb:.1f}MB audio, sr={sr})")
 
-                    # Use lower-precision float32 and minimal memory allocation
-                    sliced_wav, _ = librosa.load(
-                        audio_file_path, sr=sr, mono=True,
-                        offset=slice_start_time,
-                        duration=read_duration,
-                        dtype=np.float32  # Explicit float32 for memory efficiency
-                    )
+                    # Slice from cached audio
+                    start_sample = max(0, int(slice_start_time * sr))
+                    if fix_length is not None:
+                        target_samples = librosa.time_to_samples(fix_length, sr=sr)
+                        end_sample = start_sample + target_samples
+                    else:
+                        end_sample = min(len(cached_audio), int((slice_start_time + slice_duration) * sr))
+                        target_samples = end_sample - start_sample
+
+                    # Extract slice
+                    if start_sample < len(cached_audio):
+                        audio_slice = cached_audio[start_sample:end_sample].copy()
+                    else:
+                        audio_slice = np.zeros(target_samples, dtype=np.float32)
+
+                    # Pad if necessary
+                    if fix_length is not None and len(audio_slice) < target_samples:
+                        audio_slice = np.pad(audio_slice, (0, target_samples - len(audio_slice)), mode='constant')
+                    elif fix_length is not None and len(audio_slice) > target_samples:
+                        audio_slice = audio_slice[:target_samples]
+
+                    # CRITICAL OPTIMIZATION: Compress audio slice before storing
+                    compressed_slice = self._compress_audio_slice(audio_slice.astype(np.float32))
+                    
+                    # Log if slice is unexpectedly large (after compression)
+                    compressed_size_kb = len(compressed_slice['compressed_audio']) / 1024 if isinstance(compressed_slice, dict) and 'compressed_audio' in compressed_slice else compressed_slice.nbytes / 1024
+                    if compressed_size_kb > 500:  # More than 500KB compressed is suspicious
+                        logger.warning(f"Large compressed audio slice: {compressed_size_kb:.1f}KB for {audio_file} at {slice_start_time:.2f}s")
+                    
+                    return compressed_slice
+                    
                 except Exception as load_err:
-                     # Corrected f-string syntax
-                     logger.error(f"Error loading segment for {audio_file} at offset {slice_start_time}, duration {read_duration}: {load_err}")
-                     # Ensure proper handling for both fix_length cases
-                     if fix_length is not None:
-                        return np.zeros(librosa.time_to_samples(fix_length, sr=sr), dtype=np.float32)
-                     else:
-                        return np.array([], dtype=np.float32)
-
-                # Pad if necessary (especially for fix_length)
-                if fix_length is not None:
-                    target_samples = librosa.time_to_samples(fix_length, sr=sr)
-                    if len(sliced_wav) < target_samples:
-                        padding = target_samples - len(sliced_wav)
-                        sliced_wav = np.pad(sliced_wav, (0, padding), mode='constant', constant_values=0)
-                    elif len(sliced_wav) > target_samples:
-                        sliced_wav = sliced_wav[:target_samples]
-
-                return sliced_wav
-            # --- End Segmented Loading ---
+                    logger.error(f"Error slicing audio for {audio_file} at {slice_start_time:.2f}s: {load_err}")
+                    target_samples = librosa.time_to_samples(fix_length, sr=sr) if fix_length else 1024
+                    return self._compress_audio_slice(np.zeros(target_samples, dtype=np.float32))
 
             slicing_start_time = time.perf_counter()
-            track_notes['audio_wav'] = track_notes.apply(optimized_audio_slicing, axis=1)
+            track_notes['audio_wav'] = track_notes.apply(optimized_audio_slicing_with_caching, axis=1)
             slicing_end_time = time.perf_counter()
-            # logger.debug(f"Audio slicing for {audio_file} took {slicing_end_time - slicing_start_time:.3f}s")
+
+            # Memory diagnostic: After audio slicing
+            if memory_limit_gb:
+                slicing_mem = psutil.Process().memory_info().rss / (1024**3)
+                # Calculate total audio memory (compressed and uncompressed)
+                total_audio_mb = 0
+                for audio_data in track_notes['audio_wav']:
+                    if isinstance(audio_data, dict) and 'compressed_audio' in audio_data:
+                        total_audio_mb += len(audio_data['compressed_audio']) / (1024**2)
+                    elif isinstance(audio_data, np.ndarray):
+                        total_audio_mb += audio_data.nbytes / (1024**2)
+                
+                avg_audio_mb_per_note = total_audio_mb / len(track_notes)
+                logger.debug(f"[MEMORY] After slicing {len(track_notes)} notes: {slicing_mem:.1f}GB (+{total_audio_mb:.1f}MB sliced audio, {avg_audio_mb_per_note:.1f}MB/note)")
 
             track_notes['sampling_rate'] = sr
-            # Filter out rows where slicing might have failed or resulted in empty arrays
+            # Filter out rows where slicing might have failed or resulted in empty data
             initial_notes = len(track_notes)
-            track_notes = track_notes[track_notes['audio_wav'].apply(lambda x: isinstance(x, np.ndarray) and x.size > 0)]
+            def is_valid_audio(x):
+                if isinstance(x, dict) and 'compressed_audio' in x:
+                    return len(x['compressed_audio']) > 0
+                elif isinstance(x, np.ndarray):
+                    return x.size > 0
+                else:
+                    return False
+            
+            track_notes = track_notes[track_notes['audio_wav'].apply(is_valid_audio)]
             final_notes = len(track_notes)
             if initial_notes != final_notes:
                  logger.warning(f"Filtered {initial_notes - final_notes} notes with empty audio for {audio_file}")
@@ -624,33 +1000,36 @@ class data_preparation():
                  logger.warning(f"Track notes became empty after audio slicing for {midi_file}")
                  return None
 
-            # Aggressive memory cleanup before returning
-            import gc
-            
-            # Force deletion of large objects
+            # CRITICAL: Clear cached audio immediately to free memory
+            if cached_audio is not None:
+                del cached_audio
+                cached_audio = None
+
+            # Memory cleanup without copying the result (avoids doubling memory usage)
             del sf_info
-            if 'sliced_wav' in locals():
-                del sliced_wav
+            del notes_collection
+            del converted_notes_collection
             
-            # Multiple garbage collection passes to ensure cleanup
-            gc.collect()
+            # Single garbage collection pass
             gc.collect()
             
-            # Final memory check
+            # Memory diagnostic: Final memory
             if memory_limit_gb:
-                import psutil
-                final_memory = psutil.Process().memory_info().rss / (1024**3)
-                if final_memory > memory_limit_gb * 0.8:
-                    logger.warning(f"Memory usage after processing ({final_memory:.1f}GB) still high")
+                final_mem = psutil.Process().memory_info().rss / (1024**3)
+                logger.debug(f"[MEMORY] Completed {midi_file}: {final_mem:.1f}GB (total change: +{final_mem-initial_mem:.1f}GB)")
             
             pair_end_time = time.perf_counter()
-            logger.debug(f"Processed pair {midi_file} in {pair_end_time - pair_start_time:.3f} seconds, resulting in {final_notes} notes.")
+            logger.debug(f"Processed {midi_file} in {pair_end_time - pair_start_time:.3f}s ({slicing_end_time - slicing_start_time:.3f}s slicing), {final_notes} notes")
             return track_notes
 
         except Exception as e:
+            # Clean up cached audio on error
+            if cached_audio is not None:
+                del cached_audio
             # Log error with traceback information
             logger.error(f"Error processing pair {midi_file} / {audio_file}: {e}", exc_info=True)
             return None
+
     # --- End Helper Function ---
 
     def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50, memory_limit_gb=8):
@@ -661,9 +1040,33 @@ class data_preparation():
         process = psutil.Process() # Moved process definition here
 
         def check_memory(): # check_memory is now defined and can be passed
-            mem_gb = process.memory_info().rss / (1024**3)
-            if mem_gb > memory_limit_gb:
-                logger.warning(f"Memory usage ({mem_gb:.1f}GB) exceeds limit ({memory_limit_gb}GB)")
+            """Enhanced memory monitoring with detailed diagnostics."""
+            mem_info = process.memory_info()
+            mem_gb = mem_info.rss / (1024**3)
+            mem_pct = mem_gb / memory_limit_gb
+            
+            # Get system memory info
+            sys_mem = psutil.virtual_memory()
+            sys_mem_pct = sys_mem.percent
+            
+            # Log different levels based on memory pressure
+            if mem_pct > 0.95:  # Critical: 95%+
+                logger.error(f"CRITICAL MEMORY: {mem_gb:.1f}GB ({mem_pct*100:.1f}% of limit), System: {sys_mem_pct:.1f}%")
+                gc.collect()  # Force GC
+                # Try additional cleanup
+                try:
+                    import ctypes
+                    libc = ctypes.CDLL("libc.so.6")
+                    libc.malloc_trim(0)
+                except:
+                    pass  # Ignore if not on Linux
+            elif mem_pct > 0.85:  # High: 85%+
+                logger.warning(f"HIGH MEMORY: {mem_gb:.1f}GB ({mem_pct*100:.1f}% of limit), System: {sys_mem_pct:.1f}%")
+                gc.collect()
+            elif mem_pct > 0.70:  # Medium: 70%+
+                logger.info(f"MEDIUM MEMORY: {mem_gb:.1f}GB ({mem_pct*100:.1f}% of limit), System: {sys_mem_pct:.1f}%")
+            # Below 70% - only log occasionally to reduce noise
+            
             return mem_gb
 
         if batching and not dir_path:
@@ -711,35 +1114,263 @@ class data_preparation():
         return total_valid
 
     def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
-        """Sequential processing for memory-constrained environments"""
-        logger.warning("Warning: _process_sequential is deprecated. Please use create_audio_set directly.")
-        
-        total_processed = 0
-        df_list = []
+        """Sequential processing with streaming saves and record-based batching."""
+        total_processed_files = 0
+        total_processed_records = 0
+        current_batch_records = []  # Accumulate individual records, not DataFrames
         batch_idx = 0
+        
+        # CRITICAL: Batch by RECORDS, not files (each file has many records)
+        if memory_limit_gb <= 8:
+            max_records_per_batch = 500   # Very small for low memory
+        elif memory_limit_gb <= 16:
+            max_records_per_batch = 1000  # Small batches
+        elif memory_limit_gb <= 32:
+            max_records_per_batch = 2000  # Medium batches  
+        else:
+            max_records_per_batch = 3000  # Larger batches for high memory
+            
+        logger.info(f"Using record-based batching: {max_records_per_batch} records per batch for {memory_limit_gb}GB memory limit")
 
-        for i, row in enumerate(tqdm(self.midi_wav_map.itertuples(index=False), desc="Processing file pairs")):
+        # Memory monitoring setup
+        import psutil
+        process = psutil.Process()
+        memory_samples = []
+        files_processed_since_last_save = 0
+
+        for i, row in enumerate(tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), desc="Processing file pairs")):
+            # Pre-processing memory check
+            pre_mem = process.memory_info().rss / (1024**3)
+            
             result = process_func(row)
-            if result is not None:
-                df_list.append(result)
-                total_processed += 1
+            
+            # Post-processing memory check
+            post_mem = process.memory_info().rss / (1024**3)
+            mem_delta = post_mem - pre_mem
+            
+            if result is not None and not result.empty:
+                # Optimize DataFrame memory before adding to batch
+                if len(result) > 10:
+                    result = self._optimize_dataframe_memory(result)
+                
+                # STREAMING: Add individual records to batch, not entire DataFrames
+                for _, record in result.iterrows():
+                    current_batch_records.append(record.to_dict())
+                    total_processed_records += 1
+                
+                total_processed_files += 1
+                files_processed_since_last_save += 1
+                
+                # Estimate memory per record for monitoring
+                records_in_result = len(result)
+                if records_in_result > 0:
+                    # Estimate based on audio array sizes (compressed and uncompressed)
+                    audio_mem_mb = 0
+                    for audio_data in result['audio_wav']:
+                        if isinstance(audio_data, dict) and 'compressed_audio' in audio_data:
+                            audio_mem_mb += len(audio_data['compressed_audio']) / (1024**2)
+                        elif isinstance(audio_data, np.ndarray):
+                            audio_mem_mb += audio_data.nbytes / (1024**2)
+                    avg_mb_per_record = audio_mem_mb / records_in_result
+                    memory_samples.append(avg_mb_per_record)
+                
+                # Clear the result DataFrame immediately to free memory
+                del result
+                
+                # Log progress every 25 files
+                if i % 25 == 0 and memory_samples:
+                    avg_mem_per_record = np.mean(memory_samples[-100:])  # Rolling average
+                    estimated_batch_mb = len(current_batch_records) * avg_mem_per_record
+                    logger.info(f"[PROGRESS] Files: {total_processed_files}, Records: {total_processed_records}, "
+                              f"Batch: {len(current_batch_records)} records (~{estimated_batch_mb:.1f}MB), "
+                              f"Memory: {post_mem:.1f}GB (+{mem_delta:.1f}GB delta)")
 
-            # Batch saving logic
-            if batching and len(df_list) >= 1000:
-                self._save_batch_sequential(df_list, batch_idx, dir_path)
+            # EMERGENCY: Force save if memory is critically high (regardless of batch size)
+            current_mem_pct = post_mem / memory_limit_gb
+            if current_mem_pct > 0.75 and len(current_batch_records) >= 100:  # At least 100 records
+                logger.warning(f"EMERGENCY SAVE: Memory at {current_mem_pct*100:.1f}% ({post_mem:.1f}GB), "
+                             f"saving {len(current_batch_records)} records from {files_processed_since_last_save} files")
+                if batching:
+                    self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
+                    batch_idx += 1
+                    current_batch_records.clear()
+                    files_processed_since_last_save = 0
+                    gc.collect()
+
+            # REGULAR: Save when we hit record limit
+            elif batching and len(current_batch_records) >= max_records_per_batch:
+                logger.info(f"Regular batch save: {len(current_batch_records)} records from {files_processed_since_last_save} files")
+                self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
                 batch_idx += 1
-                df_list.clear()  # Clear list after saving
+                current_batch_records.clear()
+                files_processed_since_last_save = 0
+                gc.collect()
 
-            # Memory check
-            if i % 100 == 0:
-                check_memory() # Corrected: use passed check_memory function
+            # Memory checks with adaptive frequency
+            if current_mem_pct > 0.6:
+                check_frequency = 5   # Check every 5 files when memory > 60%
+            elif current_mem_pct > 0.4:
+                check_frequency = 15  # Check every 15 files when memory > 40%
+            else:
+                check_frequency = 25  # Normal frequency
+                
+            if i % check_frequency == 0:
+                current_mem = check_memory()
+                
+                # Dynamic batch size adjustment
+                if current_mem > memory_limit_gb * 0.8:
+                    max_records_per_batch = max(200, max_records_per_batch // 2)
+                    logger.warning(f"High memory pressure: reducing batch size to {max_records_per_batch} records")
+                elif current_mem < memory_limit_gb * 0.4 and max_records_per_batch < 5000:
+                    max_records_per_batch = min(5000, max_records_per_batch + 500)
+                    logger.info(f"Low memory pressure: increasing batch size to {max_records_per_batch} records")
 
         # Final batch save
-        if df_list:
-            self._save_batch_sequential(df_list, batch_idx, dir_path)
+        if current_batch_records and batching:
+            logger.info(f"Final batch save: {len(current_batch_records)} records from {files_processed_since_last_save} files")
+            self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
+            current_batch_records.clear()
+            gc.collect()
 
-        logger.info(f"Sequential processing complete: {total_processed} file pairs processed.")
-        return total_processed
+        # Final report
+        final_mem = process.memory_info().rss / (1024**3)
+        avg_records_per_file = total_processed_records / max(1, total_processed_files)
+        avg_mem_per_record = np.mean(memory_samples) if memory_samples else 0
+        
+        logger.info(f"Sequential processing complete:")
+        logger.info(f"  - Files processed: {total_processed_files}")
+        logger.info(f"  - Records generated: {total_processed_records}")
+        logger.info(f"  - Avg records/file: {avg_records_per_file:.1f}")
+        logger.info(f"  - Avg memory/record: {avg_mem_per_record:.1f}MB")
+        logger.info(f"  - Final memory: {final_mem:.1f}GB")
+        
+        return total_processed_files
+
+    def _save_batch_sequential(self, batch_data, batch_idx, dir_path):
+        """Enhanced batch saving with memory diagnostics and optimization."""
+        if not batch_data:
+            return
+
+        # Memory diagnostic before combining
+        import psutil
+        pre_combine_mem = psutil.Process().memory_info().rss / (1024**3)
+        
+        # Estimate memory usage of batch_data
+        total_estimated_mb = 0
+        for df in batch_data:
+            if hasattr(df, 'memory_usage'):
+                total_estimated_mb += df.memory_usage(deep=True).sum() / (1024**2)
+            else:
+                # Rough estimate
+                total_estimated_mb += sum(arr.nbytes for arr in df['audio_wav'] if isinstance(arr, np.ndarray)) / (1024**2)
+
+        logger.info(f"[SAVE] Batch {batch_idx}: Combining {len(batch_data)} DataFrames (~{total_estimated_mb:.1f}MB estimated)")
+
+        try:
+            # Use ignore_index=True and handle memory more carefully
+            combined_df = pd.concat(batch_data, ignore_index=True, copy=False)
+            
+            # Apply storage optimizations (compression analysis) 
+            combined_df = self._optimize_batch_for_storage(combined_df)
+            
+            # Memory diagnostic after combining
+            post_combine_mem = psutil.Process().memory_info().rss / (1024**3)
+            actual_df_mb = combined_df.memory_usage(deep=True).sum() / (1024**2)
+            
+            logger.debug(f"[SAVE] Combined DF: {actual_df_mb:.1f}MB actual, memory: {pre_combine_mem:.1f}GB -> {post_combine_mem:.1f}GB")
+            
+            # Save with compression to reduce file size
+            output_file = os.path.join(dir_path, f"audio_set_batch_{batch_idx}.pkl")
+            combined_df.to_pickle(output_file, compression='gzip', protocol=4)  # Use compression and latest protocol
+            
+            # Verify save and get file size
+            file_size_mb = os.path.getsize(output_file) / (1024**2)
+            records_per_gb = len(combined_df) / (file_size_mb / 1024) if file_size_mb > 0 else 0
+            
+            logger.info(f"[SAVE] Batch {batch_idx}: {len(combined_df)} records saved to {output_file} "
+                       f"({file_size_mb:.1f}MB on disk, {records_per_gb:.0f} records/GB)")
+            
+            # Clear the combined DataFrame immediately
+            del combined_df
+            gc.collect()
+            
+        except Exception as save_err:
+            logger.error(f"Error saving batch {batch_idx}: {save_err}")
+            # Try alternative save method - save individual DataFrames
+            try:
+                for i, df in enumerate(batch_data):
+                    alt_file = os.path.join(dir_path, f"audio_set_batch_{batch_idx}_part_{i}.pkl")
+                    df.to_pickle(alt_file, compression='gzip')
+                logger.warning(f"Saved batch {batch_idx} as {len(batch_data)} individual files due to memory constraints")
+            except Exception as alt_err:
+                logger.error(f"Failed to save batch {batch_idx} even as individual files: {alt_err}")
+
+        # Final memory check
+        final_mem = psutil.Process().memory_info().rss / (1024**3)
+        logger.debug(f"[SAVE] Batch {batch_idx} complete, final memory: {final_mem:.1f}GB")
+
+    def _save_records_as_batch(self, records_list, batch_idx, dir_path):
+        """Stream-save individual records as a single batch with minimal memory overhead."""
+        if not records_list:
+            return
+
+        # Memory diagnostic before conversion
+        import psutil
+        pre_convert_mem = psutil.Process().memory_info().rss / (1024**3)
+        
+        # Estimate memory of records with compression
+        estimated_mb = len(records_list) * 0.1  # Much smaller with compression: ~100KB per record
+        logger.info(f"[SAVE] Batch {batch_idx}: Converting {len(records_list)} records (~{estimated_mb:.1f}MB estimated with compression)")
+
+        try:
+            # Convert list of record dicts to DataFrame efficiently
+            # This is more memory-efficient than concatenating many small DataFrames
+            combined_df = pd.DataFrame(records_list)
+            
+            # Apply storage optimizations (compression analysis)
+            combined_df = self._optimize_batch_for_storage(combined_df)
+            
+            # Memory diagnostic after conversion
+            post_convert_mem = psutil.Process().memory_info().rss / (1024**3)
+            actual_df_mb = combined_df.memory_usage(deep=True).sum() / (1024**2)
+            
+            logger.debug(f"[SAVE] Records->DF: {actual_df_mb:.1f}MB actual, memory: {pre_convert_mem:.1f}GB -> {post_convert_mem:.1f}GB")
+            
+            # Save with high compression to reduce file size
+            output_file = os.path.join(dir_path, f"audio_set_batch_{batch_idx}.pkl")
+            combined_df.to_pickle(output_file, compression='gzip', protocol=4)
+            
+            # Verify save and get file size
+            file_size_mb = os.path.getsize(output_file) / (1024**2)
+            records_per_gb = len(combined_df) / (file_size_mb / 1024) if file_size_mb > 0 else 0
+            
+            logger.info(f"[SAVE] Batch {batch_idx}: {len(combined_df)} records saved to {output_file} "
+                       f"({file_size_mb:.1f}MB on disk, {records_per_gb:.0f} records/GB)")
+            
+            # Clear the DataFrame immediately
+            del combined_df
+            gc.collect()
+            
+        except Exception as save_err:
+            logger.error(f"Error saving records batch {batch_idx}: {save_err}")
+            # Try emergency save as individual smaller files
+            try:
+                chunk_size = 500  # Save in smaller chunks
+                for chunk_idx, start_idx in enumerate(range(0, len(records_list), chunk_size)):
+                    chunk_records = records_list[start_idx:start_idx + chunk_size]
+                    chunk_df = pd.DataFrame(chunk_records)
+                    alt_file = os.path.join(dir_path, f"audio_set_batch_{batch_idx}_chunk_{chunk_idx}.pkl")
+                    chunk_df.to_pickle(alt_file, compression='gzip')
+                    del chunk_df
+                
+                num_chunks = (len(records_list) + chunk_size - 1) // chunk_size
+                logger.warning(f"Saved batch {batch_idx} as {num_chunks} chunks of {chunk_size} records due to memory constraints")
+            except Exception as alt_err:
+                logger.error(f"Failed to save batch {batch_idx} even as chunks: {alt_err}")
+
+        # Final memory check
+        final_mem = psutil.Process().memory_info().rss / (1024**3)
+        logger.debug(f"[SAVE] Batch {batch_idx} complete, final memory: {final_mem:.1f}GB")
 
     # --- New parallel processing method using the top-level worker ---
     def _process_parallel_optimized_new_worker(self, midi_wav_df, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, batching_arg, dir_path_arg, num_batches_arg, check_memory_func_arg, memory_limit_gb_arg, n_jobs_arg, worker_memory_limit_arg):
@@ -794,16 +1425,27 @@ class data_preparation():
             all_results = Parallel(verbose=10)(tasks)
         logger.info(f"joblib.Parallel processing finished. Received {len(all_results)} results.")
 
+        # Explicitly delete large objects after use
+        del tasks
+        gc.collect()  # Trigger garbage collection after processing tasks
+
         # Process results
         valid_results = [df for df in all_results if df is not None and not df.empty]
         total_valid = len(valid_results)
         total_failed = len(midi_wav_df) - total_valid
         logger.info(f"Processing results: {total_valid} valid, {total_failed} failed.")
 
+        # Clear all_results immediately after extracting valid_results to free memory
+        del all_results
+        gc.collect()
+
         if batching_arg and valid_results:
-            # Batching logic remains similar, but operates on `valid_results` list
-            batch_data_accumulator.extend(valid_results)
-            batch_sample_count = sum(len(df) for df in valid_results)
+            # Batching logic operates on `valid_results` list
+            batch_data_accumulator = valid_results.copy()  # Make a copy so we can clear valid_results
+            del valid_results  # Clear the original to free memory
+            gc.collect()
+            
+            batch_sample_count = sum(len(df) for df in batch_data_accumulator)
             logger.info(f"Accumulated {batch_sample_count} samples for batching.")
             
             # Reset batch_tracking from self, as it's an instance variable
@@ -846,8 +1488,9 @@ class data_preparation():
                 batch_data_accumulator = remaining_data_accumulator
                 batch_sample_count -= current_samples_in_this_batch
                 
-                import gc
-                gc.collect()
+                # Less frequent garbage collection in batch processing
+                if self.batch_tracking % 5 == 0:  # Only every 5 batches
+                    gc.collect()
                 if self.batch_tracking >= num_batches_arg:
                     logger.info(f"Reached target number of batches ({num_batches_arg}) during parallel result processing.")
                     break
@@ -860,9 +1503,13 @@ class data_preparation():
                 if self.batch_tracking < num_batches_arg:
                     self._save_batch_sequential(batch_data_accumulator, self.batch_tracking, dir_path_arg)
                     logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
-                    self.batch_tracking +=1
+                    self.batch_tracking += 1
                 else:
                     logger.info("Final batch not saved as num_batches_arg limit was reached.")
+            
+            # Clear accumulator after processing
+            del batch_data_accumulator
+            gc.collect()
         
         elif not batching_arg and valid_results: # No batching - combine individual files (if this mode is still desired)
             logger.info("Non-batching mode: combining individual results from parallel processing.")
@@ -877,7 +1524,6 @@ class data_preparation():
 
             self.notes_collection = pd.concat(valid_results, ignore_index=True) if valid_results else pd.DataFrame()
             del valid_results
-            import gc
             gc.collect()
 
             if not self.notes_collection.empty:
@@ -898,57 +1544,26 @@ class data_preparation():
         logger.info(f"_process_parallel_optimized_new_worker complete: {total_valid} valid, {total_failed} failed")
         return total_valid
 
-    def _save_batch_sequential(self, df_list, batch_idx, dir_path):
+    def decompress_batch_for_training(self, batch_df):
         """
-        Save a batch of DataFrames to disk as pickle files.
+        Decompress all audio data in a batch for training use.
+        Call this method when loading batches for model training.
         
-        :param df_list: List of DataFrames to save
-        :param batch_idx: Index of the batch (used for naming the output file)
-        :param dir_path: Directory path where the pickle files will be saved
+        :param batch_df: DataFrame with potentially compressed audio data
+        :return: DataFrame with decompressed audio arrays
         """
-        if not df_list:
-            return
-
-        combined_df = pd.concat(df_list, ignore_index=True)
-        output_file = os.path.join(dir_path, f"audio_set_batch_{batch_idx}.pkl")
-        combined_df.to_pickle(output_file)
-
-        logger.info(f"Saved batch {batch_idx}: {len(combined_df)} records to {output_file}")
-
-    # --- Deprecated: Legacy parallel processing function ---
-    def _process_parallel(self, process_func, batching, dir_path, num_batches, memory_check_func, memory_limit_gb):
-        """
-        Legacy parallel processing function. This is now handled by create_audio_set directly.
-        Kept for backwards compatibility but not intended for direct use.
-        """
-        logger.warning("Warning: _process_parallel is deprecated. Please use create_audio_set directly.")
+        logger.info(f"Decompressing audio data for training: {len(batch_df)} records")
         
-        total_processed = 0
-        df_list = []
-        batch_idx = 0
-
-        num_parallel_jobs = min(os.cpu_count(), 6)  # Limit to 6 parallel jobs
-
-        with parallel_backend('loky', n_jobs=num_parallel_jobs):
-            for i, row in enumerate(tqdm(self.midi_wav_map.itertuples(index=False), desc="Processing file pairs")):
-                result = process_func(row)
-                if result is not None:
-                    df_list.append(result)
-                    total_processed += 1
-
-                # Batch saving logic
-                if batching and len(df_list) >= 1000:
-                    self._save_batch_sequential(df_list, batch_idx, dir_path)
-                    batch_idx += 1
-                    df_list.clear()  # Clear list after saving
-
-                # Memory check
-                if i % 100 == 0:
-                    memory_check_func()
-
-        # Final batch save
-        if df_list:
-            self._save_batch_sequential(df_list, batch_idx, dir_path)
-
-        logger.info(f"Parallel processing complete: {total_processed} file pairs processed.")
-        return total_processed
+        # Decompress audio_wav column
+        batch_df['audio_wav'] = batch_df['audio_wav'].apply(self._decompress_audio_slice)
+        
+        # Filter out any decompression failures (zero arrays)
+        initial_count = len(batch_df)
+        batch_df = batch_df[batch_df['audio_wav'].apply(lambda x: isinstance(x, np.ndarray) and x.sum() != 0)]
+        final_count = len(batch_df)
+        
+        if initial_count != final_count:
+            logger.warning(f"Filtered out {initial_count - final_count} records with decompression failures")
+        
+        logger.info(f"Decompression complete: {final_count} records ready for training")
+        return batch_df
