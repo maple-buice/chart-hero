@@ -483,9 +483,13 @@ class data_preparation():
     :raise NameError: the use of other dataset is not supported
     """
     
-    def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1):
+    def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1, disable_progress=False):
         init_start_time = time.perf_counter()
         logger.info(f"Initializing data_preparation for dataset: {dataset} at {directory_path} with sample_ratio={sample_ratio}, diff_threshold={diff_threshold}")
+        
+        # Track main process ID for tqdm management
+        self._main_process_id = os.getpid()
+        
         if dataset in ['gmd', 'egmd']:
             self.directory_path = directory_path
             self.dataset_type = dataset
@@ -499,7 +503,8 @@ class data_preparation():
             df = self.dataset[['index', 'midi_filename', 'audio_filename', 'duration']].copy()
             df.columns = ['track_id', 'midi_filename', 'audio_filename', 'duration']
             
-            print(f'Filtering out the midi/audio pair that has a duration difference > {diff_threshold} second using soundfile')
+            if not disable_progress:
+                print(f'Filtering out the midi/audio pair that has a duration difference > {diff_threshold} second using soundfile')
 
             logger.info("Calculating audio durations using soundfile...")
             duration_calc_start_time = time.perf_counter()
@@ -510,13 +515,41 @@ class data_preparation():
             logger.info("(joblib.Parallel inherits entire main process memory to each worker, causing massive RAM usage)")
             
             durations = []
-            for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating durations sequentially")):
-                duration = get_duration_joblib_helper(filename, self.directory_path)
-                durations.append(duration)
-                # PERFORMANCE: Periodic garbage collection
-                if i % 500 == 0:
-                    import gc
-                    gc.collect()
+            
+            if disable_progress:
+                # Worker process - no progress bar to avoid conflicts
+                for i, filename in enumerate(df['audio_filename']):
+                    duration = get_duration_joblib_helper(filename, self.directory_path)
+                    durations.append(duration)
+                    # PERFORMANCE: Periodic garbage collection
+                    if i % 500 == 0:
+                        import gc
+                        gc.collect()
+            else:
+                # Main process - use positioned progress bars
+                process_id = os.getpid()
+                main_process_id = getattr(self, '_main_process_id', process_id)
+                is_worker_process = process_id != main_process_id
+                
+                if is_worker_process:
+                    # Worker processes get positioned progress bars (positions 1, 2, 3, etc.)
+                    worker_position = (process_id % 10) + 1  # Use last digit of PID for position
+                    desc = f"Worker-{worker_position} Durations"
+                    progress_bar = tqdm(df['audio_filename'], desc=desc, position=worker_position, 
+                                      leave=True, ncols=80, colour='cyan')
+                else:
+                    # Main process gets position 0 (top)
+                    desc = f"Main Process Durations"
+                    progress_bar = tqdm(df['audio_filename'], desc=desc, position=0, 
+                                      leave=True, ncols=80, colour='green')
+                
+                for i, filename in enumerate(progress_bar):
+                    duration = get_duration_joblib_helper(filename, self.directory_path)
+                    durations.append(duration)
+                    # PERFORMANCE: Periodic garbage collection
+                    if i % 500 == 0:
+                        import gc
+                        gc.collect()
 
 
             df['wav_length'] = durations
@@ -1444,27 +1477,41 @@ class data_preparation():
         # Force sequential for most cases to prevent memory explosions
         available_system_memory_gb = psutil.virtual_memory().total / (1024**3)
         
-        # SMART PARALLELIZATION: New approach with explicit opt-in
+        # Get dataset size for smart parallelization decision
+        dataset_size = len(self.midi_wav_map)
+        
+        # SMART PARALLELIZATION: Only use parallel processing when it provides benefits
+        min_files_for_parallel = 50  # Threshold below which sequential is faster due to overhead
+        
         if enable_process_parallelization and memory_limit_gb >= 16 and available_system_memory_gb >= 32:
-            # Only enable process parallelization with sufficient memory and explicit opt-in
-            logger.info("🚀 EXPERIMENTAL: Process parallelization enabled with improved memory management")
-            logger.info(f'Parallel mode: System memory: {available_system_memory_gb:.1f}GB, Process limit: {memory_limit_gb}GB')
-            
-            # Use conservative process count and memory per process
-            n_processes = min(3, os.cpu_count() // 2)  # Very conservative
-            per_process_memory_limit = memory_limit_gb / (n_processes + 1)  # Leave buffer for main process
-            
-            logger.info(f'Using {n_processes} processes with {per_process_memory_limit:.1f}GB limit per process')
-            
-            process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
-            total_valid = self._process_parallel_improved(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes)
+            if dataset_size < min_files_for_parallel:
+                logger.info(f"⚠️  Dataset size ({dataset_size} files) below parallel threshold ({min_files_for_parallel})")
+                logger.info("   Falling back to sequential mode for better performance on small datasets")
+                enable_process_parallelization = False
+            else:
+                # Only enable process parallelization with sufficient memory and explicit opt-in
+                logger.info("🚀 EXPERIMENTAL: Process parallelization enabled with improved memory management")
+                logger.info(f'Parallel mode: System memory: {available_system_memory_gb:.1f}GB, Process limit: {memory_limit_gb}GB')
+                logger.info(f'Dataset size: {dataset_size} files (above {min_files_for_parallel} file threshold)')
+                
+                # Use conservative process count and memory per process
+                n_processes = min(3, os.cpu_count() // 2)  # Very conservative
+                per_process_memory_limit = memory_limit_gb / (n_processes + 1)  # Leave buffer for main process
+                
+                logger.info(f'Using {n_processes} processes with {per_process_memory_limit:.1f}GB limit per process')
+                
+                total_valid = self._process_parallel_improved(pad_before, pad_after, fix_length, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes)
         else:
-            # Default to sequential processing for memory safety and reliability  
+            # Conditions not met for parallel processing, force sequential
             if enable_process_parallelization:
-                logger.warning("⚠️  Process parallelization requested but insufficient memory - falling back to sequential mode")
-                logger.warning(f"   Requires: memory_limit_gb >= 16, system_memory >= 32GB")
-                logger.warning(f"   Current: memory_limit_gb = {memory_limit_gb}, system_memory = {available_system_memory_gb:.1f}GB")
-            
+                logger.info(f"⚠️  Parallel processing conditions not met:")
+                logger.info(f"   Memory limit: {memory_limit_gb}GB (need ≥16GB)")
+                logger.info(f"   System memory: {available_system_memory_gb:.1f}GB (need ≥32GB)")
+                logger.info("   Falling back to sequential mode")
+            enable_process_parallelization = False
+        
+        if not enable_process_parallelization:
+            # Default to sequential processing for memory safety and reliability  
             logger.info("Using sequential processing mode for better memory control")
             logger.info(f'Sequential mode: System memory: {available_system_memory_gb:.1f}GB, Process limit: {memory_limit_gb}GB')
             logger.info('Sequential processing provides predictable memory usage and reliable performance')
@@ -1519,7 +1566,24 @@ class data_preparation():
         memory_samples = []
         files_processed_since_last_save = 0
 
-        for i, row in enumerate(tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), desc="Processing file pairs")):
+        # Create positioned progress bar for main processing loop
+        current_pid = os.getpid()
+        main_process_id = getattr(self, '_main_process_id', current_pid)
+        is_worker_process = current_pid != main_process_id
+        
+        if is_worker_process:
+            # Worker processes get positioned progress bars (positions 5, 6, 7, etc.)
+            worker_position = (current_pid % 10) + 5  # Offset by 5 to avoid duration bar conflicts
+            desc = f"Worker-{worker_position} Processing"
+            progress_bar = tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), 
+                              desc=desc, position=worker_position, leave=True, ncols=80, colour='yellow')
+        else:
+            # Main process gets position 4 (below duration bars)
+            desc = f"Main Process Files"
+            progress_bar = tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), 
+                              desc=desc, position=4, leave=True, ncols=80, colour='blue')
+        
+        for i, row in enumerate(progress_bar):
             # Pre-processing memory check
             pre_mem = process.memory_info().rss / (1024**3)
             
@@ -1802,91 +1866,203 @@ class data_preparation():
         logger.info(f"Decompression complete: {final_count} records ready for training")
         return batch_df
 
-    def _process_parallel_improved(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes):
+    def _process_parallel_improved(self, pad_before, pad_after, fix_length, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes):
         """
-        Improved parallel processing with explicit memory management and smaller chunks.
+        IMPROVED parallel processing that reuses the sequential processing logic.
         
-        Uses multiprocessing with smaller batches and explicit memory limits to avoid
-        the memory explosion issues of the previous approach.
+        This version creates minimal worker processes that use the EXACT SAME code
+        as the sequential version to ensure memory efficiency and reliability.
         """
-        import multiprocessing as mp
-        from multiprocessing import Pool
-        
-        logger.info(f"Starting improved parallel processing with {n_processes} processes")
-        
-        total_processed_files = 0
-        total_processed_records = 0
-        current_batch_records = []
-        batch_idx = 0
-        
-        # Conservative batch sizes for parallel processing
-        if memory_limit_gb <= 16:
-            max_records_per_batch = int(1500 * batch_size_multiplier)
-        elif memory_limit_gb <= 32:
-            max_records_per_batch = int(3000 * batch_size_multiplier) 
-        else:
-            max_records_per_batch = int(6000 * batch_size_multiplier)
-        
-        logger.info(f"Parallel batch size: {max_records_per_batch} records")
-        
-        # Process files in small chunks to manage memory
-        chunk_size = max(1, min(10, len(self.midi_wav_map) // n_processes))
-        file_chunks = [self.midi_wav_map.iloc[i:i+chunk_size] for i in range(0, len(self.midi_wav_map), chunk_size)]
-        
-        logger.info(f"Processing {len(self.midi_wav_map)} files in {len(file_chunks)} chunks of ~{chunk_size} files each")
-        
-        # Process chunks in parallel
-        with Pool(processes=n_processes) as pool:
-            try:
-                # Process each chunk
-                for chunk_idx, chunk_df in enumerate(file_chunks):
-                    logger.info(f"Processing chunk {chunk_idx+1}/{len(file_chunks)} ({len(chunk_df)} files)")
-                    
-                    # Convert chunk to list of tuples for multiprocessing
-                    chunk_rows = [row for row in chunk_df.itertuples(index=False, name='Row')]
-                    
-                    # Submit parallel tasks
-                    results = pool.map(process_func, chunk_rows)
-                    
-                    # Process results
-                    for result in results:
-                        if result is not None and not result.empty:
-                            # Add records from this file to current batch
-                            for _, record in result.iterrows():
-                                current_batch_records.append(record.to_dict())
-                                total_processed_records += 1
-                            
-                            total_processed_files += 1
-                            
-                            # Check if batch is ready to save
-                            if batching and len(current_batch_records) >= max_records_per_batch:
-                                logger.info(f"Parallel batch save: {len(current_batch_records)} records from chunk {chunk_idx+1}")
-                                self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
-                                current_batch_records.clear()
-                                batch_idx += 1
-                    
-                    # Memory management between chunks
-                    del results
-                    gc.collect()
-                    
-                    # Check memory usage
-                    current_mem = check_memory()
-                    if current_mem / memory_limit_gb > 0.8:
-                        logger.warning(f"High memory usage after chunk {chunk_idx+1}: {current_mem:.1f}GB")
-                        gc.collect()
+        try:
+            from multiprocessing import Pool, Queue
+            from .parallel_worker import chunk_processor_worker
+            import queue
+            import threading
+            
+            logger.info(f"🚀 Starting memory-efficient parallel processing with {n_processes} worker processes")
+            logger.info("🔧 Workers will use the SAME processing logic as sequential mode for consistency")
+            
+            total_processed_files = 0
+            total_processed_records = 0
+            current_batch_records = []
+            batch_idx = 0
+            
+            # Use the SAME batch sizes as sequential processing for consistency
+            if memory_limit_gb <= 8:
+                max_records_per_batch = int(2000 * batch_size_multiplier)
+            elif memory_limit_gb <= 16:
+                max_records_per_batch = int(4000 * batch_size_multiplier)
+            elif memory_limit_gb <= 32:
+                max_records_per_batch = int(8000 * batch_size_multiplier)
+            else:
+                max_records_per_batch = int(12000 * batch_size_multiplier)
+            
+            logger.info(f"Parallel batch size: {max_records_per_batch} records (same as sequential)")
+            
+            # Process files in SMALL chunks to keep memory usage low
+            # This is key to preventing memory explosions in workers
+            chunk_size = max(1, min(4, len(self.midi_wav_map) // (n_processes * 2)))  # Smaller chunks
+            
+            # Convert DataFrame to list of dictionaries for better multiprocessing serialization
+            # This prevents pandas DataFrame corruption during serialization
+            file_data_list = []
+            for idx, row in self.midi_wav_map.iterrows():
+                file_data_list.append(row.to_dict())
+            
+            # Create chunks from the list instead of DataFrame slices
+            file_chunks = []
+            for i in range(0, len(file_data_list), chunk_size):
+                chunk_data = file_data_list[i:i+chunk_size]
+                file_chunks.append(chunk_data)
+            
+            logger.info(f"Processing {len(file_data_list)} files in {len(file_chunks)} small chunks of ~{chunk_size} files each")
+            logger.info("🧠 Small chunk size prevents memory accumulation in workers")
+            
+            # Use CONSERVATIVE memory allocation per process
+            per_process_memory_gb = memory_limit_gb / (n_processes * 2)  # Very conservative
+            
+            # Prepare processing parameters (same as sequential)
+            processing_params = {
+                'pad_before': pad_before,
+                'pad_after': pad_after,
+                'fix_length': fix_length,
+                'memory_limit_gb': per_process_memory_gb
+            }
+            
+            # Create callback queue for progress reporting
+            callback_queue = Queue()
+            
+            # Prepare arguments for worker processes with callback queue
+            chunk_args = [(chunk, processing_params, self.directory_path, callback_queue) for chunk in file_chunks]
+            
+            # Create progress bars for workers
+            worker_bars = {}
+            completed_workers = 0
+            total_workers = len(chunk_args)
+            
+            def update_progress():
+                """Update progress bars from worker callbacks."""
+                nonlocal completed_workers
+                try:
+                    while True:
+                        message_type, data = callback_queue.get_nowait()
                         
-            except Exception as e:
-                logger.error(f"Parallel processing failed: {e}")
-                logger.info("Falling back to sequential processing for remaining files")
-                # Process any remaining files sequentially
-                pool.terminate()
-                pool.join()
-                return total_processed_files
-        
-        # Save final batch
-        if current_batch_records and batching:
-            logger.info(f"Final parallel batch save: {len(current_batch_records)} records")
-            self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
-        
-        logger.info(f"Parallel processing complete: {total_processed_files} files, {total_processed_records} records")
-        return total_processed_files
+                        if message_type == 'progress':
+                            worker_id = data['worker_id']
+                            
+                            # Create progress bar for new worker
+                            if worker_id not in worker_bars:
+                                position = len(worker_bars) + 1  # Position 1-3 for workers
+                                worker_bars[worker_id] = self._create_positioned_progress_bar(
+                                    total=data['total_files'],
+                                    desc=f"Worker-{str(data['current_pid'])[-3:]}",  # Last 3 digits of PID
+                                    position=position
+                                )
+                            
+                            # Update progress bar
+                            pbar = worker_bars[worker_id]
+                            pbar.n = data['processed_files']
+                            pbar.set_postfix({
+                                'Files': data['processed_files'],
+                                'Records': data['total_records'],
+                                'PID': str(data['current_pid'])[-4:]  # Last 4 digits
+                            })
+                            pbar.refresh()
+                            
+                        elif message_type == 'log':
+                            # Handle log messages
+                            level = data.get('level', 'info').upper()
+                            message = data.get('message', '')
+                            if level in ['ERROR', 'WARNING']:
+                                logger.log(getattr(logging, level), f"Worker: {message}")
+                            
+                        elif message_type == 'complete':
+                            # Worker completed
+                            worker_id = data['worker_id']
+                            if worker_id in worker_bars:
+                                pbar = worker_bars[worker_id]
+                                pbar.n = pbar.total  # Ensure 100%
+                                pbar.close()
+                            completed_workers += 1
+                            
+                except queue.Empty:
+                    pass
+                except Exception as e:
+                    logger.warning(f"Error in progress manager: {e}")
+            
+            # Use multiprocessing Pool with callback-based progress monitoring
+            logger.info(f"⚡ Processing {len(chunk_args)} chunks across {n_processes} processes...")
+            logger.info(f"💾 Memory per worker: {per_process_memory_gb:.1f}GB (conservative allocation)")
+            
+            with Pool(processes=n_processes) as pool:
+                # Start async processing
+                result = pool.map_async(chunk_processor_worker, chunk_args)
+                
+                # Monitor progress in main thread
+                while not result.ready() or completed_workers < total_workers:
+                    update_progress()
+                    time.sleep(0.1)  # Check for updates every 100ms
+                
+                # Get final results
+                update_progress()  # Final update
+                chunk_results = result.get()
+                
+            logger.info("✅ Parallel processing completed, collecting results...")
+            
+            # Collect results using the SAME logic as sequential processing
+            for result in chunk_results:
+                if len(result) == 5:  # Check if we got the expected 5 values
+                    processed_files, chunk_records_count, chunk_time, performance_stats, record_data = result
+                else:
+                    logger.warning(f"Unexpected result format from worker: {result}")
+                    continue
+                    
+                total_processed_files += processed_files
+                
+                # Add records using the SAME batching logic as sequential
+                if record_data:
+                    current_batch_records.extend(record_data)
+                    total_processed_records += len(record_data)
+                
+                # Log performance (same format as sequential)
+                for stat in performance_stats[:2]:  # Log first 2 files per chunk
+                    perf = stat['perf']
+                    logger.info(f"[PERF] {stat['file_id']}: {perf['total_time']:.3f}s total | "
+                              f"Notes: {perf['note_count']}")
+                
+                # Save batch when it gets large (SAME logic as sequential)
+                if batching and len(current_batch_records) >= max_records_per_batch:
+                    logger.info(f"Saving parallel batch: {len(current_batch_records)} records")
+                    self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
+                    batch_idx += 1
+                    current_batch_records.clear()
+                    gc.collect()  # Same cleanup as sequential
+            
+            # Save final batch (SAME logic as sequential)
+            if batching and len(current_batch_records) > 0:
+                logger.info(f"Saving final parallel batch: {len(current_batch_records)} records")
+                self._save_records_as_batch(current_batch_records, batch_idx, dir_path)
+                batch_idx += 1
+                
+            # Report results (same format as sequential)
+            if not batching and len(current_batch_records) > 0:
+                logger.info(f"✅ Parallel processing generated {len(current_batch_records)} records (not saved - batching disabled)")
+                
+            logger.info(f"✅ Memory-efficient parallel processing complete: {total_processed_files} files, {total_processed_records} records" + 
+                       (f" saved in {batch_idx} batches" if batching else " processed"))
+            
+            return total_processed_files
+            
+        except ImportError as e:
+            logger.error(f"Failed to import parallel worker: {e}")
+            logger.info("🔄 Falling back to sequential processing")
+            from functools import partial
+            process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=memory_limit_gb/2)
+            return self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier)
+            
+        except Exception as e:
+            logger.error(f"Parallel processing failed: {e}")
+            logger.info("🔄 Falling back to sequential processing")
+            from functools import partial
+            process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=memory_limit_gb/2)
+            return self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier)

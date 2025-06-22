@@ -1,0 +1,14 @@
+{
+  "files_processed": 60,
+  "sequential_time": 77.86517958401237,
+  "parallel_time": 75.56891962495865,
+  "speedup_factor": 1.0303863012790158,
+  "time_improvement_percent": 2.9490203083345774,
+  "time_saved_seconds": 2.296259959053714,
+  "memory_difference_gb": -4.560028076171875,
+  "test_config": {
+    "num_files": 60,
+    "memory_limit_gb": 20,
+    "num_batches": 2
+  }
+}

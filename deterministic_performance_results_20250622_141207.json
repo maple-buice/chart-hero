@@ -1,0 +1,61 @@
+{
+  "sequential": {
+    "success": false,
+    "error": "'data_preparation' object has no attribute 'prepare_data'",
+    "processing_time": 0,
+    "memory_used": 0,
+    "total_files": 0,
+    "total_records": 0
+  },
+  "parallel": {
+    "success": false,
+    "error": "'data_preparation' object has no attribute 'prepare_data'",
+    "processing_time": 0,
+    "memory_used": 0,
+    "total_files": 0,
+    "total_records": 0
+  },
+  "comparison": {},
+  "test_files": [
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_1.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_1.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_10.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_10.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_11.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_11.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_12.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_12.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_13.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_13.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_14.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_14.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_15.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_15.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_16.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_16.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_17.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_17.wav"
+    ],
+    [
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_18.midi",
+      "drummer1/eval_session/10_soul-groove10_102_beat_4-4_18.wav"
+    ]
+  ]
+}

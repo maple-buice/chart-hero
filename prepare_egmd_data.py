@@ -49,6 +49,8 @@ def main():
                        help='Use high-memory settings for larger batches (requires 64GB+ RAM)')
     parser.add_argument('--batch-size-multiplier', type=float, default=2.0,
                        help='Multiply batch sizes by this factor (default: 2.0 for better performance)')
+    parser.add_argument('--disable-parallel', action='store_true',
+                       help='Force sequential processing (disables smart parallelization)')
     
     args = parser.parse_args()
     
@@ -77,6 +79,7 @@ def main():
     logger.info(f"High-performance mode: {args.high_performance}")
     logger.info(f"Ultra-performance mode: {args.ultra_performance}")
     logger.info(f"Batch size multiplier: {args.batch_size_multiplier}")
+    logger.info(f"Disable parallel: {args.disable_parallel}")
     
     # Detect system memory for automatic optimization
     import psutil
@@ -157,7 +160,13 @@ def main():
         
         # Process and create batched data
         logger.info("Creating audio set with transformer-compatible processing...")
-        logger.info("Using sequential processing for optimal memory safety and efficiency")
+        if args.disable_parallel:
+            logger.info("Parallel processing disabled by user - using sequential mode")
+            enable_parallelization = False
+        else:
+            logger.info("Using smart parallelization logic - will auto-select optimal processing mode")
+            enable_parallelization = True
+            
         data_prep.create_audio_set(
             pad_before=0.1,  # 100ms padding before note
             pad_after=0.1,   # 100ms padding after note
@@ -166,7 +175,8 @@ def main():
             dir_path=str(output_path),
             num_batches=args.num_batches,
             memory_limit_gb=args.memory_limit_gb,
-            batch_size_multiplier=args.batch_size_multiplier
+            batch_size_multiplier=args.batch_size_multiplier,
+            enable_process_parallelization=enable_parallelization
         )
         
         logger.info("Data preparation completed successfully!")
