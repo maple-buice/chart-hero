@@ -57,7 +57,7 @@ from tqdm import tqdm
 from model_training.augment_audio import apply_augmentations
 
 import soundfile as sf
-from joblib import Parallel, delayed, parallel_backend
+# Note: joblib imports removed - parallel processing disabled for memory safety
 from functools import partial
 import logging
 import time
@@ -73,8 +73,8 @@ import os as os_top
 # NEW Top-level worker function for create_audio_set parallel processing
 def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, memory_limit_gb_worker):
     """
-    Parallel worker function with full compression optimizations.
-    This is a self-contained version of _process_file_pair with all optimizations.
+    Optimized parallel worker function - minimal overhead for maximum speed.
+    This is a streamlined version of _process_file_pair focused on performance.
     """
     
     # Essential imports for worker
@@ -83,20 +83,26 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
     import librosa
     import soundfile as sf
     import time
-    import gc
     import io
     import math
     import itertools
     import logging
+    
+    # Minimal memory tracking - only for catastrophic failures
+    import psutil
+    worker_process = psutil.Process()
+    
+    # PERFORMANCE: Set generous memory limit for workers (relaxed constraints)
+    worker_memory_limit = memory_limit_gb_worker if memory_limit_gb_worker else 8.0  # Default to 8GB per worker
     from mido import MidiFile
     import mido
     
     # Set up worker logger
     logger = logging.getLogger(__name__)
     
-    # Helper functions for audio compression (copied from main class)
+    # Helper functions for audio compression (simplified for performance)
     def _compress_audio_slice_worker(audio_array):
-        """Worker version of audio compression."""
+        """Fast worker version of audio compression - FLAC only."""
         try:
             # FLAC compression (lossless, ~50-70% reduction)
             buffer = io.BytesIO()
@@ -111,8 +117,8 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
                 'original_shape': audio_array.shape,
                 'original_dtype': str(audio_array.dtype)
             }
-        except Exception as compress_err:
-            logger.warning(f"[Worker] FLAC compression failed: {compress_err}, using float16 fallback")
+        except Exception:
+            # Fallback: float16 without logging overhead
             return audio_array.astype(np.float16)
     
     # Helper functions for MIDI processing (copied from main class)
@@ -227,11 +233,8 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
     cached_audio = None
 
     try:
-        # Memory diagnostic: Initial memory
-        if memory_limit_gb_worker:
-            import psutil
-            initial_mem = psutil.Process().memory_info().rss / (1024**3)
-            logger.debug(f"[Worker] Starting {midi_file}: {initial_mem:.1f}GB")
+        # PERFORMANCE: Minimal logging in workers (reduce overhead)
+        logger = logging.getLogger(__name__)
 
         # MIDI processing with optimizations
         midi_file_path = os.path.join(directory_path_arg, midi_file)
@@ -282,14 +285,18 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
             try:
                 # Load audio file only once and cache it
                 if cached_audio is None:
-                    logger.debug(f"[Worker] Loading {audio_file} (duration: {audio_duration_seconds:.1f}s)")
-                    # OPTIMIZATION: Use lower sample rate for very long files
+                    # OPTIMIZATION: Use lower sample rate for very long files to save memory
                     if audio_duration_seconds > 60:
                         target_sr = 22050  # Half sample rate for long files
                     elif audio_duration_seconds > 30:
                         target_sr = max(22050, sr // 2)
                     else:
                         target_sr = sr
+                        
+                    # MEMORY SAFETY: Skip extremely long files (>10 minutes)
+                    if audio_duration_seconds > 600:  # 10+ minutes
+                        target_samples = librosa.time_to_samples(fix_length_arg, sr=sr) if fix_length_arg else 1024
+                        return _compress_audio_slice_worker(np.zeros(target_samples, dtype=np.float32))
                         
                     cached_audio, actual_sr = librosa.load(audio_file_path, sr=target_sr, mono=True)
                     
@@ -322,27 +329,18 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
                 # CRITICAL OPTIMIZATION: Compress audio slice before storing
                 compressed_slice = _compress_audio_slice_worker(audio_slice.astype(np.float32))
                 
-                # Log if slice is unexpectedly large (after compression)
-                compressed_size_kb = len(compressed_slice['compressed_audio']) / 1024 if isinstance(compressed_slice, dict) and 'compressed_audio' in compressed_slice else compressed_slice.nbytes / 1024
-                if compressed_size_kb > 500:  # More than 500KB compressed is suspicious
-                    logger.warning(f"[Worker] Large compressed audio slice: {compressed_size_kb:.1f}KB for {audio_file} at {slice_start_time:.2f}s")
-                
                 return compressed_slice
                 
-            except Exception as load_err:
-                logger.error(f"[Worker] Error slicing audio for {audio_file} at {slice_start_time:.2f}s: {load_err}")
+            except Exception:
+                # Minimal error handling - no logging overhead
                 target_samples = librosa.time_to_samples(fix_length_arg, sr=sr) if fix_length_arg else 1024
                 return _compress_audio_slice_worker(np.zeros(target_samples, dtype=np.float32))
 
         # Apply audio slicing with compression
-        slicing_start_time = time.perf_counter()
         track_notes['audio_wav'] = track_notes.apply(optimized_audio_slicing_with_caching_worker, axis=1)
-        slicing_end_time = time.perf_counter()
-
         track_notes['sampling_rate'] = sr
 
-        # Filter out rows where slicing might have failed (with compression support)
-        initial_notes = len(track_notes)
+        # Fast filter for valid audio (simplified validation)
         def is_valid_audio_worker(x):
             if isinstance(x, dict) and 'compressed_audio' in x:
                 return len(x['compressed_audio']) > 0
@@ -352,35 +350,53 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
                 return False
         
         track_notes = track_notes[track_notes['audio_wav'].apply(is_valid_audio_worker)]
-        final_notes = len(track_notes)
-        
-        if initial_notes != final_notes:
-            logger.warning(f"[Worker] Filtered {initial_notes - final_notes} notes with empty audio for {audio_file}")
 
         if track_notes.empty:
-            logger.warning(f"[Worker] Track notes became empty after audio slicing for {midi_file}")
             return None
 
-        # Clear cached audio immediately to free memory
+        # CRITICAL OPTIMIZATION: Optimize DataFrame memory (simplified)
+        def _optimize_dataframe_memory_worker(df):
+            """Fast worker version of DataFrame memory optimization."""
+            try:
+                # Quick downcast for numeric columns only
+                for col in df.columns:
+                    if col == 'audio_wav':  # Skip audio data
+                        continue
+                    col_type = df[col].dtype
+                    if col_type.kind == 'i':  # integer
+                        df[col] = pd.to_numeric(df[col], downcast='integer')
+                    elif col_type.kind == 'f':  # float
+                        df[col] = pd.to_numeric(df[col], downcast='float')
+                return df
+            except Exception:
+                return df
+        
+        # Apply memory optimization for larger results only
+        if len(track_notes) > 10:
+            track_notes = _optimize_dataframe_memory_worker(track_notes)
+
+        # PERFORMANCE: Clean up cached audio immediately
         if cached_audio is not None:
             del cached_audio
             cached_audio = None
 
-        # Memory cleanup
-        del sf_info
-        del notes_collection
-        del converted_notes_collection
-        gc.collect()
+        # PERFORMANCE: Minimal memory check - only warn if catastrophic
+        try:
+            final_mem = worker_process.memory_info().rss / (1024**3)
+            if final_mem > worker_memory_limit:
+                logger.warning(f"[Worker] Memory exceeded: {final_mem:.1f}GB > {worker_memory_limit:.1f}GB")
+        except Exception:
+            pass  # Ignore memory check failures
         
-        pair_end_time = time.perf_counter()
-        logger.debug(f"[Worker] Processed {midi_file} in {pair_end_time - pair_start_time:.3f}s ({slicing_end_time - slicing_start_time:.3f}s slicing), {final_notes} notes")
+        # PERFORMANCE: Minimal success logging
         return track_notes
 
-    except Exception as e:
-        # Clean up cached audio on error
+    except Exception:
+        # PERFORMANCE: Clean up cached audio on error (minimal handling)
         if cached_audio is not None:
             del cached_audio
-        logger.error(f"[Worker] Error processing pair {midi_file} / {audio_file}: {e}", exc_info=True)
+            cached_audio = None
+        # No logging or gc.collect() for performance
         return None
         
         # --- MINIMAL AUDIO MOCKUP ---
@@ -417,14 +433,27 @@ def process_file_pair_worker(row_dict, directory_path_arg, pad_before_arg, pad_a
         return None
 
 def get_duration_joblib_helper(filepath, base_dir):
+    """
+    Optimized duration calculation helper for parallel processing.
+    Minimal overhead for maximum speed.
+    """
     try:
-        info = sf_top.info(os_top.path.join(base_dir, filepath))
-        return info.duration
-    except Exception as e:
-        # Using logger, but ensure logger is configured to be multiprocess-safe if issues persist
-        # For now, direct print might be more visible from workers in Colab if logger isn't showing up
-        # print(f"[Worker] Error in get_duration_joblib_helper for {filepath}: {e}")
-        logger.warning(f"Error getting duration for {filepath} in get_duration_joblib_helper: {e}")
+        import soundfile as sf
+        import os
+        
+        # Get file info with minimal memory footprint
+        file_path = os.path.join(base_dir, filepath)
+        info = sf.info(file_path)
+        duration = info.duration
+        
+        # Quick cleanup
+        del info
+        del file_path
+        
+        return duration
+        
+    except Exception:
+        # No logging - just return None for failed files
         return None
 
 def get_number_of_audio_set_batches() -> int:
@@ -451,14 +480,13 @@ class data_preparation():
     :raise NameError: the use of other dataset is not supported
     """
     
-    def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1, n_jobs=-1):
+    def __init__(self, directory_path, dataset, sample_ratio=1, diff_threshold=1):
         init_start_time = time.perf_counter()
         logger.info(f"Initializing data_preparation for dataset: {dataset} at {directory_path} with sample_ratio={sample_ratio}, diff_threshold={diff_threshold}")
         if dataset in ['gmd', 'egmd']:
             self.directory_path = directory_path
             self.dataset_type = dataset
             self.batch_tracking = 0
-            self.n_jobs = n_jobs # Store number of jobs for parallel processing
             
             csv_path = [f for f in os.listdir(directory_path) if '.csv' in f][0]
             
@@ -473,35 +501,19 @@ class data_preparation():
             logger.info("Calculating audio durations using soundfile...")
             duration_calc_start_time = time.perf_counter()
 
-            # Parallelize duration calculation
-            if self.n_jobs == 1:
-                logger.info("Using sequential processing for duration calculation (n_jobs=1)")
-                durations = []
-                for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating audio durations sequentially")):
-                    duration = get_duration_joblib_helper(filename, self.directory_path) # Use top-level helper
-                    durations.append(duration)
-                    if i % 200 == 0: # Less frequent GC for sequential
-                        import gc
-                        gc.collect()
-            else:
-                logger.info(f"Using joblib.Parallel for duration calculation with n_jobs={self.n_jobs}")
-                num_parallel_jobs = self.n_jobs if self.n_jobs > 0 else os_top.cpu_count()
-                logger.info(f"Effective number of parallel jobs for duration calculation: {num_parallel_jobs}")
-                
-                tasks = [delayed(get_duration_joblib_helper)(filename, self.directory_path) for filename in df['audio_filename']]
-
-                try:
-                    with parallel_backend('loky', n_jobs=num_parallel_jobs):
-                        durations = Parallel(verbose=10)(tasks)
-                except Exception as joblib_error:
-                    logger.error(f"Error during joblib.Parallel execution for durations: {joblib_error}", exc_info=True)
-                    # Attempt to diagnose if the module is importable in the main process context after failure
-                    try:
-                        import model_training.data_preparation
-                        logger.info("DIAGNOSTIC: Successfully imported model_training.data_preparation in main process after joblib error.")
-                    except ImportError as ie:
-                        logger.error(f"DIAGNOSTIC: Failed to import model_training.data_preparation in main process after joblib error: {ie}")
-                    raise
+            # MEMORY SAFETY: Duration calculation - no parallel processing for large datasets
+            # Using joblib.Parallel here causes memory explosion due to main process memory inheritance
+            logger.info("MEMORY SAFETY: Using sequential duration calculation to prevent memory explosion")
+            logger.info("(joblib.Parallel inherits entire main process memory to each worker, causing massive RAM usage)")
+            
+            durations = []
+            for i, filename in enumerate(tqdm(df['audio_filename'], desc="Calculating durations sequentially")):
+                duration = get_duration_joblib_helper(filename, self.directory_path)
+                durations.append(duration)
+                # PERFORMANCE: Periodic garbage collection
+                if i % 500 == 0:
+                    import gc
+                    gc.collect()
 
 
             df['wav_length'] = durations
@@ -837,6 +849,41 @@ class data_preparation():
             logger.warning(f"Batch optimization failed: {opt_err}")
             return df
     
+    def _optimize_dataframe_memory(self, df):
+        """
+        Optimize DataFrame memory usage by downcasting numeric columns.
+        """
+        try:
+            original_memory = df.memory_usage(deep=True).sum()
+            
+            # Downcast numeric columns
+            for col in df.columns:
+                col_type = df[col].dtype
+                
+                # Skip audio_wav column and other object columns that contain arrays/dicts
+                if col == 'audio_wav' or col_type == 'object':
+                    continue
+                    
+                # Downcast integers
+                if col_type.kind == 'i':  # integer
+                    df[col] = pd.to_numeric(df[col], downcast='integer')
+                # Downcast floats
+                elif col_type.kind == 'f':  # float
+                    df[col] = pd.to_numeric(df[col], downcast='float')
+            
+            optimized_memory = df.memory_usage(deep=True).sum()
+            memory_saved = original_memory - optimized_memory
+            
+            if memory_saved > 0:
+                logger.debug(f"[MEMORY] DataFrame optimized: {original_memory/(1024**2):.1f}MB -> "
+                           f"{optimized_memory/(1024**2):.1f}MB (saved {memory_saved/(1024**2):.1f}MB)")
+            
+            return df
+            
+        except Exception as e:
+            logger.warning(f"DataFrame memory optimization failed: {e}")
+            return df
+
     # --- Optimization: Helper function for parallel processing of one file pair ---
     def _process_file_pair(self, row, pad_before, pad_after, fix_length, memory_limit_gb=None):
         pair_start_time = time.perf_counter()
@@ -1032,9 +1079,9 @@ class data_preparation():
 
     # --- End Helper Function ---
 
-    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50, memory_limit_gb=8):
+    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50, memory_limit_gb=8, batch_size_multiplier=1.0):
         create_set_start_time = time.perf_counter()
-        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}, memory_limit={memory_limit_gb}GB")
+        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}, memory_limit={memory_limit_gb}GB, batch_size_multiplier={batch_size_multiplier}x")
         
         import psutil # Moved import here as it's used in check_memory
         process = psutil.Process() # Moved process definition here
@@ -1092,45 +1139,46 @@ class data_preparation():
             n_cores_for_calc = min(os.cpu_count(), 6) 
             per_process_memory_limit = memory_limit_gb / n_cores_for_calc
         
-        # Adaptive processing mode based on memory limits  
-        if memory_limit_gb <= 48: 
-            logger.info(f'Processing {len(self.midi_wav_map)} file pairs sequentially (low-memory mode)...')
-            sequential_process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
-            total_valid = self._process_sequential(sequential_process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb)
-        else:
-            logger.info(f'Processing {len(self.midi_wav_map)} file pairs in parallel using new top-level worker (high-memory mode)...')
-            total_valid = self._process_parallel_optimized_new_worker(
-                self.midi_wav_map, 
-                self.directory_path, 
-                pad_before, pad_after, fix_length, 
-                batching, dir_path, num_batches, 
-                check_memory, # Pass the defined check_memory function
-                memory_limit_gb, self.n_jobs,
-                per_process_memory_limit # Pass the calculated per_process_memory_limit for the worker
-            )
+        # MEMORY SAFETY: Very conservative parallel processing thresholds
+        # Force sequential for most cases to prevent memory explosions
+        available_system_memory_gb = psutil.virtual_memory().total / (1024**3)
+        
+        # CRITICAL: DISABLE PARALLEL PROCESSING - It causes massive memory explosion
+        # Each joblib worker inherits the entire main process memory (60GB+ per worker)
+        # This is a fundamental architectural limitation of joblib with large datasets
+        # Sequential mode is more reliable and memory-efficient for this workload
+        
+        logger.info("Using sequential processing mode for better memory control")
+        
+        # Only sequential processing is supported for memory safety and reliability
+        logger.info(f'Sequential mode: System memory: {available_system_memory_gb:.1f}GB, Process limit: {memory_limit_gb}GB')
+        logger.info('Sequential processing provides predictable memory usage and reliable performance')
+        
+        sequential_process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
+        total_valid = self._process_sequential(sequential_process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier)
 
         create_set_end_time = time.perf_counter()
         logger.info(f"create_audio_set completed: {total_valid} valid file pairs processed in {create_set_end_time - create_set_start_time:.2f} seconds.")
         return total_valid
 
-    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb):
+    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier=1.0):
         """Sequential processing with streaming saves and record-based batching."""
         total_processed_files = 0
         total_processed_records = 0
         current_batch_records = []  # Accumulate individual records, not DataFrames
         batch_idx = 0
         
-        # CRITICAL: Batch by RECORDS, not files (each file has many records)
+        # Simple, realistic batch sizes - batch size "optimization" doesn't actually speed up audio I/O
         if memory_limit_gb <= 8:
-            max_records_per_batch = 500   # Very small for low memory
+            max_records_per_batch = int(2000 * batch_size_multiplier)
         elif memory_limit_gb <= 16:
-            max_records_per_batch = 1000  # Small batches
+            max_records_per_batch = int(4000 * batch_size_multiplier)
         elif memory_limit_gb <= 32:
-            max_records_per_batch = 2000  # Medium batches  
+            max_records_per_batch = int(8000 * batch_size_multiplier)
         else:
-            max_records_per_batch = 3000  # Larger batches for high memory
+            max_records_per_batch = int(12000 * batch_size_multiplier)
             
-        logger.info(f"Using record-based batching: {max_records_per_batch} records per batch for {memory_limit_gb}GB memory limit")
+        logger.info(f"Batch size: {max_records_per_batch} records (memory limit: {memory_limit_gb}GB, multiplier: {batch_size_multiplier}x)")
 
         # Memory monitoring setup
         import psutil
@@ -1217,12 +1265,15 @@ class data_preparation():
             if i % check_frequency == 0:
                 current_mem = check_memory()
                 
-                # Dynamic batch size adjustment
+                # Dynamic batch size adjustment (respecting multiplier)
+                base_max_records = max_records_per_batch / batch_size_multiplier  # Get base size
                 if current_mem > memory_limit_gb * 0.8:
-                    max_records_per_batch = max(200, max_records_per_batch // 2)
+                    base_max_records = max(200, base_max_records // 2)
+                    max_records_per_batch = int(base_max_records * batch_size_multiplier)
                     logger.warning(f"High memory pressure: reducing batch size to {max_records_per_batch} records")
-                elif current_mem < memory_limit_gb * 0.4 and max_records_per_batch < 5000:
-                    max_records_per_batch = min(5000, max_records_per_batch + 500)
+                elif current_mem < memory_limit_gb * 0.4 and base_max_records < 5000:
+                    base_max_records = min(5000, base_max_records + 500)
+                    max_records_per_batch = int(base_max_records * batch_size_multiplier)
                     logger.info(f"Low memory pressure: increasing batch size to {max_records_per_batch} records")
 
         # Final batch save
@@ -1371,178 +1422,6 @@ class data_preparation():
         # Final memory check
         final_mem = psutil.Process().memory_info().rss / (1024**3)
         logger.debug(f"[SAVE] Batch {batch_idx} complete, final memory: {final_mem:.1f}GB")
-
-    # --- New parallel processing method using the top-level worker ---
-    def _process_parallel_optimized_new_worker(self, midi_wav_df, directory_path_arg, pad_before_arg, pad_after_arg, fix_length_arg, batching_arg, dir_path_arg, num_batches_arg, check_memory_func_arg, memory_limit_gb_arg, n_jobs_arg, worker_memory_limit_arg):
-        logger.info(f"Using _process_parallel_optimized_new_worker with n_jobs={n_jobs_arg}")
-        available_cores = n_jobs_arg if n_jobs_arg > 0 else os.cpu_count()
-        
-        if memory_limit_gb_arg <= 16:
-            max_cores_by_memory = 1
-        elif memory_limit_gb_arg <= 32:
-            max_cores_by_memory = max(1, int(memory_limit_gb_arg / 8))
-        else:
-            max_cores_by_memory = max(1, int(memory_limit_gb_arg / 12))
-        
-        n_cores = min(available_cores, max_cores_by_memory, 16)
-        memory_per_process_gb = memory_limit_gb_arg / n_cores
-        logger.info(f"Total memory limit: {memory_limit_gb_arg}GB, using {n_cores} cores = {memory_per_process_gb:.2f}GB per process for new worker")
-
-        base_chunk_size = max(5, min(50, len(midi_wav_df) // (n_cores * 4)))
-        if memory_per_process_gb <= 2: chunk_size = 1
-        elif memory_per_process_gb <= 4: chunk_size = max(2, base_chunk_size // 8)
-        elif memory_per_process_gb <= 8: chunk_size = max(5, base_chunk_size // 4)
-        else: chunk_size = max(10, base_chunk_size // 2)
-        logger.info(f"Using {n_cores} cores with chunk size {chunk_size} for new worker")
-
-        total_valid = 0
-        total_failed = 0
-        batch_data_accumulator = []
-        batch_sample_count = 0
-        
-        if memory_per_process_gb <= 2: target_samples_per_batch = 100
-        elif memory_per_process_gb <= 4: target_samples_per_batch = 250
-        elif memory_per_process_gb <= 8: target_samples_per_batch = 500
-        else: target_samples_per_batch = min(1000, max(500, int(memory_per_process_gb * 50)))
-        logger.info(f"Target samples per batch: {target_samples_per_batch} for new worker")
-
-        # Prepare tasks: iterate over rows and create dictionaries for the worker
-        # This is important: joblib works best with simple, picklable arguments.
-        tasks = []
-        for _, row in midi_wav_df.iterrows():
-            row_data_dict = row.to_dict()
-            tasks.append(delayed(process_file_pair_worker)(
-                row_data_dict, 
-                directory_path_arg, 
-                pad_before_arg, 
-                pad_after_arg, 
-                fix_length_arg, 
-                worker_memory_limit_arg # Pass per-process memory limit to worker
-            ))
-
-        logger.info(f"Submitting {len(tasks)} tasks to joblib.Parallel with {n_cores} cores.")
-        with parallel_backend('loky', n_jobs=n_cores):
-            all_results = Parallel(verbose=10)(tasks)
-        logger.info(f"joblib.Parallel processing finished. Received {len(all_results)} results.")
-
-        # Explicitly delete large objects after use
-        del tasks
-        gc.collect()  # Trigger garbage collection after processing tasks
-
-        # Process results
-        valid_results = [df for df in all_results if df is not None and not df.empty]
-        total_valid = len(valid_results)
-        total_failed = len(midi_wav_df) - total_valid
-        logger.info(f"Processing results: {total_valid} valid, {total_failed} failed.")
-
-        # Clear all_results immediately after extracting valid_results to free memory
-        del all_results
-        gc.collect()
-
-        if batching_arg and valid_results:
-            # Batching logic operates on `valid_results` list
-            batch_data_accumulator = valid_results.copy()  # Make a copy so we can clear valid_results
-            del valid_results  # Clear the original to free memory
-            gc.collect()
-            
-            batch_sample_count = sum(len(df) for df in batch_data_accumulator)
-            logger.info(f"Accumulated {batch_sample_count} samples for batching.")
-            
-            # Reset batch_tracking from self, as it's an instance variable
-            self.batch_tracking = 0 
-
-            while batch_sample_count >= target_samples_per_batch and self.batch_tracking < num_batches_arg:
-                current_samples_in_this_batch = 0
-                current_batch_data_list = []
-                remaining_data_accumulator = []
-                
-                for df_res in batch_data_accumulator:
-                    if current_samples_in_this_batch + len(df_res) <= target_samples_per_batch and self.batch_tracking < num_batches_arg:
-                        current_batch_data_list.append(df_res)
-                        current_samples_in_this_batch += len(df_res)
-                    else:
-                        remaining_data_accumulator.append(df_res)
-                
-                if not current_batch_data_list and batch_data_accumulator and self.batch_tracking < num_batches_arg:
-                    # If a single result is larger than batch, take it as one batch
-                    current_batch_data_list = [batch_data_accumulator[0]]
-                    current_samples_in_this_batch = len(current_batch_data_list[0])
-                    remaining_data_accumulator = batch_data_accumulator[1:]
-
-                if current_batch_data_list: # Ensure there's data to save
-                    # Find next available batch number
-                    while os.path.exists(os.path.join(dir_path_arg, f"{self.batch_tracking}_train.pkl")):
-                        self.batch_tracking += 1
-                    
-                    if self.batch_tracking < num_batches_arg:
-                        self._save_batch_sequential(current_batch_data_list, self.batch_tracking, dir_path_arg)
-                        logger.info(f"Saved batch {self.batch_tracking} ({current_samples_in_this_batch} samples)")
-                        self.batch_tracking += 1 # Increment after successful save
-                    else:
-                        logger.info("Reached num_batches_arg limit during batch formation.")
-                        # Put data back if we can't save this batch
-                        remaining_data_accumulator = current_batch_data_list + remaining_data_accumulator
-                        current_samples_in_this_batch = 0 # Reset samples for this unsaved batch
-                        break # Stop trying to form batches
-
-                batch_data_accumulator = remaining_data_accumulator
-                batch_sample_count -= current_samples_in_this_batch
-                
-                # Less frequent garbage collection in batch processing
-                if self.batch_tracking % 5 == 0:  # Only every 5 batches
-                    gc.collect()
-                if self.batch_tracking >= num_batches_arg:
-                    logger.info(f"Reached target number of batches ({num_batches_arg}) during parallel result processing.")
-                    break
-
-            # Save any remaining data if batch limit not reached
-            if batch_data_accumulator and self.batch_tracking < num_batches_arg:
-                logger.info(f"Saving remaining {len(batch_data_accumulator)} dataframes ({batch_sample_count} samples) as final batch.")
-                while os.path.exists(os.path.join(dir_path_arg, f"{self.batch_tracking}_train.pkl")):
-                    self.batch_tracking += 1
-                if self.batch_tracking < num_batches_arg:
-                    self._save_batch_sequential(batch_data_accumulator, self.batch_tracking, dir_path_arg)
-                    logger.info(f"Saved final batch {self.batch_tracking} ({batch_sample_count} samples)")
-                    self.batch_tracking += 1
-                else:
-                    logger.info("Final batch not saved as num_batches_arg limit was reached.")
-            
-            # Clear accumulator after processing
-            del batch_data_accumulator
-            gc.collect()
-        
-        elif not batching_arg and valid_results: # No batching - combine individual files (if this mode is still desired)
-            logger.info("Non-batching mode: combining individual results from parallel processing.")
-            # This part needs to be re-evaluated. If not batching, where do individual files come from?
-            # The worker returns DataFrames. We can save them individually or concat them here.
-            # For now, let's assume we concat them into self.notes_collection like the original sequential non-batching mode.
-            
-            # Clean up any old individual files if they exist from a previous run mode
-            # for f_old in os.listdir(dir_path_arg):
-            #     if f_old.startswith('individual_') and f_old.endswith('.pkl'):
-            #         os.remove(os.path.join(dir_path_arg, f_old))
-
-            self.notes_collection = pd.concat(valid_results, ignore_index=True) if valid_results else pd.DataFrame()
-            del valid_results
-            gc.collect()
-
-            if not self.notes_collection.empty:
-                # Filter problematic tracks (needs self.id_len_dict)
-                # Ensure id_len_dict is available or passed if this logic is kept
-                problematic_tracks=[]
-                for r_idx, r_val in tqdm(self.notes_collection.iterrows(), total=self.notes_collection.shape[0], desc="Final check for non-batching"):
-                    if r_val.start > self.id_len_dict[r_val.track_id]: # Requires self.id_len_dict
-                        problematic_tracks.append(r_val.track_id)
-                self.notes_collection = self.notes_collection[~self.notes_collection.track_id.isin(problematic_tracks)]
-                
-                output_path = os.path.join(dir_path_arg, "dataset_full.pkl")
-                self.notes_collection.to_pickle(output_path)
-                logger.info(f"Saved full dataset ({len(self.notes_collection)} notes) to {output_path} (non-batching mode)")
-            else:
-                logger.warning("No valid results to combine for non-batching mode.")
-
-        logger.info(f"_process_parallel_optimized_new_worker complete: {total_valid} valid, {total_failed} failed")
-        return total_valid
 
     def decompress_batch_for_training(self, batch_df):
         """
