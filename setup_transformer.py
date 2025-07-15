@@ -132,8 +132,8 @@ def test_installation():
         
         # Test transformer components
         sys.path.insert(0, os.getcwd())
-        from model_training.transformer_config import get_config, auto_detect_config
-        from model_training.transformer_model import create_model
+        from chart_hero.model_training.transformer_config import get_config, auto_detect_config
+from chart_hero.model_training.transformer_model import create_model
         
         config = auto_detect_config()
         print(f"✅ Auto-detected config: {config.__class__.__name__}")

@@ -12,24 +12,17 @@ from torch.utils.data import Dataset, DataLoader
 import torchaudio
 import numpy as np
 import pandas as pd
-import librosa
 import mido
 import os
 from pathlib import Path
 import logging
 from tqdm import tqdm
-import argparse
 import itertools
-import math
 import soundfile as sf
 
-# Add project root to Python path
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from model_training.transformer_data import SpectrogramProcessor
-from model_training.transformer_config import get_config, BaseConfig
-from model_training.transformer_config import DRUM_HIT_MAP, TARGET_CLASSES, DRUM_HIT_TO_INDEX
+from chart_hero.model_training.transformer_data import SpectrogramProcessor
+from chart_hero.model_training.transformer_config import get_config, BaseConfig
+from chart_hero.model_training.transformer_config import DRUM_HIT_MAP, TARGET_CLASSES, DRUM_HIT_TO_INDEX
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +178,7 @@ class data_preparation:
         
         logger.info(f"Initialized with {len(self.midi_wav_map)} files after filtering.")
 
-    def create_audio_set(self, dir_path, num_batches=None, **kwargs):
+    def create_audio_set(self, dir_path, num_batches=None, dataset_class=EGMDRawDataset, dataloader_class=DataLoader, **kwargs):
         output_dir = Path(dir_path)
         output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -199,19 +192,19 @@ class data_preparation:
 
         for mode, df in [('train', train_df), ('val', val_df), ('test', test_df)]:
             logger.info(f"Processing {mode} set with {len(df)} files...")
-            dataset = EGMDRawDataset(df, self.directory_path, config)
+            dataset = dataset_class(df, self.directory_path, config)
             
             if len(dataset) == 0:
                 logger.warning(f"No notes found for {mode} set. Skipping.")
                 continue
                 
-            data_loader = DataLoader(
+            data_loader = dataloader_class(
                 dataset,
                 batch_size=kwargs.get('batch_size', 256),
                 shuffle=False,
                 num_workers=kwargs.get('num_workers', 4),
                 collate_fn=collate_fn,
-                pin_memory=True
+                pin_memory=torch.cuda.is_available()
             )
 
             # Process and save data

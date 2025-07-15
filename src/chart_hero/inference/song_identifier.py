@@ -2,8 +2,7 @@ import json
 import os
 import requests
 
-from inference.classes.audd import audd_song_response, audd_song_result
-from tokens import get_audd_token
+from chart_hero.inference.classes.audd import audd_song_response, audd_song_result
 
 
 def identify_song(path: str) -> audd_song_result:

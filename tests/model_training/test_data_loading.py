@@ -1,15 +1,14 @@
-#!/usr/bin/env python3
 """
 Test script to verify the data loading fixes work correctly.
 """
 
 import torch
-from model_training.transformer_config import get_config
-from model_training.transformer_data import create_data_loaders, NpyDrumDataset as SpectrogramDataset
-import logging
-from model_training.data_preparation import data_preparation
+from chart_hero.model_training.transformer_config import get_config
+from chart_hero.model_training.transformer_data import create_data_loaders
+from chart_hero.model_training.data_preparation import data_preparation
 
 # Set up logging
+import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

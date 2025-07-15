@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from unittest.mock import patch, MagicMock
-from inference.input_transform import drum_extraction, drum_to_frame
+from chart_hero.inference.input_transform import drum_extraction, drum_to_frame
 import torch.nn as nn
 
 class MockDemucs(nn.Module):

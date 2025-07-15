@@ -14,7 +14,7 @@ import logging
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from model_training.data_preparation import data_preparation
+from chart_hero.model_training.data_preparation import data_preparation
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import tempfile
 import torch
-from model_training.data_preparation import data_preparation
+from chart_hero.model_training.data_preparation import data_preparation
 
 @pytest.fixture
 def mock_dataset(tmp_path):
@@ -59,25 +59,24 @@ def test_create_audio_set(mock_dataset):
             diff_threshold=2.0
         )
         
-    with patch('model_training.data_preparation.EGMDRawDataset') as mock_dataset_class:
-        with patch('model_training.data_preparation.DataLoader') as mock_dataloader_class:
-            # Mock the dataset and dataloader to return some dummy data
-            mock_dataset_instance = MagicMock()
-            mock_dataset_instance.__len__.return_value = 1
-            mock_dataset_class.return_value = mock_dataset_instance
+    mock_dataset_instance = MagicMock()
+    mock_dataset_instance.__len__.return_value = 1
+    mock_dataset_class = MagicMock(return_value=mock_dataset_instance)
+    
+    dummy_spectrogram = torch.randn(1, 1, 256, 128)
+    dummy_label = torch.randn(1, 8)
+    mock_dataloader_class = MagicMock(return_value=[(dummy_spectrogram, dummy_label)])
             
-            dummy_spectrogram = torch.randn(1, 1, 256, 128)
-            dummy_label = torch.randn(1, 8)
-            mock_dataloader_class.return_value = [(dummy_spectrogram, dummy_label)]
-            
-            with tempfile.TemporaryDirectory() as temp_dir:
-                num_files = data_prep.create_audio_set(
-                    dir_path=temp_dir,
-                    num_batches=1
-                )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        num_files = data_prep.create_audio_set(
+            dir_path=temp_dir,
+            num_batches=1,
+            dataset_class=mock_dataset_class,
+            dataloader_class=mock_dataloader_class
+        )
                 
-                assert num_files == 3
+        assert num_files == 3
                 
-                # Check that the output files were created
-                output_files = list(Path(temp_dir).glob("*.npy"))
-                assert len(output_files) == 6 # 2 for each of train, val, test
+        # Check that the output files were created
+        output_files = list(Path(temp_dir).glob("*.npy"))
+        assert len(output_files) == 6 # 2 for each of train, val, test

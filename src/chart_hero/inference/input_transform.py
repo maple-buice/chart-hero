@@ -1,5 +1,6 @@
 import os
 import librosa
+import librosa.feature.rhythm
 import pandas as pd
 from yt_dlp import YoutubeDL
 import numpy as np
@@ -133,7 +134,7 @@ def drum_to_frame(drum_track, sample_rate, estimated_bpm=None, resolution=16, fi
     else:
         _8_duration=pd.Series(peak_samples).diff().mode()[0]
         estimated_bpm=60/(librosa.samples_to_time(_8_duration, sr=sample_rate)*2)
-    bpm=librosa.beat.tempo(y=drum_track, sr=sample_rate, start_bpm=estimated_bpm)[0]
+    bpm=librosa.feature.tempo(y=drum_track, sr=sample_rate, start_bpm=estimated_bpm)[0]
 
     print(f'Estimated BPM value: {bpm}')
     if bpm>110:

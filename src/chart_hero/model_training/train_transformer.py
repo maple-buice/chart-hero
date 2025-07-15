@@ -7,15 +7,10 @@ import os
 import sys
 import logging
 import gc
-import argparse
 import torch
 from typing import Optional
 import wandb # Moved import to top level
 from datetime import datetime # Added for logging timestamp
-
-# Add project root to Python path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -26,12 +21,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from pathlib import Path
 import numpy as np
-import subprocess
-
-from model_training.transformer_config import get_config, auto_detect_config, validate_config
-from model_training.transformer_model import create_model
-from model_training.transformer_data import create_data_loaders
-from utils.file_utils import get_labeled_audio_set_dir
+from chart_hero.model_training.transformer_config import get_config, auto_detect_config, validate_config
+from chart_hero.model_training.transformer_model import create_model
+from chart_hero.model_training.transformer_data import create_data_loaders
+from chart_hero.utils.file_utils import get_labeled_audio_set_dir
 
 
 # Set up logging
@@ -152,7 +145,7 @@ class DrumTranscriptionModule(pl.LightningModule):
             optimize_memory(aggressive=(batch_idx % 100 == 0))
             
             # Log memory stats if using MPS
-            if hasattr(torch.mps, 'current_allocated_memory'):
+            if self.trainer.logger:
                 self.log('gpu_mem_allocated', torch.mps.current_allocated_memory() / (1024**3), on_step=True)
         
         # Forward pass
@@ -183,9 +176,10 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.train_acc(preds.int(), labels.int())
         
         # Log metrics
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train_f1', self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('train_acc', self.train_acc, on_step=False, on_epoch=True)
+        if self.trainer.logger:
+            self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+            self.log('train_f1', self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
+            self.log('train_acc', self.train_acc, on_step=False, on_epoch=True)
 
         # DEBUG: Check for NaN loss and log details
         if torch.isnan(loss):
@@ -282,9 +276,10 @@ class DrumTranscriptionModule(pl.LightningModule):
         })
         
         # Log metrics
-        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_f1', self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val_acc', self.val_acc, on_step=False, on_epoch=True)
+        if self.trainer.logger:
+            self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+            self.log('val_f1', self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
+            self.log('val_acc', self.val_acc, on_step=False, on_epoch=True)
         
         return loss
     
@@ -320,9 +315,10 @@ class DrumTranscriptionModule(pl.LightningModule):
         })
         
         # Log metrics
-        self.log('test_loss', loss, on_step=False, on_epoch=True)
-        self.log('test_f1', self.test_f1, on_step=False, on_epoch=True)
-        self.log('test_acc', self.test_acc, on_step=False, on_epoch=True)
+        if self.trainer.logger:
+            self.log('test_loss', loss, on_step=False, on_epoch=True)
+            self.log('test_f1', self.test_f1, on_step=False, on_epoch=True)
+            self.log('test_acc', self.test_acc, on_step=False, on_epoch=True)
         
         return loss
     
@@ -333,11 +329,12 @@ class DrumTranscriptionModule(pl.LightningModule):
             all_labels = torch.cat([x['labels'] for x in self.validation_step_outputs])
             
             # Per-class F1 scores
-            for i in range(self.config.num_drum_classes):
-                class_f1 = torchmetrics.functional.f1_score(
-                    all_preds[:, i], all_labels[:, i], task='binary'
-                )
-                self.log(f'val_f1_class_{i}', class_f1)
+            if self.trainer.logger:
+                for i in range(self.config.num_drum_classes):
+                    class_f1 = torchmetrics.functional.f1_score(
+                        all_preds[:, i], all_labels[:, i], task='binary'
+                    )
+                    self.log(f'val_f1_class_{i}', class_f1)
         
         # Clear memory
         self.validation_step_outputs.clear()
@@ -357,11 +354,12 @@ class DrumTranscriptionModule(pl.LightningModule):
             all_labels = torch.cat([x['labels'] for x in self.test_step_outputs])
             
             # Per-class F1 scores
-            for i in range(self.config.num_drum_classes):
-                class_f1 = torchmetrics.functional.f1_score(
-                    all_preds[:, i], all_labels[:, i], task='binary'
-                )
-                self.log(f'test_f1_class_{i}', class_f1)
+            if self.trainer.logger:
+                for i in range(self.config.num_drum_classes):
+                    class_f1 = torchmetrics.functional.f1_score(
+                        all_preds[:, i], all_labels[:, i], task='binary'
+                    )
+                    self.log(f'test_f1_class_{i}', class_f1)
         
         # Clear memory
         self.test_step_outputs.clear()

@@ -1,8 +1,11 @@
 import argparse
 from os import path
 import os
-
-from inference.song_identifier import get_data_from_acousticbrainz, identify_song
+from chart_hero.inference.song_identifier import get_data_from_acousticbrainz, identify_song
+from chart_hero.inference.input_transform import drum_extraction, drum_to_frame, get_yt_audio
+from chart_hero.inference.charter import drum_charter
+from chart_hero.inference.prediction import predict_drumhit
+import librosa
 
 def main():
     parser = argparse.ArgumentParser(description="Transcribe the drum part of a given song", usage=None)
@@ -56,11 +59,6 @@ def main():
                         help='Output sheet music directory path')
 
     args = parser.parse_args()
-
-    from inference.input_transform import drum_extraction, drum_to_frame, get_yt_audio
-    from inference.charter import drum_charter
-    from inference.prediction import predict_drumhit
-    import librosa
 
     if args.link!=None:
         print(f'Downloading audio track from {args.link}')

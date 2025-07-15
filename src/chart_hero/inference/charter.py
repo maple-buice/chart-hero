@@ -1,7 +1,5 @@
-import librosa
-import numpy as np
-
-from model_training.transformer_config import get_drum_hits
+from chart_hero.model_training.transformer_config import get_drum_hits
+from music21 import stream, note, chord, meter, layout
 
 class drum_charter():
     '''
