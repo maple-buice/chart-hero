@@ -7,25 +7,25 @@ from tokens import get_audd_token
 
 
 def identify_song(path: str) -> audd_song_result:
-    # data = {
-    #     'api_token': get_audd_token(),
-    #     'url': 'https://audd.tech/example.mp3',
-    #     'return': 'musicbrainz'
-    # }
-    # files = {
-    #     'file': open(path, 'rb')
-    # }
-    # response = requests.post('https://api.audd.io/', data=data, files=files)
-    # response_json = response.json()
-    
-    response_json: str
-    with open('audd_result.json', 'r') as file:
-        response_json = file.read()
+    api_token = os.environ.get('AUDD_API_TOKEN')
+    if not api_token:
+        raise ValueError("AUDD_API_TOKEN environment variable not set")
 
-    response_object: audd_song_response = json.loads(response_json)
-    result = response_object['result']
-    # print(result['artist'])
-    # print(result['musicbrainz'])
+    data = {
+        'api_token': api_token,
+        'return': 'musicbrainz'
+    }
+    files = {
+        'file': open(path, 'rb')
+    }
+    response = requests.post('https://api.audd.io/', data=data, files=files)
+    response.raise_for_status() # Raise an exception for bad status codes
+    response_json = response.json()
+    
+    result = response_json.get('result')
+    if not result:
+        raise ValueError("No result found in AudD API response")
+        
     return result
 
 def get_data_from_acousticbrainz(song: audd_song_result):

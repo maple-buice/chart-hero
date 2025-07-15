@@ -30,6 +30,3 @@ psutil>=5.9.0
 jupyter>=1.0.0
 ipywidgets>=8.0.0
 
-# Keras/TensorFlow (legacy support)
-tensorflow>=2.13.0
-keras>=2.13.0

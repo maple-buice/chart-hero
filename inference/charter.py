@@ -1,7 +1,7 @@
 import librosa
 import numpy as np
 
-from model_training.label_data import get_drum_hits
+from model_training.transformer_config import get_drum_hits
 
 class drum_charter():
     '''

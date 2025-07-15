@@ -281,3 +281,89 @@ if __name__ == "__main__":
     print(f"Auto-detected config: {auto_config.device}")
     
     print("Configuration tests passed!")
+
+#region Drum Hits
+# Final map based on README.md
+DRUM_HIT_MAP = {
+    22: '67', # Hi-hat Closed (Edge) -> HiHatCymbal
+    26: '67', # Hi-hat Open (Edge) -> HiHatCymbal
+    35: '0', # Acoustic Bass Drum -> Kick
+    36: '0', # Kick / Bass Drum 1 -> Kick
+    37: '1', # Snare X-Stick / Side Stick -> Snare
+    38: '1', # Snare (Head) / Acoustic Snare -> Snare
+    39: '67', # Hand Clap / Cowbell -> HiHatCymbal (Treating as percussion)
+    40: '1', # Snare (Rim) / Electric Snare -> Snare
+    41: '4', # Low Floor Tom -> LowTom
+    42: '67', # Hi-hat Closed (Bow) / Closed Hi-Hat -> HiHatCymbal
+    43: '4', # Tom 3 (Head) / High Floor Tom -> LowTom
+    44: '67', # Hi-hat Pedal / Pedal Hi-Hat -> HiHatCymbal
+    45: '3', # Tom 2 / Low Tom -> MiddleTom
+    46: '67', # Hi-hat Open (Bow) / Open Hi-Hat -> HiHatCymbal
+    47: '3', # Tom 2 (Rim) / Low-Mid Tom -> MiddleTom
+    48: '2', # Tom 1 / Hi-Mid Tom -> HighTom
+    49: '66', # Crash 1 (Bow) / Crash Cymbal 1 -> CrashCymbal
+    50: '2', # Tom 1 (Rim) / High Tom -> HighTom
+    51: '68', # Ride (Bow) / Ride Cymbal 1 -> RideCymbal
+    52: '66', # Crash 2 (Edge) / Chinese Cymbal -> CrashCymbal
+    53: '68', # Ride (Bell) / Ride Bell -> RideCymbal
+    54: '67', # Tambourine / Cowbell -> HiHatCymbal (Treating as percussion)
+    55: '66', # Crash 1 (Edge) / Splash Cymbal -> CrashCymbal
+    56: '67', # Cowbell -> HiHatCymbal (Treating as percussion)
+    57: '66', # Crash 2 (Bow) / Crash Cymbal 2 -> CrashCymbal
+    58: '4', # Tom 3 (Rim) / Vibraslap -> LowTom
+    59: '68', # Ride (Edge) / Ride Cymbal 2 -> RideCymbal
+    # --- Adding potentially missing mappings based on common GM ---
+    # Toms
+    60: '2', # Hi Bongo -> HighTom
+    61: '3', # Low Bongo -> MiddleTom
+    62: '2', # Mute Hi Conga -> HighTom
+    63: '3', # Open Hi Conga -> MiddleTom
+    64: '4', # Low Conga -> LowTom
+    65: '2', # High Timbale -> HighTom
+    66: '3', # Low Timbale -> MiddleTom
+    # Percussion -> Map to HiHat for simplicity or create separate classes later
+    67: '2', # High Agogo -> HighTom (Could be percussion)
+    68: '3', # Low Agogo -> MiddleTom (Could be percussion)
+    69: '67', # Cabasa -> HiHatCymbal
+    70: '67', # Maracas -> HiHatCymbal
+    # Cymbals/Effects -> Map reasonably
+    71: '68', # Short Whistle -> RideCymbal (Treat as effect/cymbal)
+    72: '66', # Long Whistle -> CrashCymbal (Treat as effect/cymbal)
+    73: '68', # Short Guiro -> RideCymbal (Treat as effect/cymbal)
+    74: '66', # Long Guiro -> CrashCymbal (Treat as effect/cymbal)
+    75: '67', # Claves -> HiHatCymbal
+    # Wood Blocks -> Map to Toms
+    76: '2', # Hi Wood Block -> HighTom
+    77: '3', # Low Wood Block -> MiddleTom
+    # Cuica -> Map to Toms
+    78: '2', # Mute Cuica -> HighTom
+    79: '3', # Open Cuica -> MiddleTom
+    # Triangle -> Map to Cymbals
+    80: '68', # Mute Triangle -> RideCymbal
+    81: '66'  # Open Triangle -> CrashCymbal
+}
+
+# Define the target classes based on the Clone Hero mapping values
+TARGET_CLASSES = sorted(list(set(DRUM_HIT_MAP.values()))) # ['0', '1', '2', '3', '4', '66', '67', '68']
+NUM_DRUM_HITS = len(TARGET_CLASSES)
+DRUM_HIT_TO_INDEX = {hit: idx for idx, hit in enumerate(TARGET_CLASSES)}
+INDEX_TO_DRUM_HIT = {idx: hit for idx, hit in enumerate(TARGET_CLASSES)}
+
+def get_drum_hits() -> list[str]:
+    """Returns the sorted list of target drum hit classes."""
+    return TARGET_CLASSES
+
+def get_drum_hits_as_strings() -> list[str]:
+    """Returns the sorted list of target drum hit classes as strings (same as get_drum_hits)."""
+    # Simple mapping for clarity in reports
+    name_map = {
+        '0': 'Kick',
+        '1': 'Snare',
+        '2': 'HiTom',
+        '3': 'MidTom',
+        '4': 'LowTom',
+        '66': 'Crash',
+        '67': 'HiHat',
+        '68': 'Ride'
+    }
+    return [name_map.get(hit, hit) for hit in TARGET_CLASSES]

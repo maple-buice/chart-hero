@@ -723,8 +723,7 @@ def main():
     logger.info("Creating data loaders...")
     train_loader, val_loader, test_loader = create_data_loaders(
         config=config,
-        data_dir=config.data_dir,
-        audio_dir=config.audio_dir
+        data_dir=config.data_dir
     )
 
     trained_model, trainer_instance = None, None # Initialize to ensure they are defined

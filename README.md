@@ -16,3 +16,17 @@ For the refactoring plan and current progress, see `TRANSFORMER_REFACTORING_PLAN
 ## Quick Start
 
 Refer to `model_training/README.md` for data preparation and training commands.
+
+## Configuration
+
+### AudD API Key
+
+This project uses the AudD API for music identification. To use this feature, you must set the `AUDD_API_TOKEN` environment variable to your AudD API token.
+
+You can get a free API token by signing up at [audd.io](https://audd.io).
+
+**Example:**
+
+```bash
+export AUDD_API_TOKEN="your_api_token_here"
+```

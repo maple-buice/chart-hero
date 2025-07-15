@@ -36,7 +36,7 @@ def drum_extraction(path, dir=None, mode='performance', drum_start=None, drum_en
     if dir!=None:
         dir_path=dir
     else:
-        dir_path='inference\pretrained_models\demucs'
+        dir_path=r'inference\pretrained_models\demucs'
     if mode =='speed':
         model=pretrained.get_model(name='83fc094f', repo=Path(dir_path))
         model=apply.BagOfModels([model])
@@ -70,7 +70,7 @@ def drum_extraction(path, dir=None, mode='performance', drum_start=None, drum_en
         )[0]
     
     sources = sources * ref.std() + ref.mean()
-    drum = sources[0]
+    drum = sources[0].numpy()
     sample_rate = model.samplerate
     drum_track = librosa.to_mono(drum)
 
@@ -121,9 +121,9 @@ def drum_to_frame(drum_track, sample_rate, estimated_bpm=None, resolution=16, fi
     if type(drum_track)!=np.ndarray:
         drum_track, sample_rate=librosa.load(drum_track, sr=None)
 
-    o_env = librosa.onset.onset_strength(drum_track, sr=sample_rate, hop_length=hop_length)
-    onset_frames=librosa.onset.onset_detect(drum_track, onset_envelope=o_env, sr=sample_rate, backtrack=backtrack)
-    peak_frames=librosa.onset.onset_detect(drum_track, onset_envelope=o_env, sr=sample_rate)
+    o_env = librosa.onset.onset_strength(y=drum_track, sr=sample_rate, hop_length=hop_length)
+    onset_frames=librosa.onset.onset_detect(y=drum_track, onset_envelope=o_env, sr=sample_rate, backtrack=backtrack)
+    peak_frames=librosa.onset.onset_detect(y=drum_track, onset_envelope=o_env, sr=sample_rate)
     onset_samples = librosa.frames_to_samples(onset_frames*(hop_length/512))
     peak_samples = librosa.frames_to_samples(peak_frames*(hop_length/512))
     
@@ -133,15 +133,15 @@ def drum_to_frame(drum_track, sample_rate, estimated_bpm=None, resolution=16, fi
     else:
         _8_duration=pd.Series(peak_samples).diff().mode()[0]
         estimated_bpm=60/(librosa.samples_to_time(_8_duration, sr=sample_rate)*2)
-    bpm=librosa.beat.tempo(drum_track, sr=sample_rate, start_bpm=estimated_bpm)[0]
+    bpm=librosa.beat.tempo(y=drum_track, sr=sample_rate, start_bpm=estimated_bpm)[0]
 
     print(f'Estimated BPM value: {bpm}')
     if bpm>110:
         print('Detected BPM value is larger than 110, re-calibrate the hop-length to 512 for more accurate result')
         hop_length=512
-        o_env = librosa.onset.onset_strength(drum_track, sr=sample_rate, hop_length=hop_length)
-        onset_frames=librosa.onset.onset_detect(drum_track, onset_envelope=o_env, sr=sample_rate, backtrack=backtrack)
-        peak_frames=librosa.onset.onset_detect(drum_track, onset_envelope=o_env, sr=sample_rate)
+        o_env = librosa.onset.onset_strength(y=drum_track, sr=sample_rate, hop_length=hop_length)
+        onset_frames=librosa.onset.onset_detect(y=drum_track, onset_envelope=o_env, sr=sample_rate, backtrack=backtrack)
+        peak_frames=librosa.onset.onset_detect(y=drum_track, onset_envelope=o_env, sr=sample_rate)
         onset_samples = librosa.frames_to_samples(onset_frames*(hop_length/512))
         peak_samples = librosa.frames_to_samples(peak_frames*(hop_length/512))
         
