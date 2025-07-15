@@ -29,4 +29,12 @@ psutil>=5.9.0
 # Development
 jupyter>=1.0.0
 ipywidgets>=8.0.0
+music21
+
+# Development Tools
+black
+isort
+ruff
+mypy
+
 

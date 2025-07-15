@@ -20,3 +20,8 @@ classifiers = [
 [project.urls]
 "Homepage" = "https://github.com/maple-buice/chart-hero"
 "Bug Tracker" = "https://github.com/maple-buice/chart-hero/issues"
+
+[project.scripts]
+chart-hero = "chart_hero.main:main"
+prepare-egmd-data = "chart_hero.prepare_egmd_data:main"
+

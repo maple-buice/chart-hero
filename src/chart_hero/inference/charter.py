@@ -1,3 +1,5 @@
+import librosa
+import numpy as np
 from chart_hero.model_training.transformer_config import get_drum_hits
 from music21 import stream, note, chord, meter, layout
 
@@ -75,9 +77,94 @@ class drum_charter():
                                                                                                                               _8_sixlet_div)
         
         self.pitch_dict=self.get_pitch_dict()
-        stream_time_map, stream_pitch, stream_note=self.build_stream()
-        self.music21_data=self.get_music21_data(stream_time_map, stream_pitch, stream_note)
-        self.sheet=self.sheet_construction(self.music21_data, song_title=song_title)
+        def get_music21_data(self, stream_time_map, stream_pitch, stream_note):
+        """
+        A function to clean up and merge all the necessary information in a format that can pass to the sheet_construction step to build sheet music
+        """
+        music21_data={}
+        for i in range(len(stream_time_map)):
+            music21_data[i]={'pitch':stream_pitch[i],
+                             'note_type':stream_note[i]}
+        return music21_data
+
+    def sheet_construction(self, music21_data, song_title=None):
+        """
+        A function to build sheet music using Music21 library
+        """
+        # from music21 import stream, note, chord, meter, layout
+        
+        # Create a new stream (sheet music)
+        sheet = stream.Score()
+        
+        # Add title and other metadata
+        if song_title:
+            sheet.metadata = metadata.Metadata(title=song_title)
+        
+        # Create a drum part
+        drum_part = stream.Part()
+        drum_part.id = 'drums'
+        
+        # Add time signature
+        drum_part.append(meter.TimeSignature(f'{self.beats_in_measure/2}/{self.note_value}'))
+        
+        # Add notes to the part
+        for measure_num in sorted(music21_data.keys()):
+            measure = stream.Measure(number=measure_num)
+            for i, pitch_list in enumerate(music21_data[measure_num]['pitch']):
+                note_type = music21_data[measure_num]['note_type'][i]
+                
+                if 'rest' in pitch_list:
+                    n = note.Rest()
+                else:
+                    # Create a chord for multiple drum hits at the same time
+                    n = chord.Chord(pitch_list)
+                
+                n.duration.quarterLength = note_type
+                measure.append(n)
+            drum_part.append(measure)
+        
+        # Add drum part to the sheet music
+        sheet.insert(0, drum_part)
+        
+        return sheet
+        
+    def build_stream(self):
+        """
+        A function to clean up and merge all the necessary information in a format that can pass to the build_stream step to build sheet music
+        """
+        measure_log=0
+        stream_time_map=[]
+        stream_pitch=[]
+        stream_note=[]
+        synced_8_div=np.around(self.synced_8_div,8)
+        for i in range(len(synced_8_div) //self.beats_in_measure):
+
+            measure_iter=list(synced_8_div[measure_log: measure_log + self.beats_in_measure])
+            measure, note_dur=self.build_measure(measure_iter)
+            stream_time_map.append(measure)
+            stream_note.append(note_dur)
+            measure_log=measure_log+self.beats_in_measure
+
+        remaining_8=len(synced_8_div)%self.beats_in_measure
+        measure, note_dur=self.build_measure(synced_8_div[-remaining_8:])
+        measure.extend([-1]*(self.beats_in_measure-remaining_8))
+        note_dur.extend([8]*(self.beats_in_measure-remaining_8))
+
+        stream_time_map.append(measure)
+        stream_note.append(note_dur)
+
+        for measure in stream_time_map:
+            pitch_set=[]
+            for note in measure:
+                if note in self.pitch_dict.keys():
+                    if len(self.pitch_dict[note])==0:
+                        pitch_set.append(['rest'])
+                    else:    
+                        pitch_set.append(self.pitch_dict[note])
+                else:
+                    pitch_set.append(['rest'])
+            stream_pitch.append(pitch_set)
+        return stream_time_map, stream_pitch, stream_note
 
     def get_note_duration(self):
         '''
