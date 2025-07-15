@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "chart-hero"
 version = "0.1.0"
 authors = [
-  { name="Example Author", email="author@example.com" },
+  { name="Maple Buice", email="maple.buice@gmail.com" },
 ]
 description = "A project to automatically generate drum charts from audio files."
 readme = "README.md"
@@ -18,5 +18,5 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/pypa/sampleproject"
-"Bug Tracker" = "https://github.com/pypa/sampleproject/issues"
+"Homepage" = "https://github.com/maple-buice/chart-hero"
+"Bug Tracker" = "https://github.com/maple-buice/chart-hero/issues"
