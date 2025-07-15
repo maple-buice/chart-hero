@@ -7,6 +7,7 @@ Processes the raw E-GMD data into transformer-compatible format.
 import os
 import sys
 import logging
+import time
 from pathlib import Path
 import argparse
 
@@ -19,6 +20,99 @@ from model_training.transformer_data import convert_legacy_data
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+class ProgressBarManager:
+    """
+    Enhanced progress tracking with visual progress bars for E-GMD data preparation.
+    """
+    
+    def __init__(self, name="Data Preparation"):
+        self.name = name
+        self.start_time = time.time()
+        self.last_update = 0
+        self.update_interval = 2.0  # Update every 2 seconds
+        self.total_callbacks = 0
+        self.files_processed = 0
+        self.total_files = 0
+        
+    def __call__(self, current, total, details):
+        """
+        Progress callback function called by data preparation.
+        
+        Args:
+            current: Current progress count (files processed)
+            total: Total files to process
+            details: Dictionary with processing details
+        """
+        self.total_callbacks += 1
+        self.files_processed = current
+        self.total_files = total
+        current_time = time.time()
+        
+        # Update progress display
+        if current_time - self.last_update >= self.update_interval or current == total:
+            self.last_update = current_time
+            self._display_progress(current, total, details, current_time)
+            
+        # Show completion message
+        if current == total:
+            self._display_completion(current_time)
+    
+    def _display_progress(self, current, total, details, current_time):
+        """Display formatted progress information."""
+        elapsed = current_time - self.start_time
+        progress_percent = (current / total) * 100 if total > 0 else 0
+        
+        # Calculate ETA
+        if current > 0:
+            avg_time_per_item = elapsed / current
+            remaining_items = total - current
+            eta_seconds = remaining_items * avg_time_per_item
+            eta_str = f"{eta_seconds/60:.1f}m" if eta_seconds > 60 else f"{eta_seconds:.1f}s"
+        else:
+            eta_str = "calculating..."
+        
+        # Create progress bar
+        bar_width = 40
+        filled_width = int(bar_width * progress_percent / 100)
+        bar = "█" * filled_width + "░" * (bar_width - filled_width)
+        
+        # Format mode-specific information
+        mode = details.get('mode', 'unknown')
+        if mode == 'parallel':
+            # Show parallel processing info with worker details
+            workers_active = details.get('workers_active', 0)
+            total_workers = details.get('total_workers', 0)
+            total_records = details.get('total_records_all_workers', details.get('total_records', 0))
+            worker_info = f"Workers: {workers_active}/{total_workers}"
+            extra_info = f"{worker_info} | Records: {total_records:,} | Mode: Parallel"
+        else:
+            # Show sequential processing info
+            current_file = details.get('current_file', 'unknown')
+            records = details.get('total_records', 0)
+            memory_gb = details.get('memory_gb', 0)
+            # Truncate long filenames
+            file_display = current_file.split('/')[-1][:25] + "..." if len(current_file) > 28 else current_file.split('/')[-1]
+            extra_info = f"Records: {records:,} | Memory: {memory_gb:.1f}GB | File: {file_display}"
+        
+        # Print progress line with bar
+        print(f"\r🎵 {self.name} [{bar}] {progress_percent:5.1f}% ({current:,}/{total:,}) | {extra_info} | ETA: {eta_str}", end="", flush=True)
+        
+        # Add newline every few updates to prevent line getting too long
+        if current % 50 == 0 or current == total:
+            print()  # New line to prevent terminal issues
+    
+    def _display_completion(self, current_time):
+        """Display completion summary."""
+        total_time = (current_time - self.start_time) / 60
+        files_per_min = self.files_processed / (total_time) if total_time > 0 else 0
+        
+        print(f"\n🎉 {self.name} COMPLETED!")
+        print(f"   ✅ Processed {self.files_processed:,} files in {total_time:.1f} minutes")
+        print(f"   ⚡ Processing rate: {files_per_min:.1f} files/minute")
+        print(f"   📊 Total progress updates: {self.total_callbacks:,}")
+        print("="*80)
 
 
 def main():
@@ -51,6 +145,8 @@ def main():
                        help='Multiply batch sizes by this factor (default: 2.0 for better performance)')
     parser.add_argument('--disable-parallel', action='store_true',
                        help='Force sequential processing (disables smart parallelization)')
+    parser.add_argument('--disable-progress-callback', action='store_true',
+                       help='Disable custom progress bars, use simple tqdm bars instead')
     
     args = parser.parse_args()
     
@@ -158,6 +254,15 @@ def main():
         
         logger.info(f"Found {len(data_prep.midi_wav_map)} valid audio/MIDI pairs")
         
+        # Create progress bar manager or use None to fall back to tqdm
+        if args.disable_progress_callback:
+            progress_manager = None
+            logger.info("🔄 Using traditional tqdm progress bars (callback disabled)")
+        else:
+            progress_manager = ProgressBarManager("E-GMD Data Processing")
+            logger.info("🚀 Starting data processing with centralized progress tracking...")
+            logger.info("💡 This prevents progress bar conflicts between workers")
+        
         # Process and create batched data
         logger.info("Creating audio set with transformer-compatible processing...")
         if args.disable_parallel:
@@ -176,7 +281,8 @@ def main():
             num_batches=args.num_batches,
             memory_limit_gb=args.memory_limit_gb,
             batch_size_multiplier=args.batch_size_multiplier,
-            enable_process_parallelization=enable_parallelization
+            enable_process_parallelization=enable_parallelization,
+            progress_callback=progress_manager  # Add progress callback!
         )
         
         logger.info("Data preparation completed successfully!")

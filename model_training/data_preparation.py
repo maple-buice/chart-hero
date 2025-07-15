@@ -1413,9 +1413,9 @@ class data_preparation():
 
     # --- End Helper Function ---
 
-    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50, memory_limit_gb=8, batch_size_multiplier=1.0, enable_process_parallelization=False):
+    def create_audio_set(self, pad_before=0.02, pad_after=0.02, fix_length=None, batching=False, dir_path='', num_batches=50, memory_limit_gb=8, batch_size_multiplier=1.0, enable_process_parallelization=False, progress_callback=None):
         create_set_start_time = time.perf_counter()
-        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}, memory_limit={memory_limit_gb}GB, batch_size_multiplier={batch_size_multiplier}x, process_parallel={enable_process_parallelization}")
+        logger.info(f"Starting create_audio_set: pad_before={pad_before}, pad_after={pad_after}, fix_length={fix_length}, batching={batching}, num_batches={num_batches}, memory_limit={memory_limit_gb}GB, batch_size_multiplier={batch_size_multiplier}x, process_parallel={enable_process_parallelization}, callback={progress_callback is not None}")
         
         import psutil # Moved import here as it's used in check_memory
         process = psutil.Process() # Moved process definition here
@@ -1500,7 +1500,7 @@ class data_preparation():
                 
                 logger.info(f'Using {n_processes} processes with {per_process_memory_limit:.1f}GB limit per process')
                 
-                total_valid = self._process_parallel_improved(pad_before, pad_after, fix_length, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes)
+                total_valid = self._process_parallel_improved(pad_before, pad_after, fix_length, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes, progress_callback)
         else:
             # Conditions not met for parallel processing, force sequential
             if enable_process_parallelization:
@@ -1517,14 +1517,19 @@ class data_preparation():
             logger.info('Sequential processing provides predictable memory usage and reliable performance')
             
             sequential_process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=per_process_memory_limit)
-            total_valid = self._process_sequential(sequential_process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier)
+            total_valid = self._process_sequential(sequential_process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, progress_callback)
 
         create_set_end_time = time.perf_counter()
         logger.info(f"create_audio_set completed: {total_valid} valid file pairs processed in {create_set_end_time - create_set_start_time:.2f} seconds.")
         return total_valid
 
-    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier=1.0):
-        """Sequential processing with streaming saves and record-based batching."""
+    def _process_sequential(self, process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier=1.0, progress_callback=None):
+        """Sequential processing with streaming saves and record-based batching.
+        
+        Args:
+            progress_callback: Optional callback function for progress updates.
+                              Called with (current_progress, total_items, details_dict)
+        """
         total_processed_files = 0
         total_processed_records = 0
         current_batch_records = []  # Accumulate individual records, not DataFrames
@@ -1566,22 +1571,27 @@ class data_preparation():
         memory_samples = []
         files_processed_since_last_save = 0
 
-        # Create positioned progress bar for main processing loop
+        # Progress bar handling: Only use tqdm when no callback is provided
+        # When a callback is provided, ALL progress display is handled centrally
         current_pid = os.getpid()
         main_process_id = getattr(self, '_main_process_id', current_pid)
         is_worker_process = current_pid != main_process_id
         
-        if is_worker_process:
-            # Worker processes get positioned progress bars (positions 5, 6, 7, etc.)
-            worker_position = (current_pid % 10) + 5  # Offset by 5 to avoid duration bar conflicts
-            desc = f"Worker-{worker_position} Processing"
-            progress_bar = tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), 
-                              desc=desc, position=worker_position, leave=True, ncols=80, colour='yellow')
+        if progress_callback is None:
+            # No callback - use positioned tqdm bars (old behavior)
+            if is_worker_process:
+                worker_position = (current_pid % 10) + 5  # Offset by 5 to avoid conflicts
+                desc = f"Worker-{worker_position} Processing"
+                progress_bar = tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), 
+                                  desc=desc, position=worker_position, leave=True, ncols=80, colour='yellow')
+            else:
+                desc = f"Main Process Files"
+                progress_bar = tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), 
+                                  desc=desc, position=4, leave=True, ncols=80, colour='blue')
         else:
-            # Main process gets position 4 (below duration bars)
-            desc = f"Main Process Files"
-            progress_bar = tqdm(self.midi_wav_map.itertuples(index=False, name='Row'), 
-                              desc=desc, position=4, leave=True, ncols=80, colour='blue')
+            # Callback provided - DISABLE ALL tqdm displays, use only callback
+            # This prevents any progress bar conflicts - the callback handles ALL display
+            progress_bar = self.midi_wav_map.itertuples(index=False, name='Row')  # Plain iterator
         
         for i, row in enumerate(progress_bar):
             # Pre-processing memory check
@@ -1591,6 +1601,24 @@ class data_preparation():
             file_start_time = time.perf_counter()
             result = process_func(row)
             file_time = time.perf_counter() - file_start_time
+            
+            # Call progress callback if provided
+            if progress_callback:
+                total_files = len(self.midi_wav_map)
+                details = {
+                    'mode': 'sequential',
+                    'current_file': row.midi_filename if hasattr(row, 'midi_filename') else 'unknown',
+                    'batch_records': len(current_batch_records),
+                    'total_records': total_processed_records,
+                    'files_processed': total_processed_files,
+                    'memory_gb': pre_mem,
+                    'is_worker': is_worker_process,
+                    'pid': current_pid
+                }
+                try:
+                    progress_callback(i + 1, total_files, details)
+                except Exception as e:
+                    logger.warning(f"Progress callback error: {e}")
             
             # PERFORMANCE INSTRUMENTATION: Collect aggregate timing (extract from logs if available)
             # The detailed timing is logged by _process_file_pair, here we track file-level stats
@@ -1866,12 +1894,16 @@ class data_preparation():
         logger.info(f"Decompression complete: {final_count} records ready for training")
         return batch_df
 
-    def _process_parallel_improved(self, pad_before, pad_after, fix_length, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes):
+    def _process_parallel_improved(self, pad_before, pad_after, fix_length, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, n_processes, progress_callback=None):
         """
         IMPROVED parallel processing that reuses the sequential processing logic.
         
         This version creates minimal worker processes that use the EXACT SAME code
         as the sequential version to ensure memory efficiency and reliability.
+        
+        Args:
+            progress_callback: Optional callback function for progress updates.
+                              Called with (current_progress, total_items, details_dict)
         """
         try:
             from multiprocessing import Pool, Queue
@@ -1935,55 +1967,73 @@ class data_preparation():
             # Prepare arguments for worker processes with callback queue
             chunk_args = [(chunk, processing_params, self.directory_path, callback_queue) for chunk in file_chunks]
             
-            # Create progress bars for workers
-            worker_bars = {}
+            # Track worker completion (no individual progress bars when callback is provided)
             completed_workers = 0
             total_workers = len(chunk_args)
             
             def update_progress():
-                """Update progress bars from worker callbacks."""
+                """Centralized progress manager - handles all progress display via callback only."""
                 nonlocal completed_workers
+                total_files_processed = 0
+                total_records_processed = 0
+                
                 try:
                     while True:
                         message_type, data = callback_queue.get_nowait()
                         
                         if message_type == 'progress':
+                            # Track worker progress internally (no tqdm bars)
                             worker_id = data['worker_id']
                             
-                            # Create progress bar for new worker
-                            if worker_id not in worker_bars:
-                                position = len(worker_bars) + 1  # Position 1-3 for workers
-                                worker_bars[worker_id] = self._create_positioned_progress_bar(
-                                    total=data['total_files'],
-                                    desc=f"Worker-{str(data['current_pid'])[-3:]}",  # Last 3 digits of PID
-                                    position=position
-                                )
+                            # Update totals from all workers  
+                            total_files_processed += data.get('files_delta', 0)  # Incremental files
+                            total_records_processed += data.get('records_delta', 0)  # Incremental records
                             
-                            # Update progress bar
-                            pbar = worker_bars[worker_id]
-                            pbar.n = data['processed_files']
-                            pbar.set_postfix({
-                                'Files': data['processed_files'],
-                                'Records': data['total_records'],
-                                'PID': str(data['current_pid'])[-4:]  # Last 4 digits
-                            })
-                            pbar.refresh()
+                            # Call ONLY the centralized progress callback
+                            if progress_callback:
+                                details = {
+                                    'mode': 'parallel',
+                                    'worker_id': worker_id,
+                                    'workers_active': n_processes,
+                                    'total_workers': total_workers,
+                                    'current_pid': data['current_pid'],
+                                    'worker_files': data['processed_files'],
+                                    'worker_records': data['total_records'],
+                                    'total_files_all_workers': total_files_processed,
+                                    'total_records_all_workers': total_records_processed
+                                }
+                                try:
+                                    progress_callback(total_files_processed, len(file_data_list), details)
+                                except Exception as e:
+                                    logger.warning(f"Progress callback error: {e}")
                             
                         elif message_type == 'log':
-                            # Handle log messages
+                            # Handle log messages from workers
                             level = data.get('level', 'info').upper()
                             message = data.get('message', '')
                             if level in ['ERROR', 'WARNING']:
                                 logger.log(getattr(logging, level), f"Worker: {message}")
                             
                         elif message_type == 'complete':
-                            # Worker completed
+                            # Worker completed - no progress bars to close, just track completion
                             worker_id = data['worker_id']
-                            if worker_id in worker_bars:
-                                pbar = worker_bars[worker_id]
-                                pbar.n = pbar.total  # Ensure 100%
-                                pbar.close()
                             completed_workers += 1
+                            logger.info(f"Worker {worker_id} completed ({completed_workers}/{total_workers})")
+                            
+                            # Call completion callback when all workers are done
+                            if progress_callback and completed_workers == total_workers:
+                                details = {
+                                    'mode': 'parallel',
+                                    'completed': True,
+                                    'total_workers': total_workers,
+                                    'final_results': True,
+                                    'total_files_processed': total_files_processed,
+                                    'total_records_processed': total_records_processed
+                                }
+                                try:
+                                    progress_callback(len(file_data_list), len(file_data_list), details)
+                                except Exception as e:
+                                    logger.warning(f"Completion callback error: {e}")
                             
                 except queue.Empty:
                     pass
@@ -2058,11 +2108,11 @@ class data_preparation():
             logger.info("🔄 Falling back to sequential processing")
             from functools import partial
             process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=memory_limit_gb/2)
-            return self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier)
+            return self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, progress_callback)
             
         except Exception as e:
             logger.error(f"Parallel processing failed: {e}")
             logger.info("🔄 Falling back to sequential processing")
             from functools import partial
             process_func = partial(self._process_file_pair, pad_before=pad_before, pad_after=pad_after, fix_length=fix_length, memory_limit_gb=memory_limit_gb/2)
-            return self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier)
+            return self._process_sequential(process_func, batching, dir_path, num_batches, check_memory, memory_limit_gb, batch_size_multiplier, progress_callback)
