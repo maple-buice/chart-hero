@@ -1,7 +1,9 @@
 from unittest.mock import patch
 
+import librosa
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 import torch.nn as nn
 import torchaudio
@@ -66,3 +68,39 @@ def test_drum_to_frame():
 
     assert bpm is not None
     assert isinstance(bpm, float)
+
+
+def test_drum_to_frame_options():
+    """Test the drum_to_frame function with different options."""
+    sample_rate = 22050
+    dummy_drum_track = np.random.randn(sample_rate * 10)
+
+    # Test with backtrack=True
+    df_backtrack, _, _ = drum_to_frame(dummy_drum_track, sample_rate, backtrack=True)
+    assert not df_backtrack.empty
+
+    # Test with fixed_clip_length=True
+    df_fixed, _, _ = drum_to_frame(
+        dummy_drum_track, sample_rate, fixed_clip_length=True
+    )
+    assert not df_fixed.empty
+    # Check that all clips have the same length
+    clip_lengths = df_fixed["audio_clip"].apply(len)
+    assert clip_lengths.nunique() == 1
+
+
+def test_drum_to_frame_bpm_estimation():
+    """Test the BPM estimation in drum_to_frame."""
+    sample_rate = 22050
+    # Create a dummy track with a known BPM
+    bpm = 120
+    beats = np.linspace(0, 10, 10 * bpm // 60)
+    dummy_drum_track = librosa.clicks(
+        times=beats, sr=sample_rate, length=10 * sample_rate
+    )
+
+    _, _, estimated_bpm = drum_to_frame(dummy_drum_track, sample_rate)
+    assert (
+        pytest.approx(estimated_bpm, rel=0.1) == bpm
+        or pytest.approx(estimated_bpm, rel=0.1) == bpm / 2
+    )
