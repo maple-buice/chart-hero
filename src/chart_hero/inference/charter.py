@@ -70,7 +70,7 @@ class drum_charter:
 
         if note_offset is None:
             total_8_note = []
-            for n in range(20):
+            for n in range(min(20, len(self.df))):
                 temp_8_div = self.get_eighth_note_time_grid(
                     song_duration, note_offset=n
                 )
@@ -226,6 +226,8 @@ class drum_charter:
         """
         A function to map the eighth note time grid to the onsets
         """
+        if len(_8_div) == 0:
+            return np.array([])
         # match timing of the first note
         synced_8_div = [_8_div[0]]
         diff_log = 0
@@ -420,13 +422,23 @@ class drum_charter:
         """
         A function to reformat the prediction result in a format that can pass to the build_stream step to build all the required data for sheet music construction step
         """
+        from chart_hero.model_training.transformer_config import DRUM_HIT_MAP
+
+        # Create a reverse mapping from drum hit class to MIDI note
+        class_to_midi = {}
+        for midi, hit_class in DRUM_HIT_MAP.items():
+            if hit_class not in class_to_midi:
+                class_to_midi[hit_class] = midi
+
         pitch_mapping = self.df[["peak_sample"] + get_drum_hits()].set_index(
             "peak_sample"
         )
         pitch_mapping = pitch_mapping.to_dict(orient="index")
         pitch_dict = {}
         for p in pitch_mapping.keys():
-            pitch_dict[round(librosa.samples_to_time(p, sr=self.sample_rate), 8)] = [
-                d for d in pitch_mapping[p].keys() if pitch_mapping[p][d] == 1
-            ]
+            time = round(librosa.samples_to_time(p, sr=self.sample_rate), 8)
+            pitch_dict[time] = []
+            for hit_class, is_hit in pitch_mapping[p].items():
+                if is_hit == 1:
+                    pitch_dict[time].append(class_to_midi[hit_class])
         return pitch_dict
