@@ -172,12 +172,8 @@ class DrumTranscriptionModule(pl.LightningModule):
         ).transpose(1, 2)
 
         # Reshape for loss calculation
-        print(f"logits shape before view: {logits.shape}")
-        print(f"labels shape before view: {labels.shape}")
         logits = logits.view(-1, self.config.num_drum_classes)
         labels = labels.view(-1, self.config.num_drum_classes)
-        print(f"logits shape after view: {logits.shape}")
-        print(f"labels shape after view: {labels.shape}")
 
         # Calculate loss
         loss = self.criterion(logits, labels)
