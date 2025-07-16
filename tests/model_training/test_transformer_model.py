@@ -25,8 +25,10 @@ from chart_hero.model_training.transformer_data import (
     create_data_loaders,
 )
 from chart_hero.model_training.transformer_model import (
+    MultiHeadSelfAttention,
     PatchEmbedding,
     PositionalEncoding2D,
+    TransformerBlock,
     create_model,
 )
 
@@ -266,3 +268,25 @@ def test_positional_encoding():
     patch_shape = (16, 8)
     encoded_embeddings = pos_encoding(dummy_embeddings, patch_shape)
     assert encoded_embeddings.shape == (1, 129, config.hidden_size)  # +1 for CLS token
+
+
+def test_multi_head_self_attention():
+    """Test the MultiHeadSelfAttention class."""
+    config = get_config("local")
+    attention = MultiHeadSelfAttention(
+        embed_dim=config.hidden_size, num_heads=config.num_heads
+    )
+    dummy_input = torch.randn(1, 129, config.hidden_size)
+    output = attention(dummy_input)
+    assert output.shape == (1, 129, config.hidden_size)
+
+
+def test_transformer_block():
+    """Test the TransformerBlock class."""
+    config = get_config("local")
+    transformer_block = TransformerBlock(
+        embed_dim=config.hidden_size, num_heads=config.num_heads
+    )
+    dummy_input = torch.randn(1, 129, config.hidden_size)
+    output = transformer_block(dummy_input)
+    assert output.shape == (1, 129, config.hidden_size)
