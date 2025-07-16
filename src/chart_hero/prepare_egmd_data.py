@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main():
+def main(args=None):
     parser = argparse.ArgumentParser(
         description="Prepare E-GMD dataset for transformer training using the new pipeline."
     )
@@ -53,7 +53,9 @@ def main():
         help="Train, validation, and test split ratios (e.g., 0.8 0.1 0.1)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(args)
+
+    torch.manual_seed(42)
 
     config = get_config("local")
 
