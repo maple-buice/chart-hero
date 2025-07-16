@@ -36,3 +36,4 @@ black
 isort
 ruff
 mypy
+pyfakefs

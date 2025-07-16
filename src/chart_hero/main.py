@@ -19,6 +19,7 @@ from chart_hero.inference.song_identifier import (
 )
 from chart_hero.model_training.train_transformer import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_config, get_drum_hits
+from chart_hero.model_training.transformer_data import SpectrogramProcessor
 
 
 def main():
@@ -121,12 +122,16 @@ def main():
     model = DrumTranscriptionModule.load_from_checkpoint(args.model_path, config=config)
     model.eval()
 
+    # Create a spectrogram processor
+    processor = SpectrogramProcessor(config)
+
     # Predict
     predictions = []
     for _, row in df.iterrows():
-        spectrogram = torch.from_numpy(row["audio_clip"]).unsqueeze(0).unsqueeze(0)
+        audio_clip = torch.from_numpy(row["audio_clip"]).float()
+        spectrogram = processor.audio_to_spectrogram(audio_clip)
         with torch.no_grad():
-            output = model(spectrogram)
+            output = model(spectrogram.unsqueeze(0))
         predictions.append(output["logits"].squeeze().numpy())
 
     df_pred = pd.DataFrame(predictions, columns=get_drum_hits())
@@ -143,8 +148,8 @@ def main():
     )
 
     # Save chart
-    sheet_music.chart.write(
-        "musicxml.pdf", fp=out_path / f"{audd_result.get('title', 'chart')}.pdf"
+    sheet_music.sheet.write(
+        "musicxml", fp=out_path / f"{audd_result.get('title', 'chart')}.musicxml"
     )
     print(f"Sheet music saved at {out_path}")
     if args.link is not None:

@@ -225,7 +225,7 @@ def drum_to_frame(
     )
     df["audio_clip"] = df.apply(lambda x: pb(x.audio_clip, x.sampling_rate), axis=1)
 
-    return df, bpm
+    return df, sample_rate, bpm
 
 
 class yt_audio:

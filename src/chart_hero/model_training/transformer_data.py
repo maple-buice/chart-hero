@@ -33,6 +33,9 @@ class SpectrogramProcessor:
 
     def audio_to_spectrogram(self, audio: torch.Tensor) -> torch.Tensor:
         """Convert audio waveform to log-mel spectrogram."""
+        if audio.dim() == 1:
+            audio = audio.unsqueeze(0)
+
         # Ensure audio is the right length
         target_length = int(self.config.max_audio_length * self.config.sample_rate)
 
@@ -139,32 +142,17 @@ class NpyDrumDataset(Dataset):
         self.mode = mode
         self.augment = augment and (mode == "train")
 
-        self.spectrograms, self.labels = self._load_data()
-
-        logger.info(f"Created {mode} dataset with {len(self.spectrograms)} samples")
-
-    def _load_data(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Load all spectrograms and labels from the provided .npy files."""
-        all_spectrograms = []
-        all_labels = []
-
-        for spec_file, label_file in self.data_files:
-            try:
-                all_spectrograms.append(np.load(spec_file))
-                all_labels.append(np.load(label_file))
-            except Exception as e:
-                logger.error(
-                    f"Error loading data from {spec_file} or {label_file}: {e}"
-                )
-
-        return np.concatenate(all_spectrograms), np.concatenate(all_labels)
+        logger.info(f"Created {mode} dataset with {len(self.data_files)} files.")
 
     def __len__(self) -> int:
-        return len(self.spectrograms)
+        return len(self.data_files)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        spectrogram = torch.from_numpy(self.spectrograms[idx]).float()
-        labels = torch.from_numpy(self.labels[idx]).float()
+        spec_file, label_file = self.data_files[idx]
+        spectrogram = torch.from_numpy(np.load(spec_file, allow_pickle=True)).float()
+        if spectrogram.dim() == 4:
+            spectrogram = spectrogram.squeeze(0)
+        labels = torch.from_numpy(np.load(label_file, allow_pickle=True)).float()
 
         # The data is already processed, so we just need to format it for the model
         # The old DrumDataset had a processor, but we don't need it here.

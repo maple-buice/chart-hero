@@ -61,6 +61,6 @@ def test_main_script(tmp_path, monkeypatch):
                 # Run the main function
                 main()
 
-    # Check that an output file was created
-    output_files = list(tmp_path.glob("*.pdf"))
-    assert len(output_files) > 0, "No output file was created"
+        # Check that an output file was created
+        output_files = list(tmp_path.glob("*.musicxml"))
+        assert len(output_files) > 0, "No output file was created"

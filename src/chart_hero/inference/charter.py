@@ -38,8 +38,8 @@ class drum_charter:
         fmt='text'          Display the sheet music in MusicXML format
 
     drum_charter.chart.write(fmt, fp)
-        fmt=None            Export he sheet music in MusicXML format
-        fmt='musicxml.pdf'  Export he sheet music in pdf format
+        fmt=None            Export the sheet music in MusicXML format
+        fmt='musicxml.pdf'  Export the sheet music in pdf format
         fp                  file path of store location
 
     drum_charter.chart is a JSON object
@@ -140,7 +140,7 @@ class drum_charter:
 
         # Add time signature
         drum_part.append(
-            meter.TimeSignature(f"{self.beats_in_measure/2}/{self.note_value}")
+            meter.TimeSignature(f"{int(self.beats_in_measure/2)}/{self.note_value}")
         )
 
         # Add notes to the part

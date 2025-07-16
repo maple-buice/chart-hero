@@ -53,7 +53,7 @@ def test_drum_to_frame():
     dummy_drum_track = np.random.randn(sample_rate * 10)  # 10 seconds of audio
 
     # Run the drum_to_frame function
-    df, bpm = drum_to_frame(dummy_drum_track, sample_rate)
+    df, sr, bpm = drum_to_frame(dummy_drum_track, sample_rate)
 
     assert df is not None
     assert isinstance(df, pd.DataFrame)

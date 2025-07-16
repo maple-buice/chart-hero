@@ -30,9 +30,9 @@ class EGMDRawDataset(Dataset):
     Processes raw audio/MIDI pairs into spectrograms and labels on the fly.
     """
 
-    def __init__(self, data_map: pd.DataFrame, dataset_dir: Path, config: BaseConfig):
+    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config: BaseConfig):
         self.data_map = data_map
-        self.dataset_dir = dataset_dir
+        self.dataset_dir = Path(dataset_dir)
         self.config = config
         self.processor = SpectrogramProcessor(config)
 
