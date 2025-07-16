@@ -24,7 +24,11 @@ from chart_hero.model_training.transformer_data import (
     SpectrogramProcessor,
     create_data_loaders,
 )
-from chart_hero.model_training.transformer_model import create_model
+from chart_hero.model_training.transformer_model import (
+    PatchEmbedding,
+    PositionalEncoding2D,
+    create_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,3 +243,26 @@ def test_data_processing():
     padded_spec, patch_shape = processor.prepare_patches(spectrogram)
     assert len(padded_spec.shape) == 3
     assert patch_shape is not None
+
+
+def test_patch_embedding():
+    """Test the PatchEmbedding class."""
+    config = get_config("local")
+    patch_embed = PatchEmbedding(
+        patch_size=config.patch_size,
+        in_channels=1,
+        embed_dim=config.hidden_size,
+    )
+    dummy_spectrogram = torch.randn(1, 1, 256, 128)
+    patch_embeddings = patch_embed(dummy_spectrogram)
+    assert patch_embeddings.shape == (1, 128, config.hidden_size)
+
+
+def test_positional_encoding():
+    """Test the PositionalEncoding2D class."""
+    config = get_config("local")
+    pos_encoding = PositionalEncoding2D(embed_dim=config.hidden_size)
+    dummy_embeddings = torch.randn(1, 128, config.hidden_size)
+    patch_shape = (16, 8)
+    encoded_embeddings = pos_encoding(dummy_embeddings, patch_shape)
+    assert encoded_embeddings.shape == (1, 129, config.hidden_size)  # +1 for CLS token
