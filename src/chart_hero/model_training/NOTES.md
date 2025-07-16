@@ -116,4 +116,3 @@ Results of analysis classification report:
 | **macro** | avg | 0.33 | 0.31 | 0.31 | 144635 |
 | **weighted** | avg | 0.73 | 0.80 | 0.76 | 144635 |
 | **samples** | avg | 0.73 | 0.73 | 0.73 | 144635 |
-

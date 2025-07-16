@@ -183,4 +183,3 @@ def collate_fn(batch):
     if not batch:
         return None, None
     return torch.utils.data.dataloader.default_collate(batch)
-

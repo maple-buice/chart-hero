@@ -31,9 +31,7 @@ def main():
     parser.add_argument(
         "-p", "--path", type=str, required=True, help="Path to the audio file."
     )
-    parser.add_argument(
-        "-l", "--link", type=str, help="Link to a youtube video."
-    )
+    parser.add_argument("-l", "--link", type=str, help="Link to a youtube video.")
     parser.add_argument(
         "-o",
         "--output-dir",
@@ -64,7 +62,10 @@ def main():
         help="Note resolution for the drum chart.",
     )
     parser.add_argument(
-        "-b", "--backtrack", action="store_true", help="Enable backtrack for onset detection."
+        "-b",
+        "--backtrack",
+        action="store_true",
+        help="Enable backtrack for onset detection.",
     )
     parser.add_argument(
         "-f",

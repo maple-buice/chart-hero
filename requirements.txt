@@ -36,5 +36,3 @@ black
 isort
 ruff
 mypy
-
-

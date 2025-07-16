@@ -736,9 +736,7 @@ def configure_paths(config, args):
 
     if not hasattr(config, "model_dir") or not config.model_dir:
         config.model_dir = str(
-            Path(__file__).resolve().parent
-            / "transformer_models"
-            / args.experiment_tag
+            Path(__file__).resolve().parent / "transformer_models" / args.experiment_tag
         )  # Use experiment_tag_to_use
         logger.warning(
             f"model_dir not specified in config, defaulting to: {config.model_dir}"

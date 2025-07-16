@@ -34,7 +34,7 @@ python model_training/train_transformer.py --config auto --data-dir datasets/pro
 The MIDI note mapping from the original AnNOTEator was:
 ```python
 self.midi_note_map={36: 'KD', 38: 'SD', 40: 'SD', 37: 'SD_xstick', 48: 'HT', 50: 'HT',
-                   45: 'MT', 47: 'MT', 43: 'FT' ,58: 'FT', 46: 'HH_open', 
+                   45: 'MT', 47: 'MT', 43: 'FT' ,58: 'FT', 46: 'HH_open',
                    26: 'HH_open', 42: 'HH_close', 22: 'HH_close', 44: 'HH_close',
                    49: 'CC', 57: 'CC', 55: 'CC', 52: 'CC', 51: 'RC',
                    59: 'RC', 53: 'RC', 39: 'CB', 54: 'CB', 56: 'CB'}
@@ -87,7 +87,7 @@ public const byte VELOCITY_ACCENT = 127;      // fof/ps
 public const byte VELOCITY_GHOST = 1;         // fof/ps
 ```
 
-### Clone Hero MIDI drum map 
+### Clone Hero MIDI drum map
 
 *Copied from https://wiki.clonehero.net/books/guitars-drums-controllers/page/midi-drums*
 
@@ -153,24 +153,24 @@ static readonly IReadOnlyDictionary<int, NoteEventProcessFn> DrumsChartNoteNumbe
 Taking into account the counts from all chart files I've downloaded:
 ```python
 {
-    0: 38292, 
-    1: 32640, 
-    2: 47563, 
-    3: 13492, 
-    4: 12420, 
-    32: 2089, 
-    34: 842, 
-    35: 1983, 
-    36: 558, 
-    37: 111, 
-    40: 5504, 
-    41: 510, 
-    42: 179, 
-    43: 830, 
-    64: 1209, 
-    65: 58, 
-    66: 41932, 
-    67: 10834, 
+    0: 38292,
+    1: 32640,
+    2: 47563,
+    3: 13492,
+    4: 12420,
+    32: 2089,
+    34: 842,
+    35: 1983,
+    36: 558,
+    37: 111,
+    40: 5504,
+    41: 510,
+    42: 179,
+    43: 830,
+    64: 1209,
+    65: 58,
+    66: 41932,
+    67: 10834,
     68: 7209
 }
 ```

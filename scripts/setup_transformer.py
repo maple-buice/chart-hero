@@ -49,8 +49,15 @@ def install_pytorch(env_type):
         cmd = ["pip", "install", "torch", "torchvision", "torchaudio"]
     else:
         # CPU-only for other platforms
-        cmd = ["pip", "install", "torch", "torchvision", "torchaudio", "--index-url",
-               "https://download.pytorch.org/whl/cpu"]
+        cmd = [
+            "pip",
+            "install",
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "--index-url",
+            "https://download.pytorch.org/whl/cpu",
+        ]
 
     try:
         subprocess.run(cmd, check=True)
@@ -80,7 +87,7 @@ def install_dependencies():
         "seaborn>=0.12.0",
         "tqdm>=4.65.0",
         "joblib",
-        "audiomentations"
+        "audiomentations",
     ]
 
     try:
@@ -98,12 +105,7 @@ def create_directories():
     """Create necessary directories."""
     print("📁 Creating directories...")
 
-    directories = [
-        "datasets",
-        "model_training/transformer_models",
-        "logs",
-        "colab"
-    ]
+    directories = ["datasets", "model_training/transformer_models", "logs", "colab"]
 
     for dir_path in directories:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
@@ -118,12 +120,13 @@ def test_installation():
 
     # Test PyTorch
     import torch
+
     print(f"✅ PyTorch {torch.__version__} imported successfully")
 
     # Test device availability
     if torch.cuda.is_available():
         print(f"✅ CUDA available: {torch.cuda.get_device_name(0)}")
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         print("✅ MPS (Apple Silicon) available")
     else:
         print("ℹ️  Using CPU backend")
@@ -140,7 +143,9 @@ def test_installation():
 
     # Test model creation
     model = create_model(config)
-    print(f"✅ Model created with {sum(p.numel() for p in model.parameters()):,} parameters")
+    print(
+        f"✅ Model created with {sum(p.numel() for p in model.parameters()):,} parameters"
+    )
 
     return True
 
@@ -182,7 +187,9 @@ def main():
     print("3. Start training: python model_training/train_transformer.py --config auto")
 
     if env_type == "colab":
-        print("4. For Colab: Use the notebook in colab/transformer_training_colab.ipynb")
+        print(
+            "4. For Colab: Use the notebook in colab/transformer_training_colab.ipynb"
+        )
 
 
 if __name__ == "__main__":

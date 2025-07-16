@@ -259,4 +259,3 @@ def get_yt_audio(link) -> str:
         ydl.download([link])
 
     return os.path.join(download_path, "song.m4a")
-
