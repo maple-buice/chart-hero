@@ -1,0 +1,2 @@
+audio_filename,midi_filename,split
+golden.wav,golden.mid,train

@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -128,7 +127,7 @@ class SpectrogramProcessor:
 
 
 class NpyDrumDataset(Dataset):
-    """Dataset for loading pre-computed spectrograms and labels from .npy files."""
+    """Dataset for loading pre-computed full-length spectrograms and labels."""
 
     def __init__(
         self,
@@ -141,6 +140,11 @@ class NpyDrumDataset(Dataset):
         self.config = config
         self.mode = mode
         self.augment = augment and (mode == "train")
+        self.segment_length_frames = int(
+            self.config.max_audio_length
+            * self.config.sample_rate
+            / self.config.hop_length
+        )
 
         logger.info(f"Created {mode} dataset with {len(self.data_files)} files.")
 
@@ -149,33 +153,27 @@ class NpyDrumDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         spec_file, label_file = self.data_files[idx]
-        spectrogram = torch.from_numpy(np.load(spec_file, allow_pickle=True)).float()
-        if spectrogram.dim() == 4:
-            spectrogram = spectrogram.squeeze(0)
-        labels = torch.from_numpy(np.load(label_file, allow_pickle=True)).float()
+        spectrogram = torch.load(spec_file)
+        label_matrix = torch.load(label_file)
 
-        # The data is already processed, so we just need to format it for the model
-        # The old DrumDataset had a processor, but we don't need it here.
-        # We do need to handle patch shape.
-
-        # Assuming the spectrograms are already in the correct shape [channels, time, freq]
-        # and that they are already normalized.
-
-        # The patch preparation logic is still needed.
-        processor = SpectrogramProcessor(self.config)
-        spectrogram, patch_shape = processor.prepare_patches(spectrogram)
+        # Get a random segment
+        num_frames = spectrogram.shape[1]
+        if num_frames > self.segment_length_frames:
+            start_frame = torch.randint(
+                0, num_frames - self.segment_length_frames, (1,)
+            ).item()
+            end_frame = start_frame + self.segment_length_frames
+            spectrogram_segment = spectrogram[:, start_frame:end_frame, :]
+            label_matrix_segment = label_matrix[start_frame:end_frame, :]
+        else:
+            # Pad if the spectrogram is shorter than the segment length
+            padding = self.segment_length_frames - num_frames
+            spectrogram_segment = F.pad(spectrogram, (0, 0, 0, padding))
+            label_matrix_segment = F.pad(label_matrix, (0, 0, 0, padding))
 
         return {
-            "spectrogram": spectrogram,
-            "labels": labels,
-            "patch_shape": torch.tensor(patch_shape),
-            "track_id": torch.tensor(
-                idx, dtype=torch.long
-            ),  # Using index as track_id for now
-            "start_time": torch.tensor(
-                0.0, dtype=torch.float32
-            ),  # No timing info in .npy files
-            "end_time": torch.tensor(0.0, dtype=torch.float32),
+            "spectrogram": spectrogram_segment,
+            "labels": label_matrix_segment,
         }
 
 
@@ -190,16 +188,15 @@ def create_data_loaders(
     # Find all .npy files and group them by mode (train, val, test)
     data_files = {"train": [], "val": [], "test": []}
 
-    for file in Path(data_dir).glob("*.npy"):
-        if "_mel" in file.name:
-            label_file = file.parent / file.name.replace("_mel", "_label")
-            if label_file.exists():
-                if "train" in file.name:
-                    data_files["train"].append((str(file), str(label_file)))
-                elif "val" in file.name:
-                    data_files["val"].append((str(file), str(label_file)))
-                elif "test" in file.name:
-                    data_files["test"].append((str(file), str(label_file)))
+    for file in Path(data_dir).glob("*_mel.npy"):
+        label_file = file.parent / file.name.replace("_mel.npy", "_label.npy")
+        if label_file.exists():
+            if "train" in file.name:
+                data_files["train"].append((str(file), str(label_file)))
+            elif "val" in file.name:
+                data_files["val"].append((str(file), str(label_file)))
+            elif "test" in file.name:
+                data_files["test"].append((str(file), str(label_file)))
 
     if not data_files["train"]:
         raise FileNotFoundError(f"No training data found in {data_dir}")

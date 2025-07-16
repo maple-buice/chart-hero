@@ -251,14 +251,8 @@ class DrumTranscriptionTransformer(nn.Module):
         # Final layer norm
         self.norm = nn.LayerNorm(config.hidden_size)
 
-        # Classification heads
-        self.drum_classifier = nn.Linear(config.hidden_size, config.num_drum_classes)
-
-        # Temporal aggregation for sequence-level prediction
-        self.temporal_pool = nn.AdaptiveAvgPool1d(1)
-
-        # Initialize weights
-        self.apply(self._init_weights)
+        # Classification head
+        self.classifier = nn.Linear(config.hidden_size, config.num_drum_classes)
 
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Conv2d)):
@@ -284,52 +278,33 @@ class DrumTranscriptionTransformer(nn.Module):
         Returns:
             Dictionary containing logits and optionally embeddings
         """
-        batch_size, channels, time_frames, freq_bins = spectrograms.shape
-
-        # Convert to patches
         patch_embeddings = self.patch_embed(spectrograms)
-
-        # Calculate patch shape
-        time_patches = time_frames // self.config.patch_size[0]
-        freq_patches = freq_bins // self.config.patch_size[1]
+        time_patches = spectrograms.shape[2] // self.config.patch_size[0]
+        freq_patches = spectrograms.shape[3] // self.config.patch_size[1]
         patch_shape = (time_patches, freq_patches)
-
-        # Add positional encoding and CLS token
         x = self.pos_encoding(patch_embeddings, patch_shape)
-
-        # Clear intermediate tensor to save memory
         del patch_embeddings
 
-        # Store embeddings for each layer if requested
         layer_embeddings = []
-
-        # Pass through transformer layers with optional gradient checkpointing
         use_checkpointing = (
             getattr(self.config, "gradient_checkpointing", False) and self.training
         )
 
         for layer in self.transformer_layers:
             if use_checkpointing:
-                # Use gradient checkpointing to save memory during training
                 x = checkpoint.checkpoint(layer, x, attention_mask, use_reentrant=False)
             else:
                 x = layer(x, attention_mask)
-
             if return_embeddings:
                 layer_embeddings.append(x.clone())
 
-        # Final norm
         x = self.norm(x)
 
-        # Use CLS token for global classification
-        cls_embedding = x[:, 0]  # [batch_size, hidden_size]
+        # Remove CLS token and apply classifier to each time step
+        x = x[:, 1:, :]
+        logits = self.classifier(x)
 
-        # Drum classification
-        drum_logits = self.drum_classifier(cls_embedding)
-
-        # Prepare output
-        output = {"logits": drum_logits, "cls_embedding": cls_embedding}
-
+        output = {"logits": logits}
         if return_embeddings:
             output["layer_embeddings"] = layer_embeddings
             output["final_embedding"] = x

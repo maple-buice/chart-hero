@@ -18,8 +18,9 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-from chart_hero.model_training.data_preparation import EGMDRawDataset
+from chart_hero.model_training.data_preparation import EGMDRawDataset, Subset
 from chart_hero.model_training.transformer_config import get_config
 
 # Set up logging
@@ -67,33 +68,35 @@ def main(args=None):
     )
 
     # Split the dataset
+    indices = list(range(len(dataset)))
     train_size = int(args.splits[0] * len(dataset))
     val_size = int(args.splits[1] * len(dataset))
-    test_size = len(dataset) - train_size - val_size
-    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size, test_size]
-    )
+    train_dataset = Subset(dataset, indices[:train_size])
+    val_dataset = Subset(dataset, indices[train_size : train_size + val_size])
+    test_dataset = Subset(dataset, indices[train_size + val_size :])
 
     # Create DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=0)
 
     # Save the data
     os.makedirs(args.output_dir, exist_ok=True)
 
     def save_data(loader, name):
-        spectrograms = []
-        labels = []
-        for spec, label in loader:
-            spectrograms.append(spec)
-            labels.append(label)
-        torch.save(
-            torch.cat(spectrograms), os.path.join(args.output_dir, f"{name}_mel.npy")
-        )
-        torch.save(
-            torch.cat(labels), os.path.join(args.output_dir, f"{name}_label.npy")
-        )
+        for i, (spectrogram, label_matrix) in enumerate(
+            tqdm(loader, desc=f"Saving {name} data")
+        ):
+            if spectrogram is None or label_matrix is None:
+                continue
+            torch.save(
+                spectrogram,
+                os.path.join(args.output_dir, f"{name}_{i}_mel.npy"),
+            )
+            torch.save(
+                label_matrix,
+                os.path.join(args.output_dir, f"{name}_{i}_label.npy"),
+            )
 
     save_data(train_loader, "train")
     save_data(val_loader, "val")

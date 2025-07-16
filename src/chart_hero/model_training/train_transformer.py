@@ -161,54 +161,16 @@ class DrumTranscriptionModule(pl.LightningModule):
         spectrograms = batch["spectrogram"]
         labels = batch["labels"]
 
-        # Ensure data is on the correct device
-        device = self.device
-        if spectrograms.device != device:
-            spectrograms = spectrograms.to(device)
-        if labels.device != device:
-            labels = labels.to(device)
-
-        # Periodically optimize memory every 20 batches
-        if batch_idx % 20 == 0 and torch.backends.mps.is_available():
-            optimize_memory(aggressive=(batch_idx % 100 == 0))
-
-            # Log memory stats if using MPS
-            if self.trainer.logger:
-                self.log(
-                    "gpu_mem_allocated",
-                    torch.mps.current_allocated_memory() / (1024**3),
-                    on_step=True,
-                )
-
         # Forward pass
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
 
+        # Reshape for loss calculation
+        logits = logits.view(-1, self.config.num_drum_classes)
+        labels = labels.view(-1, self.config.num_drum_classes)
+
         # Calculate loss
         loss = self.criterion(logits, labels)
-
-        # Check for NaN loss
-        if torch.isnan(loss):
-            logger.error("Loss is NaN. Stopping training.")
-            logger.error(
-                f"Spectrograms - min: {torch.min(spectrograms)}, max: {torch.max(spectrograms)}, mean: {torch.mean(spectrograms)}, has_nan: {torch.isnan(spectrograms).any()}, has_inf: {torch.isinf(spectrograms).any()}"
-            )
-            logger.error(
-                f"Labels - min: {torch.min(labels)}, max: {torch.max(labels)}, mean: {torch.mean(labels)}, has_nan: {torch.isnan(labels).any()}, has_inf: {torch.isinf(labels).any()}"
-            )
-            logger.error(
-                f"Logits - min: {torch.min(logits)}, max: {torch.max(logits)}, mean: {torch.mean(logits)}, has_nan: {torch.isnan(logits).any()}, has_inf: {torch.isinf(logits).any()}"
-            )
-            logger.error(f"Loss: {loss.item()}")
-            raise ValueError("Loss became NaN during training")
-
-        # Apply label smoothing manually if needed
-        if self.config.label_smoothing > 0:
-            smooth_labels = (
-                labels * (1 - self.config.label_smoothing)
-                + self.config.label_smoothing / self.config.num_drum_classes
-            )
-            loss = self.criterion(logits, smooth_labels)
 
         # Calculate metrics
         preds = torch.sigmoid(logits) > 0.5
@@ -216,53 +178,9 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.train_acc(preds.int(), labels.int())
 
         # Log metrics
-        if self.trainer.logger:
-            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-            self.log(
-                "train_f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True
-            )
-            self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
-
-        # DEBUG: Check for NaN loss and log details
-        if torch.isnan(loss):
-            print(f"NaN loss detected in training_step! Batch Index: {batch_idx}")
-            # Print hyperparams that might be relevant from self.config
-            relevant_hyperparams = {
-                "learning_rate": self.config.learning_rate,
-                "batch_size": self.config.train_batch_size,
-                "hidden_size": self.config.hidden_size,
-                "num_layers": self.config.num_layers,
-                "label_smoothing": self.config.label_smoothing,
-                "device": self.config.device,
-                "is_quick_test": getattr(self.config, "is_quick_test", "N/A"),
-            }
-            print(f"Relevant Hyperparameters: {relevant_hyperparams}")
-            print("Spectrogram stats:")
-            print(
-                f"  Shape: {spectrograms.shape}, Min: {spectrograms.min().item()}, Max: {spectrograms.max().item()}, Mean: {spectrograms.mean().item()}, Has NaN: {torch.isnan(spectrograms).any().item()}, Has Inf: {torch.isinf(spectrograms).any().item()}"
-            )
-            print("Labels stats:")
-            print(
-                f"  Shape: {labels.shape}, Min: {labels.min().item()}, Max: {labels.max().item()}, Mean: {labels.mean().item()}, Has NaN: {torch.isnan(labels).any().item()}, Has Inf: {torch.isinf(labels).any().item()}"
-            )
-            print("Logits stats:")
-            print(
-                f"  Shape: {logits.shape}, Min: {logits.min().item()}, Max: {logits.max().item()}, Mean: {logits.mean().item()}, Has NaN: {torch.isnan(logits).any().item()}, Has Inf: {torch.isinf(logits).any().item()}"
-            )
-
-            # Optionally save tensors for offline analysis
-            # from pathlib import Path
-            # log_dir = Path(self.config.log_dir)
-            # log_dir.mkdir(parents=True, exist_ok=True)
-            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # torch.save(spectrograms, log_dir / f"nan_spectrograms_batch{batch_idx}_{timestamp}.pt")
-            # torch.save(labels, log_dir / f"nan_labels_batch{batch_idx}_{timestamp}.pt")
-            # torch.save(logits, log_dir / f"nan_logits_batch{batch_idx}_{timestamp}.pt")
-            # print(f"Saved tensors to {log_dir}")
-
-            raise ValueError(
-                f"NaN loss encountered during training_step at batch_idx {batch_idx}"
-            )
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train_f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
 
         return loss
 
@@ -270,77 +188,26 @@ class DrumTranscriptionModule(pl.LightningModule):
         spectrograms = batch["spectrogram"]
         labels = batch["labels"]
 
-        # Ensure data is on the correct device
-        device = self.device
-        if spectrograms.device != device:
-            spectrograms = spectrograms.to(device)
-        if labels.device != device:
-            labels = labels.to(device)
-
         # Forward pass
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
 
+        # Reshape for loss calculation
+        logits = logits.view(-1, self.config.num_drum_classes)
+        labels = labels.view(-1, self.config.num_drum_classes)
+
         # Calculate loss
         loss = self.criterion(logits, labels)
-
-        # DEBUG: Check for NaN loss and log details
-        if torch.isnan(loss):
-            logger.error(
-                f"NaN loss encountered during validation_step at batch_idx {batch_idx}"
-            )
-            logger.error("--- Spectrogram Stats ---")
-            logger.error(f"  Shape: {spectrograms.shape}")
-            logger.error(
-                f"  Min: {torch.min(spectrograms)}, Max: {torch.max(spectrograms)}, Mean: {torch.mean(spectrograms)}, Std: {torch.std(spectrograms)}"
-            )
-            logger.error(
-                f"  Has NaN: {torch.isnan(spectrograms).any()}, Has Inf: {torch.isinf(spectrograms).any()}"
-            )
-            logger.error("--- Labels Stats ---")
-            logger.error(f"  Shape: {labels.shape}")
-            logger.error(
-                f"  Min: {torch.min(labels)}, Max: {torch.max(labels)}, Mean: {torch.mean(labels.float())}, Std: {torch.std(labels.float())}"
-            )  # Cast to float for mean/std
-            logger.error(
-                f"  Has NaN: {torch.isnan(labels).any()}, Has Inf: {torch.isinf(labels).any()}"
-            )
-            logger.error("--- Logits Stats ---")
-            logger.error(f"  Shape: {logits.shape}")
-            logger.error(
-                f"  Min: {torch.min(logits)}, Max: {torch.max(logits)}, Mean: {torch.mean(logits)}, Std: {torch.std(logits)}"
-            )
-            logger.error(
-                f"  Has NaN: {torch.isnan(logits).any()}, Has Inf: {torch.isinf(logits).any()}"
-            )
-            logger.error(f"--- Loss ---: {loss}")
-            # Optionally, save tensors for offline analysis
-            # log_dir = Path(self.config.log_dir) / "nan_debug"
-            # log_dir.mkdir(parents=True, exist_ok=True)
-            # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            # torch.save(spectrograms, log_dir / f"val_nan_spectrograms_batch{batch_idx}_{timestamp}.pt")
-            # torch.save(labels, log_dir / f"val_nan_labels_batch{batch_idx}_{timestamp}.pt")
-            # torch.save(logits, log_dir / f"val_nan_logits_batch{batch_idx}_{timestamp}.pt")
-            # logger.info(f"Saved validation tensors to {log_dir}")
-            # We might not want to raise an error here to allow other validation batches to run,
-            # but for debugging, it can be useful.
-            # raise ValueError(f"NaN loss encountered during validation_step at batch_idx {batch_idx}")
 
         # Calculate metrics
         preds = torch.sigmoid(logits) > 0.5
         self.val_f1(preds.int(), labels.int())
         self.val_acc(preds.int(), labels.int())
 
-        # Store for epoch-end processing
-        self.validation_step_outputs.append(
-            {"loss": loss, "preds": preds, "labels": labels, "logits": logits}
-        )
-
         # Log metrics
-        if self.trainer.logger:
-            self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-            self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
-            self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
 
         return loss
 
@@ -348,16 +215,13 @@ class DrumTranscriptionModule(pl.LightningModule):
         spectrograms = batch["spectrogram"]
         labels = batch["labels"]
 
-        # Ensure data is on the correct device
-        device = self.device
-        if spectrograms.device != device:
-            spectrograms = spectrograms.to(device)
-        if labels.device != device:
-            labels = labels.to(device)
-
         # Forward pass
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
+
+        # Reshape for loss calculation
+        logits = logits.view(-1, self.config.num_drum_classes)
+        labels = labels.view(-1, self.config.num_drum_classes)
 
         # Calculate loss
         loss = self.criterion(logits, labels)
@@ -367,16 +231,10 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.test_f1(preds.int(), labels.int())
         self.test_acc(preds.int(), labels.int())
 
-        # Store for epoch-end processing
-        self.test_step_outputs.append(
-            {"loss": loss, "preds": preds, "labels": labels, "logits": logits}
-        )
-
         # Log metrics
-        if self.trainer.logger:
-            self.log("test_loss", loss, on_step=False, on_epoch=True)
-            self.log("test_f1", self.test_f1, on_step=False, on_epoch=True)
-            self.log("test_acc", self.test_acc, on_step=False, on_epoch=True)
+        self.log("test_loss", loss, on_step=False, on_epoch=True)
+        self.log("test_f1", self.test_f1, on_step=False, on_epoch=True)
+        self.log("test_acc", self.test_acc, on_step=False, on_epoch=True)
 
         return loss
 
