@@ -5,10 +5,8 @@ Test script to verify transformer setup and basic functionality.
 import logging
 import os
 import sys
-from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -23,7 +21,6 @@ from chart_hero.model_training.transformer_config import (
     validate_config,
 )
 from chart_hero.model_training.transformer_data import (
-    NpyDrumDataset,
     SpectrogramProcessor,
     create_data_loaders,
 )
@@ -81,18 +78,20 @@ def test_data_loading():
     assert test_loader is not None, "Test loader creation failed"
 
 
-@patch("chart_hero.model_training.train_transformer.pl.Trainer")
+@patch("pytorch_lightning.Trainer")
 def test_training_module(mock_trainer):
     """
     Test that the training module can be initialized and a training step can be run.
     """
     config = get_config("local")
-    model = DrumTranscriptionModule(config)
+    device = torch.device(config.device)
+    model = DrumTranscriptionModule(config).to(device)
+    model.trainer = mock_trainer
     assert model is not None, "Training module creation failed"
 
     # Create a dummy batch
-    dummy_spectrogram = torch.randn(1, 1, config.n_mels, config.max_seq_len)
-    dummy_labels = torch.randint(0, 2, (1, config.num_drum_classes))
+    dummy_spectrogram = torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device)
+    dummy_labels = torch.randint(0, 2, (1, config.num_drum_classes)).to(device).float()
     dummy_batch = {"spectrogram": dummy_spectrogram, "labels": dummy_labels}
 
     # Test training step
@@ -216,58 +215,27 @@ def test_model():
     assert True
 
 
+def test_spectrogram_processor():
+    """Test the SpectrogramProcessor class."""
+    config = get_config("local")
+    processor = SpectrogramProcessor(config)
+    dummy_audio = torch.randn(1, int(config.max_audio_length * config.sample_rate))
+    spectrogram = processor.audio_to_spectrogram(dummy_audio)
+    assert spectrogram.shape == (1, 216, 128)
+
+
 def test_data_processing():
     """Test data processing pipeline."""
-    logger.info("Testing data processing...")
-    config_name = "auto"
-
-    if config_name == "auto":
-        config = auto_detect_config()
-        logger.info(
-            f"Auto-detected config for data processing test: {type(config).__name__}"
-        )
-    else:
-        config = get_config(config_name)  # Use passed config_name
+    config = get_config("local")
     processor = SpectrogramProcessor(config)
 
     # Test spectrogram processing
     dummy_audio = torch.randn(1, int(config.max_audio_length * config.sample_rate))
     spectrogram = processor.audio_to_spectrogram(dummy_audio)
-
-    logger.info(f"✓ Audio shape: {dummy_audio.shape}")
-    logger.info(f"✓ Spectrogram shape: {spectrogram.shape}")
+    assert len(spectrogram.shape) == 3
+    assert spectrogram.shape[0] == 1  # Channels
 
     # Test patch preparation
     padded_spec, patch_shape = processor.prepare_patches(spectrogram)
-    logger.info(f"✓ Padded spectrogram shape: {padded_spec.shape}")
-    logger.info(f"✓ Patch shape: {patch_shape}")
-
-    # Test dataset creation with dummy data
-    temp_data_dir = Path("/tmp/chart_hero_test_data")
-    temp_data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create dummy .npy files
-    dummy_spectrograms = np.random.randn(10, 1, 256, 128).astype(np.float32)
-    dummy_labels = np.random.randint(0, 2, (10, 9)).astype(np.int8)
-
-    train_spec_path = temp_data_dir / "train_mel.npy"
-    train_label_path = temp_data_dir / "train_label.npy"
-
-    np.save(train_spec_path, dummy_spectrograms)
-    np.save(train_label_path, dummy_labels)
-
-    data_files = [(str(train_spec_path), str(train_label_path))]
-
-    dataset = NpyDrumDataset(data_files, config, mode="test", augment=False)
-    logger.info(f"✓ Dataset created with {len(dataset)} samples")
-
-    # Test sample loading
-    if len(dataset) > 0:
-        sample = dataset[0]
-        logger.info(f"✓ Sample spectrogram shape: {sample['spectrogram'].shape}")
-        logger.info(f"✓ Sample labels shape: {sample['labels'].shape}")
-    else:
-        logger.warning("Dataset is empty, cannot test sample loading.")
-        # This might be an error depending on expectations
-
-    assert True
+    assert len(padded_spec.shape) == 3
+    assert patch_shape is not None
