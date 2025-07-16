@@ -5,7 +5,7 @@ Handles patch-based spectrogram processing and efficient data loading.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -40,67 +40,36 @@ class SpectrogramProcessor:
         mel_spec = self.mel_transform(audio)
 
         # Convert to log scale
-        # log_mel_spec = torch.log(mel_spec + 1e-8) # Original
-        log_mel_spec = torch.log(
-            torch.clamp(mel_spec, min=1e-8)
-        )  # Clamp to avoid log(0)
+        log_mel_spec = torch.log(torch.clamp(mel_spec, min=1e-8))
 
-        # Ensure consistent shape: [channels, freq, time] -> [channels, time, freq]
-        # MelSpectrogram outputs [channels, n_mels, time_frames]
-        # We want [channels, time_frames, n_mels] for consistency
+        # Transpose to [channels, time, freq]
         if log_mel_spec.shape[1] == self.config.n_mels:
-            # Current shape is [channels, n_mels, time_frames], transpose to [channels, time_frames, n_mels]
             log_mel_spec = log_mel_spec.transpose(1, 2)
 
-        # Normalize to [-1, 1] range
-        # log_mel_spec = 2 * (log_mel_spec - log_mel_spec.min()) / (log_mel_spec.max() - log_mel_spec.min()) - 1 # Original
-        min_val = log_mel_spec.min()
-        max_val = log_mel_spec.max()
-        if (
-            max_val - min_val
-        ) > 1e-8:  # Avoid division by zero if all values are the same
+        # Normalize
+        min_val, max_val = log_mel_spec.min(), log_mel_spec.max()
+        if (max_val - min_val) > 1e-8:
             log_mel_spec = 2 * (log_mel_spec - min_val) / (max_val - min_val) - 1
         else:
-            log_mel_spec = torch.zeros_like(
-                log_mel_spec
-            )  # Set to zero if range is too small
+            log_mel_spec = torch.zeros_like(log_mel_spec)
 
-        # Check for NaNs or Infs after normalization and replace them
-        if torch.isnan(log_mel_spec).any() or torch.isinf(log_mel_spec).any():
-            logger.warning(
-                "NaN or Inf detected in spectrogram after normalization. Replacing with zeros."
-            )
-            log_mel_spec = torch.nan_to_num(
-                log_mel_spec, nan=0.0, posinf=0.0, neginf=0.0
-            )
-
-        return log_mel_spec
+        return torch.nan_to_num(log_mel_spec)
 
     def prepare_patches(
         self, spectrogram: torch.Tensor
     ) -> Tuple[torch.Tensor, Tuple[int, int]]:
         """
         Prepare spectrogram for patch-based processing.
-
-        Args:
-            spectrogram: Log-mel spectrogram [channels, time, freq]
-
-        Returns:
-            Padded spectrogram and patch shape (time_patches, freq_patches)
         """
         channels, time_frames, freq_bins = spectrogram.shape
         patch_time, patch_freq = self.config.patch_size
 
-        # Calculate required padding
         time_padding = (patch_time - (time_frames % patch_time)) % patch_time
         freq_padding = (patch_freq - (freq_bins % patch_freq)) % patch_freq
 
-        # Pad spectrogram - padding order is (left, right, top, bottom) for last two dims
-        # For tensor [channels, time, freq], we pad freq (last dim) then time (second-to-last)
         if time_padding > 0 or freq_padding > 0:
             spectrogram = F.pad(spectrogram, (0, freq_padding, 0, time_padding))
 
-        # Calculate patch dimensions after padding
         final_time_frames = time_frames + time_padding
         final_freq_bins = freq_bins + freq_padding
 
@@ -111,39 +80,30 @@ class SpectrogramProcessor:
 
 
 class NpyDrumDataset(Dataset):
-    """Dataset for loading pre-computed full-length spectrograms and labels."""
+    """Dataset for loading pre-computed spectrogram and label segments."""
 
     def __init__(
         self,
         data_files: List[Tuple[str, str]],
         config: BaseConfig,
         mode: str = "train",
-        augment: bool = True,
     ):
         self.data_files = data_files
         self.config = config
         self.mode = mode
-        self.augment = augment and (mode == "train")
-        self.segment_length_frames = int(
-            self.config.max_audio_length
-            * self.config.sample_rate
-            / self.config.hop_length
-        )
-
         logger.info(f"Created {mode} dataset with {len(self.data_files)} files.")
 
     def __len__(self) -> int:
         return len(self.data_files)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         spec_file, label_file = self.data_files[idx]
-        spectrogram = torch.from_numpy(np.load(spec_file))
-        label_matrix = torch.from_numpy(np.load(label_file))
 
-        return {
-            "spectrogram": spectrogram,
-            "labels": label_matrix,
-        }
+        # Load data and ensure correct types
+        spectrogram = torch.from_numpy(np.load(spec_file)).float()
+        label_matrix = torch.from_numpy(np.load(label_file)).float()
+
+        return spectrogram, label_matrix
 
 
 def create_data_loaders(
@@ -154,30 +114,25 @@ def create_data_loaders(
     if batch_size is None:
         batch_size = config.train_batch_size
 
-    # Find all .npy files and group them by mode (train, val, test)
+    data_path = Path(data_dir)
     data_files = {"train": [], "val": [], "test": []}
 
-    for file in Path(data_dir).glob("*_mel.npy"):
-        label_file = file.parent / file.name.replace("_mel.npy", "_label.npy")
-        if label_file.exists():
-            if "train" in file.name:
-                data_files["train"].append((str(file), str(label_file)))
-            elif "val" in file.name:
-                data_files["val"].append((str(file), str(label_file)))
-            elif "test" in file.name:
-                data_files["test"].append((str(file), str(label_file)))
+    for split in ["train", "val", "test"]:
+        split_dir = data_path / split
+        if not split_dir.exists():
+            continue
+        for file in split_dir.glob("*_mel.npy"):
+            label_file = file.parent / file.name.replace("_mel.npy", "_label.npy")
+            if label_file.exists():
+                data_files[split].append((str(file), str(label_file)))
 
     if not data_files["train"]:
         raise FileNotFoundError(f"No training data found in {data_dir}")
 
     # Create datasets
-    train_dataset = NpyDrumDataset(
-        data_files["train"], config, mode="train", augment=True
-    )
-    val_dataset = NpyDrumDataset(data_files["val"], config, mode="val", augment=False)
-    test_dataset = NpyDrumDataset(
-        data_files["test"], config, mode="test", augment=False
-    )
+    train_dataset = NpyDrumDataset(data_files["train"], config, mode="train")
+    val_dataset = NpyDrumDataset(data_files["val"], config, mode="val")
+    test_dataset = NpyDrumDataset(data_files["test"], config, mode="test")
 
     # Create data loaders
     train_loader = DataLoader(

@@ -3,7 +3,7 @@ Audio Spectrogram Transformer (AST) implementation for drum transcription.
 Based on the AST architecture with modifications for drum-specific tasks.
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -14,20 +14,20 @@ from .transformer_config import BaseConfig
 
 
 class PatchEmbedding(nn.Module):
-    """Convert 2D spectrogram patches to embeddings."""
+    """Convert 1D spectrogram patches to embeddings."""
 
     def __init__(
         self,
-        patch_size: Tuple[int, int] = (16, 16),
-        in_channels: int = 1,
+        patch_size: int = 16,
+        in_channels: int = 128,  # n_mels
         embed_dim: int = 768,
     ):
         super().__init__()
         self.patch_size = patch_size
         self.embed_dim = embed_dim
 
-        # Use conv2d to extract patches and project to embedding dimension
-        self.projection = nn.Conv2d(
+        # Use conv1d to extract patches and project to embedding dimension
+        self.projection = nn.Conv1d(
             in_channels, embed_dim, kernel_size=patch_size, stride=patch_size
         )
 
@@ -38,82 +38,45 @@ class PatchEmbedding(nn.Module):
         Returns:
             Patch embeddings [batch_size, num_patches, embed_dim]
         """
+        print(f"PatchEmbedding input shape: {x.shape}")
         # x shape: (batch_size, 1, time, freq)
-        batch_size, channels, time, freq = x.shape
+        x = x.squeeze(1)  # (batch_size, time, freq)
+        x = x.transpose(1, 2)  # (batch_size, freq, time)
 
         # Extract patches and project
-        x = self.projection(
-            x
-        )  # (batch_size, embed_dim, num_patches_time, num_patches_freq)
+        x = self.projection(x)  # (batch_size, embed_dim, num_patches_time)
 
         # Flatten spatial dimensions
-        x = x.flatten(2)  # (batch_size, embed_dim, num_patches)
-        x = x.transpose(1, 2)  # (batch_size, num_patches, embed_dim)
+        x = x.transpose(1, 2)  # (batch_size, num_patches_time, embed_dim)
 
         return x
 
 
-class PositionalEncoding2D(nn.Module):
-    """2D positional encoding for time-frequency patches."""
+class PositionalEncoding1D(nn.Module):
+    """1D positional encoding for time patches."""
 
-    def __init__(
-        self, embed_dim: int, max_time_patches: int = 32, max_freq_patches: int = 8
-    ):
+    def __init__(self, embed_dim: int, max_time_patches: int = 256):
         super().__init__()
         self.embed_dim = embed_dim
         self.max_time_patches = max_time_patches
-        self.max_freq_patches = max_freq_patches
 
         # Create learnable position embeddings
-        self.time_embed = nn.Parameter(torch.randn(1, max_time_patches, embed_dim // 2))
-        self.freq_embed = nn.Parameter(torch.randn(1, max_freq_patches, embed_dim // 2))
+        self.time_embed = nn.Parameter(torch.randn(1, max_time_patches, embed_dim))
 
         # CLS token
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
 
-    def forward(self, x: torch.Tensor, patch_shape: Tuple[int, int]) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: Patch embeddings [batch_size, num_patches, embed_dim]
-            patch_shape: (time_patches, freq_patches)
         Returns:
             Position-encoded embeddings with CLS token
         """
         batch_size, num_patches, embed_dim = x.shape
-        time_patches, freq_patches = patch_shape
-
-        # Clamp to avoid memory explosion
-        time_patches = min(time_patches, self.max_time_patches)
-        freq_patches = min(freq_patches, self.max_freq_patches)
-
-        # Create position embeddings efficiently with bound checking
-        device = x.device
-
-        # Efficient time position embedding
-        time_embed_needed = self.time_embed[:, :time_patches, :]
-        time_pos = time_embed_needed.repeat(1, freq_patches, 1)
-
-        # Efficient frequency position embedding
-        freq_embed_needed = self.freq_embed[:, :freq_patches, :]
-        freq_pos = freq_embed_needed.repeat_interleave(time_patches, dim=1)
-
-        # Concatenate and trim to actual patch count
-        pos_embed = torch.cat([time_pos, freq_pos], dim=-1)
-
-        # Ensure we don't exceed memory by trimming to actual patches
-        actual_patches = min(num_patches, pos_embed.shape[1])
-        pos_embed = pos_embed[:, :actual_patches, :]
-
-        # Pad if needed (rare case)
-        if actual_patches < num_patches:
-            padding_size = num_patches - actual_patches
-            padding = torch.zeros(
-                1, padding_size, embed_dim, device=device, dtype=pos_embed.dtype
-            )
-            pos_embed = torch.cat([pos_embed, padding], dim=1)
 
         # Add positional encoding
-        x = x + pos_embed
+        x = x + self.time_embed[:, :num_patches, :]
 
         # Add CLS token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
@@ -211,7 +174,9 @@ class DrumTranscriptionTransformer(nn.Module):
 
         # Patch embedding
         self.patch_embed = PatchEmbedding(
-            patch_size=config.patch_size, in_channels=1, embed_dim=config.hidden_size
+            patch_size=config.patch_size[0],
+            in_channels=config.n_mels,
+            embed_dim=config.hidden_size,
         )
 
         # Calculate maximum patch dimensions with conservative bounds for memory efficiency
@@ -221,18 +186,13 @@ class DrumTranscriptionTransformer(nn.Module):
         max_time_patches = (
             max_time_frames + config.patch_size[0] - 1
         ) // config.patch_size[0]
-        max_freq_patches = (
-            config.n_mels + config.patch_size[1] - 1
-        ) // config.patch_size[1]
 
         # Apply conservative limits to prevent memory explosion
-        max_time_patches = min(max_time_patches, 32)  # Cap at 32 time patches
-        max_freq_patches = min(max_freq_patches, 8)  # Cap at 8 frequency patches
+        max_time_patches = min(max_time_patches, 256)  # Cap at 256 time patches
 
-        self.pos_encoding = PositionalEncoding2D(
+        self.pos_encoding = PositionalEncoding1D(
             embed_dim=config.hidden_size,
             max_time_patches=max_time_patches,
-            max_freq_patches=max_freq_patches,
         )
 
         # Transformer layers
@@ -279,10 +239,7 @@ class DrumTranscriptionTransformer(nn.Module):
             Dictionary containing logits and optionally embeddings
         """
         patch_embeddings = self.patch_embed(spectrograms)
-        time_patches = spectrograms.shape[2] // self.config.patch_size[0]
-        freq_patches = spectrograms.shape[3] // self.config.patch_size[1]
-        patch_shape = (time_patches, freq_patches)
-        x = self.pos_encoding(patch_embeddings, patch_shape)
+        x = self.pos_encoding(patch_embeddings)
         del patch_embeddings
 
         layer_embeddings = []

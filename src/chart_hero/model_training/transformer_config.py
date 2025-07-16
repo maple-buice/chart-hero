@@ -151,6 +151,7 @@ class BaseConfig:
     # Logging
     log_every_n_steps: int = 50
     val_check_interval: float = 1.0  # How often to run validation (1.0 = every epoch)
+    seed: int = 42
 
 
 @dataclass

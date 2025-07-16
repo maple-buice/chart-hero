@@ -159,8 +159,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         return self.model(spectrograms)
 
     def training_step(self, batch, batch_idx):
-        spectrograms = batch["spectrogram"]
-        labels = batch["labels"]
+        spectrograms, labels = batch
 
         # Forward pass
         outputs = self.model(spectrograms)
@@ -173,8 +172,12 @@ class DrumTranscriptionModule(pl.LightningModule):
         ).transpose(1, 2)
 
         # Reshape for loss calculation
+        print(f"logits shape before view: {logits.shape}")
+        print(f"labels shape before view: {labels.shape}")
         logits = logits.view(-1, self.config.num_drum_classes)
         labels = labels.view(-1, self.config.num_drum_classes)
+        print(f"logits shape after view: {logits.shape}")
+        print(f"labels shape after view: {labels.shape}")
 
         # Calculate loss
         loss = self.criterion(logits, labels)
@@ -192,8 +195,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        spectrograms = batch["spectrogram"]
-        labels = batch["labels"]
+        spectrograms, labels = batch
 
         # Forward pass
         outputs = self.model(spectrograms)
@@ -222,11 +224,11 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
 
+        self.validation_step_outputs.append({"preds": preds, "labels": labels})
         return loss
 
     def test_step(self, batch, batch_idx):
-        spectrograms = batch["spectrogram"]
-        labels = batch["labels"]
+        spectrograms, labels = batch
 
         # Forward pass
         outputs = self.model(spectrograms)
@@ -255,6 +257,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.log("test_f1", self.test_f1, on_step=False, on_epoch=True)
         self.log("test_acc", self.test_acc, on_step=False, on_epoch=True)
 
+        self.test_step_outputs.append({"preds": preds, "labels": labels})
         return loss
 
     def on_validation_epoch_end(self):
@@ -273,13 +276,6 @@ class DrumTranscriptionModule(pl.LightningModule):
 
         # Clear memory
         self.validation_step_outputs.clear()
-        optimize_memory()
-
-    def on_train_epoch_end(self):
-        # Call parent method if it exists
-        super().on_train_epoch_end() if hasattr(super(), "on_train_epoch_end") else None
-
-        # Free up memory
         optimize_memory()
 
     def on_test_epoch_end(self):

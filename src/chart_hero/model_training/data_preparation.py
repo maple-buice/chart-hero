@@ -1,24 +1,24 @@
 import logging
+import shutil
 from pathlib import Path
 
 import mido
+import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+import torchaudio
+from torch.utils.data import Dataset, random_split
+from tqdm import tqdm
 
 from chart_hero.model_training.transformer_config import (
     DRUM_HIT_MAP,
     DRUM_HIT_TO_INDEX,
     TARGET_CLASSES,
-    BaseConfig,
+    get_config,
 )
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
 
 logger = logging.getLogger(__name__)
-
-
-def get_key(item):
-    return item["start"]
 
 
 class EGMDRawDataset(Dataset):
@@ -27,7 +27,7 @@ class EGMDRawDataset(Dataset):
     Processes raw audio/MIDI pairs into full-length spectrograms and frame-by-frame label matrices.
     """
 
-    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config: BaseConfig):
+    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config):
         self.data_map = data_map
         self.dataset_dir = Path(dataset_dir)
         self.config = config
@@ -43,27 +43,35 @@ class EGMDRawDataset(Dataset):
 
         # Load and process audio to full spectrogram
         try:
-            torch.manual_seed(idx)
-            audio = torch.randn(1, self.config.sample_rate * 10)
+            audio, sr = torchaudio.load(audio_filename)
+            if sr != self.config.sample_rate:
+                audio = torchaudio.functional.resample(
+                    audio, sr, self.config.sample_rate
+                )
             spectrogram = self.processor.audio_to_spectrogram(audio)
         except Exception as e:
             logger.warning(f"Could not load audio file {audio_filename}: {e}")
-            return None
+            return None, None
 
         # Create frame-by-frame label matrix from MIDI
         try:
             label_matrix = self._create_label_matrix(
-                midi_filename, spectrogram.shape[2]
+                midi_filename, spectrogram.shape[1]
             )
         except Exception as e:
             logger.warning(f"Could not process MIDI file {midi_filename}: {e}")
-            return None
+            return None, None
 
         return spectrogram, label_matrix
 
     def _create_label_matrix(self, midi_path: Path, num_time_frames: int):
         """Creates a frame-by-frame label matrix from a MIDI file."""
-        midi_file = mido.MidiFile(midi_path)
+        try:
+            midi_file = mido.MidiFile(midi_path)
+        except Exception as e:
+            logger.warning(f"Could not read MIDI file {midi_path}: {e}")
+            return None
+
         ticks_per_beat = midi_file.ticks_per_beat
         tempo = 500000  # Default tempo
 
@@ -98,43 +106,139 @@ class EGMDRawDataset(Dataset):
         return label_matrix
 
 
-def collate_fn(batch):
-    """Custom collate function to filter out None values and create segments."""
-    batch = [b for b in batch if b is not None]
-    if not batch:
-        return None, None
+def _save_segments(
+    spectrogram: torch.Tensor,
+    label_matrix: torch.Tensor,
+    segment_length: int,
+    output_dir: Path,
+    base_filename: str,
+):
+    """Segments spectrogram and labels and saves them to disk."""
+    num_frames = spectrogram.shape[1]
+    for i in range(0, num_frames, segment_length):
+        end_frame = i + segment_length
+        if end_frame > num_frames:
+            continue  # Skip incomplete segments
 
-    spectrograms, labels = torch.utils.data.dataloader.default_collate(batch)
+        spec_segment = spectrogram[:, i:end_frame, :]
+        label_segment = label_matrix[i:end_frame, :]
 
-    # Create segments
-    segment_length_frames = int(spectrograms.shape[2] / (spectrograms.shape[0] * 10))
+        # Ensure correct dimensions before saving
+        if spec_segment.dim() == 2:
+            spec_segment = spec_segment.unsqueeze(0)  # Add channel dim: [C, T, F]
+        if spec_segment.dim() != 3:
+            logger.warning(
+                f"Skipping segment {base_filename}_{i}: incorrect spec dimensions: {spec_segment.dim()}"
+            )
+            continue
 
-    spectrograms = spectrograms.unfold(
-        2, segment_length_frames, segment_length_frames
-    ).permute(0, 2, 1, 3, 4)
-    spectrograms = spectrograms.reshape(
-        -1, spectrograms.shape[2], spectrograms.shape[3], spectrograms.shape[4]
+        if label_segment.dim() != 2:
+            logger.warning(
+                f"Skipping segment {base_filename}_{i}: incorrect label dimensions: {label_segment.dim()}"
+            )
+            continue
+
+        # Save to .npy files
+        spec_filename = output_dir / f"{base_filename}_{i}_mel.npy"
+        label_filename = output_dir / f"{base_filename}_{i}_label.npy"
+        np.save(spec_filename, spec_segment.numpy())
+        np.save(label_filename, label_segment.numpy())
+
+
+def main(
+    dataset_dir: str,
+    output_dir: str,
+    config,
+    limit: int = None,
+    clear_output: bool = False,
+):
+    """
+    Main function to process the E-GMD dataset.
+    """
+    output_path = Path(output_dir)
+    if clear_output and output_path.exists():
+        shutil.rmtree(output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Load data map
+    data_map_file = Path(dataset_dir) / "e-gmd-v1.0.0.csv"
+    if not data_map_file.exists():
+        raise FileNotFoundError(f"Data map not found at {data_map_file}")
+    data_map = pd.read_csv(data_map_file)
+
+    if limit:
+        data_map = data_map.head(limit)
+
+    # Create dataset
+    dataset = EGMDRawDataset(data_map, dataset_dir, config)
+
+    # Split dataset
+    generator = torch.Generator().manual_seed(config.seed)
+    train_size = int(0.8 * len(dataset))
+    val_size = int(0.1 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+    train_indices, val_indices, test_indices = random_split(
+        range(len(dataset)), [train_size, val_size, test_size], generator=generator
     )
 
-    labels = labels.unfold(1, segment_length_frames, segment_length_frames).permute(
-        0, 2, 1, 3
+    split_map = {
+        "train": train_indices,
+        "val": val_indices,
+        "test": test_indices,
+    }
+
+    segment_length_frames = int(
+        config.max_audio_length * config.sample_rate / config.hop_length
     )
-    labels = labels.reshape(-1, labels.shape[2], labels.shape[3])
 
-    return spectrograms, labels
+    # Process and save data
+    for split, indices in split_map.items():
+        split_dir = output_path / split
+        split_dir.mkdir(exist_ok=True)
+        for i in tqdm(indices, desc=f"Processing {split} set"):
+            spectrogram, label_matrix = dataset[i]
+            if spectrogram is None or label_matrix is None:
+                continue
+
+            base_filename = f"{split}_{i}"
+            _save_segments(
+                spectrogram,
+                label_matrix,
+                segment_length_frames,
+                split_dir,
+                base_filename,
+            )
 
 
-class Subset(Dataset):
-    """
-    Subset of a dataset at specified indices.
-    """
+if __name__ == "__main__":
+    import argparse
 
-    def __init__(self, dataset, indices):
-        self.dataset = dataset
-        self.indices = indices
+    parser = argparse.ArgumentParser(description="Process E-GMD dataset.")
+    parser.add_argument(
+        "--dataset-dir", type=str, required=True, help="Path to the E-GMD dataset."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        required=True,
+        help="Path to save the processed data.",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="local",
+        help="Configuration to use (local, cloud, etc.)",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Limit the number of files to process."
+    )
+    parser.add_argument(
+        "--clear-output",
+        action="store_true",
+        help="Clear the output directory before processing.",
+    )
+    args = parser.parse_args()
 
-    def __getitem__(self, idx):
-        return self.dataset[self.indices[idx]]
-
-    def __len__(self):
-        return len(self.indices)
+    logging.basicConfig(level=logging.INFO)
+    config = get_config(args.config)
+    main(args.dataset_dir, args.output_dir, config, args.limit, args.clear_output)

@@ -14,12 +14,11 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from chart_hero.model_training.data_preparation import EGMDRawDataset, Subset
 from chart_hero.model_training.transformer_config import get_config
@@ -90,13 +89,14 @@ def main(args=None):
         ):
             if spectrogram is None or label_matrix is None:
                 continue
+            # Squeeze the batch dimension before saving
             np.save(
                 os.path.join(args.output_dir, f"{name}_{i}_mel.npy"),
-                spectrogram.numpy(),
+                spectrogram.squeeze(0).numpy(),
             )
             np.save(
                 os.path.join(args.output_dir, f"{name}_{i}_label.npy"),
-                label_matrix.numpy(),
+                label_matrix.squeeze(0).numpy(),
             )
 
     save_data(train_loader, "train")
