@@ -104,3 +104,12 @@ def test_drum_to_frame_bpm_estimation():
         pytest.approx(estimated_bpm, rel=0.1) == bpm
         or pytest.approx(estimated_bpm, rel=0.1) == bpm / 2
     )
+
+
+def test_drum_to_frame_silent_audio():
+    """Test drum_to_frame with a silent audio clip."""
+    sample_rate = 22050
+    dummy_drum_track = np.zeros(sample_rate * 10)  # 10 seconds of silence
+
+    df, _, _ = drum_to_frame(dummy_drum_track, sample_rate)
+    assert df.empty

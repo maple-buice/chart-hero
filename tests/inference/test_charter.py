@@ -110,3 +110,21 @@ def test_build_measure(charter_fixture):
     assert len(measure) > 0
     assert len(note_dur) > 0
     assert len(measure) == len(note_dur)
+
+
+def test_drum_charter_empty_input():
+    """Test that the drum_charter class can handle an empty dataframe."""
+    charter = drum_charter(
+        prediction_df=pd.DataFrame({"peak_sample": []}),
+        song_duration=10,
+        bpm=120,
+        sample_rate=22050,
+    )
+    assert charter is not None
+    assert isinstance(charter.sheet, stream.Score)
+    # The sheet should have one part and one measure with a rest
+    assert len(charter.sheet.parts) == 1
+    assert len(charter.sheet.parts[0].getElementsByClass("Measure")) == 0
+    assert len(charter.sheet.parts[0].getElementsByClass("Note")) == 0
+    assert len(charter.sheet.parts[0].getElementsByClass("Chord")) == 0
+    assert len(charter.sheet.parts[0].getElementsByClass("Rest")) == 0

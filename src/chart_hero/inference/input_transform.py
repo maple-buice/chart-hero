@@ -142,6 +142,9 @@ def drum_to_frame(
     onset_samples = librosa.frames_to_samples(onset_frames * (hop_length / 512))
     peak_samples = librosa.frames_to_samples(peak_frames * (hop_length / 512))
 
+    if len(peak_samples) == 0:
+        return pd.DataFrame(), 120, None
+
     if estimated_bpm is None:
         _8_duration = pd.Series(peak_samples).diff().mode()[0]
         estimated_bpm = 60 / (librosa.samples_to_time(_8_duration, sr=sample_rate) * 2)

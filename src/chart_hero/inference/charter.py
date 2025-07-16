@@ -63,6 +63,15 @@ class drum_charter:
         self.df = prediction_df
         self.sample_rate = sample_rate
         self.onsets = prediction_df.peak_sample
+        if self.onsets.empty:
+            self.sheet = stream.Score()
+            drum_part = stream.Part()
+            drum_part.id = "drums"
+            drum_part.append(
+                meter.TimeSignature(f"{int(self.beats_in_measure/2)}/{self.note_value}")
+            )
+            self.sheet.insert(0, drum_part)
+            return
         self.note_line = self.onsets.apply(
             lambda x: librosa.samples_to_time(x, sr=sample_rate)
         ).to_numpy()
