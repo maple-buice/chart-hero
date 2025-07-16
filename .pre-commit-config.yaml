@@ -18,4 +18,3 @@ repos:
     rev: v0.12.3
     hooks:
     -   id: ruff
-        exclude: colab/transformer_training_colab.ipynb
