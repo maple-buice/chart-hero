@@ -1,6 +1,5 @@
 import multiprocessing
 import os
-from pathlib import Path
 
 import librosa
 import librosa.feature.rhythm
@@ -39,19 +38,15 @@ def drum_extraction(path, dir=None, mode="performance", drum_start=None, drum_en
 
     from demucs import apply, audio, pretrained
 
-    if dir is not None:
-        dir_path = dir
-    else:
-        dir_path = r"inference\pretrained_models\demucs"
     if mode == "speed":
-        model = pretrained.get_model(name="83fc094f", repo=Path(dir_path))
+        model = pretrained.get_model(name="83fc094f")
         model = apply.BagOfModels([model])
         print("The precessing time could take 1-2 mins.")
     elif mode == "performance":
-        model_1 = pretrained.get_model(name="14fc6a69", repo=Path(dir_path))
-        model_2 = pretrained.get_model(name="464b36d7", repo=Path(dir_path))
-        model_3 = pretrained.get_model(name="7fd6ef75", repo=Path(dir_path))
-        model_4 = pretrained.get_model(name="83fc094f", repo=Path(dir_path))
+        model_1 = pretrained.get_model(name="14fc6a69")
+        model_2 = pretrained.get_model(name="464b36d7")
+        model_3 = pretrained.get_model(name="7fd6ef75")
+        model_4 = pretrained.get_model(name="83fc094f")
         model = apply.BagOfModels([model_1, model_2, model_3, model_4])
         print(
             "The demucs kernel is a bag of 4 models. The track will be processed 4 times and output the best one. You will see 4 progress bars per track. The total processing time could take 4-6 mins depends on total Audio length"

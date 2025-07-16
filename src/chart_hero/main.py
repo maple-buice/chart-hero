@@ -74,6 +74,11 @@ def main():
         action="store_true",
         help="Use fixed clip length for drum frames.",
     )
+    parser.add_argument(
+        "--no-api",
+        action="store_true",
+        help="Run without making API calls to AudD.",
+    )
 
     args = parser.parse_args()
 
@@ -86,20 +91,24 @@ def main():
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Identify song
-    audd_result = identify_song(f_path)
-    with open(out_path / "audd_result.json", "w") as f:
-        json.dump(audd_result, f, indent=4)
-
-    # Get acoustic data
-    if audd_result and audd_result.get("musicbrainz"):
-        mbid = audd_result["musicbrainz"][0]["id"]
-        acousticbrainz_result = get_data_from_acousticbrainz(mbid)
-        with open(out_path / "acousticbrainz_result.json", "w") as f:
-            json.dump(acousticbrainz_result, f, indent=4)
-        bpm = acousticbrainz_result.get("bpm")
+    if args.no_api:
+        audd_result = {"title": "test_song", "artist": "test_artist"}
+        bpm = 120
     else:
-        bpm = None
+        # Identify song
+        audd_result = identify_song(f_path)
+        with open(out_path / "audd_result.json", "w") as f:
+            json.dump(audd_result, f, indent=4)
+
+        # Get acoustic data
+        if audd_result and audd_result.get("musicbrainz"):
+            mbid = audd_result["musicbrainz"][0]["id"]
+            acousticbrainz_result = get_data_from_acousticbrainz(mbid)
+            with open(out_path / "acousticbrainz_result.json", "w") as f:
+                json.dump(acousticbrainz_result, f, indent=4)
+            bpm = acousticbrainz_result.get("bpm")
+        else:
+            bpm = None
 
     # Drum extraction
     drum_track, sr = drum_extraction(
