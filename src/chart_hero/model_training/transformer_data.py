@@ -36,23 +36,6 @@ class SpectrogramProcessor:
         if audio.dim() == 1:
             audio = audio.unsqueeze(0)
 
-        # Ensure audio is the right length
-        target_length = int(self.config.max_audio_length * self.config.sample_rate)
-
-        if audio.shape[-1] > target_length:
-            # Random crop for training data augmentation
-            start_idx = torch.randint(
-                0, audio.shape[-1] - target_length + 1, (1,)
-            ).item()
-            audio = audio[..., start_idx : start_idx + target_length]
-        elif audio.shape[-1] < target_length:
-            # Pad with zeros
-            padding = target_length - audio.shape[-1]
-            audio = F.pad(audio, (0, padding))
-
-        # Ensure exactly the target length
-        audio = audio[..., :target_length]
-
         # Convert to mel spectrogram
         mel_spec = self.mel_transform(audio)
 
@@ -157,24 +140,9 @@ class NpyDrumDataset(Dataset):
         spectrogram = torch.from_numpy(np.load(spec_file))
         label_matrix = torch.from_numpy(np.load(label_file))
 
-        # Get a random segment
-        num_frames = spectrogram.shape[1]
-        if num_frames > self.segment_length_frames:
-            start_frame = torch.randint(
-                0, num_frames - self.segment_length_frames, (1,)
-            ).item()
-            end_frame = start_frame + self.segment_length_frames
-            spectrogram_segment = spectrogram[:, start_frame:end_frame, :]
-            label_matrix_segment = label_matrix[start_frame:end_frame, :]
-        else:
-            # Pad if the spectrogram is shorter than the segment length
-            padding = self.segment_length_frames - num_frames
-            spectrogram_segment = F.pad(spectrogram, (0, 0, 0, padding))
-            label_matrix_segment = F.pad(label_matrix, (0, 0, 0, padding))
-
         return {
-            "spectrogram": spectrogram_segment,
-            "labels": label_matrix_segment,
+            "spectrogram": spectrogram,
+            "labels": label_matrix,
         }
 
 

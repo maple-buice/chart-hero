@@ -14,6 +14,7 @@ from typing import Optional
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchmetrics
 from pytorch_lightning.callbacks import (
     EarlyStopping,
@@ -165,6 +166,12 @@ class DrumTranscriptionModule(pl.LightningModule):
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
 
+        # Downsample labels to match model output resolution
+        pool_size = self.config.patch_size[0]
+        labels = F.max_pool1d(
+            labels.transpose(1, 2), kernel_size=pool_size, stride=pool_size
+        ).transpose(1, 2)
+
         # Reshape for loss calculation
         logits = logits.view(-1, self.config.num_drum_classes)
         labels = labels.view(-1, self.config.num_drum_classes)
@@ -192,6 +199,12 @@ class DrumTranscriptionModule(pl.LightningModule):
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
 
+        # Downsample labels to match model output resolution
+        pool_size = self.config.patch_size[0]
+        labels = F.max_pool1d(
+            labels.transpose(1, 2), kernel_size=pool_size, stride=pool_size
+        ).transpose(1, 2)
+
         # Reshape for loss calculation
         logits = logits.view(-1, self.config.num_drum_classes)
         labels = labels.view(-1, self.config.num_drum_classes)
@@ -218,6 +231,12 @@ class DrumTranscriptionModule(pl.LightningModule):
         # Forward pass
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
+
+        # Downsample labels to match model output resolution
+        pool_size = self.config.patch_size[0]
+        labels = F.max_pool1d(
+            labels.transpose(1, 2), kernel_size=pool_size, stride=pool_size
+        ).transpose(1, 2)
 
         # Reshape for loss calculation
         logits = logits.view(-1, self.config.num_drum_classes)

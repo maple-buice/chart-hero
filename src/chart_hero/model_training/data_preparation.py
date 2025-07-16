@@ -53,7 +53,7 @@ class EGMDRawDataset(Dataset):
         # Create frame-by-frame label matrix from MIDI
         try:
             label_matrix = self._create_label_matrix(
-                midi_filename, spectrogram.shape[1]
+                midi_filename, spectrogram.shape[2]
             )
         except Exception as e:
             logger.warning(f"Could not process MIDI file {midi_filename}: {e}")
@@ -99,11 +99,29 @@ class EGMDRawDataset(Dataset):
 
 
 def collate_fn(batch):
-    """Custom collate function to filter out None values."""
+    """Custom collate function to filter out None values and create segments."""
     batch = [b for b in batch if b is not None]
     if not batch:
         return None, None
-    return torch.utils.data.dataloader.default_collate(batch)
+
+    spectrograms, labels = torch.utils.data.dataloader.default_collate(batch)
+
+    # Create segments
+    segment_length_frames = int(spectrograms.shape[2] / (spectrograms.shape[0] * 10))
+
+    spectrograms = spectrograms.unfold(
+        2, segment_length_frames, segment_length_frames
+    ).permute(0, 2, 1, 3, 4)
+    spectrograms = spectrograms.reshape(
+        -1, spectrograms.shape[2], spectrograms.shape[3], spectrograms.shape[4]
+    )
+
+    labels = labels.unfold(1, segment_length_frames, segment_length_frames).permute(
+        0, 2, 1, 3
+    )
+    labels = labels.reshape(-1, labels.shape[2], labels.shape[3])
+
+    return spectrograms, labels
 
 
 class Subset(Dataset):
