@@ -1,5 +1,23 @@
-from dataclasses import asdict, dataclass
-from typing import Optional
+from dataclasses import asdict, dataclass, is_dataclass
+from typing import Any, Optional, Type, TypeVar
+
+T = TypeVar("T")
+
+
+def _from_dict(data_class: Type[T], data: Any) -> T:
+    if data is None:
+        return None
+    if is_dataclass(data_class):
+        field_types = {f.name: f.type for f in data_class.__dataclass_fields__.values()}
+        return data_class(
+            **{
+                key: _from_dict(field_types.get(key), value)
+                for key, value in data.items()
+            }
+        )
+    if hasattr(data_class, "__origin__") and data_class.__origin__ is list:
+        return [_from_dict(data_class.__args__[0], item) for item in data]
+    return data
 
 
 @dataclass
@@ -13,10 +31,10 @@ class apple_music_artwork:
     height: int
     url: str
     bgColor: str
-    textColorint: str
-    textColorint: str
-    textColorint: str
-    textColorint: str
+    textColor1: str
+    textColor2: str
+    textColor3: str
+    textColor4: str
 
 
 @dataclass
@@ -109,10 +127,10 @@ class spotify_result:
 
 @dataclass
 class artist:
-    id = str
-    name = str
-    sort_name = str
-    disambiguation = Optional[str]
+    id: str
+    name: str
+    sort_name: str
+    disambiguation: Optional[str]
 
 
 @dataclass
@@ -123,10 +141,10 @@ class artist_credit:
 
 @dataclass
 class track:
-    id = str
-    length = int
-    number = int
-    title = str
+    id: str
+    length: int
+    number: int
+    title: str
 
 
 @dataclass
@@ -214,7 +232,5 @@ class audd_song_response:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, dict):
-        obj = cls()
-        obj.__dict__.update(dict)
-        return obj
+    def from_dict(cls: Type[T], data: Any) -> T:
+        return _from_dict(cls, data)
