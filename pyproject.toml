@@ -25,3 +25,14 @@ classifiers = [
 chart-hero = "chart_hero.main:main"
 prepare-egmd-data = "chart_hero.prepare_egmd_data:main"
 
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I"]
+ignore = ["E501"]
+

@@ -1,10 +1,11 @@
 from dataclasses import asdict, dataclass
-
 from typing import Optional
+
 
 @dataclass
 class apple_music_preview:
     url: str
+
 
 @dataclass
 class apple_music_artwork:
@@ -17,10 +18,12 @@ class apple_music_artwork:
     textColorint: str
     textColorint: str
 
+
 @dataclass
 class apple_music_play_params:
     id: str
     kind: str
+
 
 @dataclass
 class apple_music_result:
@@ -39,13 +42,16 @@ class apple_music_result:
     trackNumber: int
     composerName: str
 
+
 @dataclass
 class spotify_external_urls:
     spotify: str
 
+
 @dataclass
 class spotify_external_ids:
     isrc: str
+
 
 @dataclass
 class spotify_artist:
@@ -56,11 +62,13 @@ class spotify_artist:
     type: str
     uri: str
 
+
 @dataclass
 class spotify_image:
     height: int
     url: str
     width: int
+
 
 @dataclass
 class spotify_album:
@@ -77,6 +85,7 @@ class spotify_album:
     total_tracks: int
     type: str
     uri: str
+
 
 @dataclass
 class spotify_result:
@@ -97,6 +106,7 @@ class spotify_result:
     type: str
     uri: str
 
+
 @dataclass
 class artist:
     id = str
@@ -104,10 +114,12 @@ class artist:
     sort_name = str
     disambiguation = Optional[str]
 
+
 @dataclass
 class artist_credit:
     artist: artist
     name: str
+
 
 @dataclass
 class track:
@@ -115,6 +127,7 @@ class track:
     length = int
     number = int
     title = str
+
 
 @dataclass
 class media:
@@ -124,6 +137,7 @@ class media:
     track_count: int
     track_offset: int
 
+
 @dataclass
 class area:
     id: str
@@ -131,10 +145,12 @@ class area:
     name: str
     sort_name: str
 
+
 @dataclass
 class release_event:
     area: area
     date: str
+
 
 @dataclass
 class release_group:
@@ -143,6 +159,7 @@ class release_group:
     secondary_types: list[str]
     title: str
     type_id: str
+
 
 @dataclass
 class release:
@@ -158,7 +175,8 @@ class release:
     status: str
     title: str
     track_count: int
-    
+
+
 @dataclass
 class musicbrainz_result:
     artist_credit: list[artist_credit]
@@ -171,6 +189,7 @@ class musicbrainz_result:
     tags: Optional[list[str]]
     title: str
     video: Optional[str]
+
 
 @dataclass
 class audd_song_result:
@@ -185,14 +204,15 @@ class audd_song_result:
     spotify: spotify_result
     musicbrainz: list[musicbrainz_result]
 
+
 @dataclass
 class audd_song_response:
     status: str
     result: audd_song_result
-    
+
     def to_dict(self):
         return asdict(self)
-    
+
     @classmethod
     def from_dict(cls, dict):
         obj = cls()

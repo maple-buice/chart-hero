@@ -1,6 +1,8 @@
 import os
 import pathlib
-from mido import MidiFile, Message, MidiTrack, MetaMessage
+
+from mido import MidiFile
+
 
 def getChartFiles(directory, fileName):
     chartFiles = []
@@ -9,6 +11,7 @@ def getChartFiles(directory, fileName):
             if name == fileName:
                 chartFiles.append(pathlib.PurePath(path, name))
     return chartFiles
+
 
 def getDrumNotesFromCharts(chartFiles):
     drumNotes = []
@@ -28,6 +31,7 @@ def getDrumNotesFromCharts(chartFiles):
                     drumNotes.append(line)
     return drumNotes
 
+
 def getNoteCountsFromCharts(drumNotes):
     noteCounts = {}
     for note in drumNotes:
@@ -41,21 +45,24 @@ def getNoteCountsFromCharts(drumNotes):
             noteCounts[noteInt] = 1
     return dict(sorted(noteCounts.items()))
 
+
 def getDrumNotesFromMidis(midiFiles):
     drumNotes = []
     for file in midiFiles:
         try:
             with MidiFile(file) as midiFile:
                 for track in midiFile.tracks:
-                    if not "drum" in track.name.lower():
+                    if "drum" not in track.name.lower():
                         continue
                     print(track.name)
                     for message in track:
                         if message.type == "note_on":
                             drumNotes.append(message.note)
-        except:
+        except Exception as e:
+            print(f"Error processing {file}: {e}")
             continue
     return drumNotes
+
 
 def getNoteCountsFromMidis(drumNotes):
     noteCounts = {}
@@ -65,6 +72,7 @@ def getNoteCountsFromMidis(drumNotes):
         else:
             noteCounts[noteInt] = 1
     return dict(sorted(noteCounts.items()))
+
 
 songsRoot = "/Users/maple/Clone Hero/Songs"
 # chartFiles = getChartFiles(songsRoot, "notes.chart")

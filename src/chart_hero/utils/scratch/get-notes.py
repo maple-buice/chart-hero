@@ -8,13 +8,11 @@
 # Documentation: https://mido.readthedocs.io/
 
 import os
-import sys
-import time
-import numpy as np
+
 import librosa
 import matplotlib.pyplot as plt
+import numpy as np
 from IPython.display import Audio
-
 
 musicDir = "music"
 songFileName = "Imagine Dragons - Believer.mp3"
@@ -22,7 +20,9 @@ songFileNameNoExtension = songFileName.replace(".mp3", "")
 
 demucsOutputDir = "separated"
 demucsModel = "htdemucs_6s"
-demucsSplitSongOutputDir = demucsOutputDir + "/" + demucsModel + "/" + songFileNameNoExtension
+demucsSplitSongOutputDir = (
+    demucsOutputDir + "/" + demucsModel + "/" + songFileNameNoExtension
+)
 
 librosaOutputDir = "librosa"
 if not os.path.exists(librosaOutputDir):
@@ -31,7 +31,9 @@ librosaSongOutputDir = demucsOutputDir + "/" + songFileNameNoExtension
 if not os.path.exists(librosaSongOutputDir):
     os.makedirs(librosaSongOutputDir)
 
-filename = "/Users/maple/Repos/chart-hero/" + demucsSplitSongOutputDir + "/" + "drums.mp3"
+filename = (
+    "/Users/maple/Repos/chart-hero/" + demucsSplitSongOutputDir + "/" + "drums.mp3"
+)
 midioutput = demucsSplitSongOutputDir + "/" + "drums.mid"
 
 
@@ -51,8 +53,8 @@ y, sr = librosa.load(filename)
 
 fig, ax = plt.subplots()
 melspec = librosa.power_to_db(librosa.feature.melspectrogram(y=y, sr=sr), ref=np.max)
-librosa.display.specshow(melspec, y_axis='mel', x_axis='time', ax=ax)
-ax.set(title='Mel spectrogram')
+librosa.display.specshow(melspec, y_axis="mel", x_axis="time", ax=ax)
+ax.set(title="Mel spectrogram")
 
 Audio(data=y, rate=sr)
 
@@ -67,25 +69,26 @@ Audio(data=y, rate=sr)
 # Note: by default, `beat_track` assumes that there is silence at the end of the
 # signal, and trims last beats to avoid false detections. Here, there is no silence
 # at the end, so we set `trim=False` to avoid this effect.
-tempo, beats_static = librosa.beat.beat_track(y=y, sr=sr, units='time', trim=False)
+tempo, beats_static = librosa.beat.beat_track(y=y, sr=sr, units="time", trim=False)
 
-click_track = librosa.clicks(times=beats_static, sr=sr, click_freq=660,
-                             click_duration=0.25, length=len(y))
+click_track = librosa.clicks(
+    times=beats_static, sr=sr, click_freq=660, click_duration=0.25, length=len(y)
+)
 
 print(f"Tempo estimate: {tempo[0]:.2f} BPM")
-Audio(data=y+click_track, rate=sr)
+Audio(data=y + click_track, rate=sr)
 
 #########################################
 # -------------
 # Dynamic tempo
 # -------------
 # Instead of estimating an aggregated tempo for the whole signal, we now estimate
-# a time-varying tempo. For this purpose, we pass `aggregate=None` to 
+# a time-varying tempo. For this purpose, we pass `aggregate=None` to
 # `librosa.feature.tempo`. The return value tempo_dynamic, is an array:
 tempo_dynamic = librosa.feature.tempo(y=y, sr=sr, aggregate=None, std_bpm=4)
 
 # %%
-# The parameter `std_bpm` is the standard deviation of the tempo estimator and 
+# The parameter `std_bpm` is the standard deviation of the tempo estimator and
 # has a default value of 1. Here, we have increased `std_bpm` to 4.
 # This is to account for the broad range of tempo drift in this
 # particular recording (30 BPM to 240 BPM).
@@ -93,13 +96,13 @@ tempo_dynamic = librosa.feature.tempo(y=y, sr=sr, aggregate=None, std_bpm=4)
 
 fig, ax = plt.subplots()
 times = librosa.times_like(tempo_dynamic, sr=sr)
-ax.plot(times, tempo_dynamic, label='Dynamic tempo estimate')
-ax.axhline(tempo, label='Static tempo estimate', color='r')
+ax.plot(times, tempo_dynamic, label="Dynamic tempo estimate")
+ax.axhline(tempo, label="Static tempo estimate", color="r")
 ax.legend()
-ax.set(xlabel='Time (s)', ylabel='Tempo (BPM)')
+ax.set(xlabel="Time (s)", ylabel="Tempo (BPM)")
 
 # %%
-# `librosa.feature.tempo` estimates tempo over a sliding window whose duration 
+# `librosa.feature.tempo` estimates tempo over a sliding window whose duration
 # `ac_size` is equal to 8 seconds by default.
 # In this example, the result is not perfect: `tempo_dynamic` contains jagged and
 # nonuniform steps.
@@ -107,13 +110,15 @@ ax.set(xlabel='Time (s)', ylabel='Tempo (BPM)')
 #
 # We can now use this dynamic tempo in the beat tracker directly:
 
-tempo, beats_dynamic = librosa.beat.beat_track(y=y, sr=sr, units='time',
-                                               bpm=tempo_dynamic, trim=False)
+tempo, beats_dynamic = librosa.beat.beat_track(
+    y=y, sr=sr, units="time", bpm=tempo_dynamic, trim=False
+)
 
-click_dynamic = librosa.clicks(times=beats_dynamic, sr=sr, click_freq=660,
-                               click_duration=0.25, length=len(y))
+click_dynamic = librosa.clicks(
+    times=beats_dynamic, sr=sr, click_freq=660, click_duration=0.25, length=len(y)
+)
 
-Audio(data=y+click_dynamic, rate=sr)
+Audio(data=y + click_dynamic, rate=sr)
 
 # %%
 # (Note that since we're providing the tempo estimates as input to the beat tracker,
@@ -123,9 +128,16 @@ Audio(data=y+click_dynamic, rate=sr)
 # We can visualize the difference in estimated beat timings as follows:
 
 fig, ax = plt.subplots()
-librosa.display.waveshow(y=y, sr=sr, ax=ax, color='k', alpha=0.7)
-ax.vlines(beats_static, 0.75, 1., label='Static tempo beat estimates', color='r')
-ax.vlines(beats_dynamic, -1, -0.75, label='Dynamic tempo beat estimates', color='b', linestyle='--')
+librosa.display.waveshow(y=y, sr=sr, ax=ax, color="k", alpha=0.7)
+ax.vlines(beats_static, 0.75, 1.0, label="Static tempo beat estimates", color="r")
+ax.vlines(
+    beats_dynamic,
+    -1,
+    -0.75,
+    label="Dynamic tempo beat estimates",
+    color="b",
+    linestyle="--",
+)
 ax.legend()
 
 # %%

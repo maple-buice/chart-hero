@@ -1,160 +1,154 @@
 import argparse
-from os import path
+import json
 import os
-from chart_hero.inference.song_identifier import get_data_from_acousticbrainz, identify_song
-from chart_hero.inference.input_transform import drum_extraction, drum_to_frame, get_yt_audio
-from chart_hero.inference.charter import drum_charter
-import librosa
-import torch
-import pandas as pd
-from chart_hero.model_training.train_transformer import DrumTranscriptionModule
+from pathlib import Path
 
-def predict_with_transformer(model, drum_track, sample_rate, config):
-    """
-    Predict drum hits using the trained transformer model.
-    """
-    # The model expects a spectrogram, so we need to create one from the drum track.
-    # The drum_to_frame function already creates audio clips, so we can use those.
-    df, bpm = drum_to_frame(drum_track, sample_rate)
-    
-    # Create a SpectrogramProcessor to create spectrograms from the audio clips
-    from chart_hero.model_training.transformer_data import SpectrogramProcessor
-    processor = SpectrogramProcessor(config)
-    
-    # Create a list of spectrograms
-    spectrograms = []
-    for i in range(len(df)):
-        audio_clip = df.audio_clip.iloc[i]
-        spectrogram = processor.audio_to_spectrogram(torch.from_numpy(audio_clip).float().unsqueeze(0))
-        spectrograms.append(spectrogram.unsqueeze(0))
-        
-    # Stack the spectrograms into a batch
-    spectrograms = torch.cat(spectrograms)
-    
-    # Make predictions
-    with torch.no_grad():
-        model.eval()
-        predictions = model(spectrograms)
-        
-    # Process predictions
-    preds = torch.sigmoid(predictions['logits']) > 0.5
-    
-    # Create a DataFrame with the predictions
-    from chart_hero.model_training.transformer_config import get_drum_hits
-    drum_hits = get_drum_hits()
-    prediction_df = pd.DataFrame(preds.numpy(), columns=drum_hits)
-    
-    # Combine with the original DataFrame
-    df.reset_index(inplace=True)
-    prediction_df.reset_index(inplace=True)
-    result = df.merge(prediction_df,left_on='index', right_on= 'index')
-    result.drop(columns=['index'],inplace=True)
-    
-    return result, bpm
+import librosa
+import pandas as pd
+import torch
+
+from chart_hero.inference.charter import drum_charter
+from chart_hero.inference.input_transform import (
+    drum_extraction,
+    drum_to_frame,
+    get_yt_audio,
+)
+from chart_hero.inference.song_identifier import (
+    get_data_from_acousticbrainz,
+    identify_song,
+)
+from chart_hero.model_training.train_transformer import DrumTranscriptionModule
+from chart_hero.model_training.transformer_config import get_config, get_drum_hits
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Transcribe the drum part of a given song", usage=None)
-
-    input = parser.add_mutually_exclusive_group(required=True)
-    input.add_argument('-l', '--link',
-                        type=str,
-                        help='Youtube video link')
-    
-    input.add_argument('-p', '--path',
-                        type=str,
-                        help='Path to local audio file')
-
-    parser.add_argument('-km', '--kernel_mode',
-                        choices=['performance', 'speed'],
-                        type=str,
-                        required=True,
-                        help="The processing mode of the kernel, either speed or performance. "
-                                "Speed mode is 4 times faster than performance mode but quality could be slightly worse")
-
-    parser.add_argument('-bpm',
-                        default=None,
-                        type=int,
-                        help='The estimated bpm of the song')
-
-    parser.add_argument('-r', '--resolution',
-                        default=16,
-                        choices=[None, 4,8,16,32],
-                        help='Control the window size (total length) of the onset sound clip extract from the song')
-
-    parser.add_argument('-b', '--beat',
-                        type=int,
-                        default=4,
-                        help='Number of beats in each measure')
-        
-    parser.add_argument('-n', '--note',
-                        type=int,
-                        default=4,
-                        help="The UPPER NUMBER of the song's time signature." 
-                                "This number represent the number of beats in each measure.")
-
-    parser.add_argument('-fmt', '--format',
-                        default='pdf',
-                        choices=['pdf', 'musicxml'],
-                        type=str,
-                        help='Output sheet music format')
-    
-    parser.add_argument('-o', '--outpath',
-                        default='',
-                        type=str,
-                        help='Output sheet music directory path')
-                        
-    parser.add_argument('--model-path', type=str, required=True, help='Path to the trained model checkpoint')
+    """
+    Main function to run the drum transcription and charting process.
+    """
+    parser = argparse.ArgumentParser(
+        description="Transcribe and chart drum patterns from an audio file."
+    )
+    parser.add_argument(
+        "-p", "--path", type=str, required=True, help="Path to the audio file."
+    )
+    parser.add_argument(
+        "-l", "--link", type=str, help="Link to a youtube video."
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=str,
+        default="output",
+        help="Directory to save the output files.",
+    )
+    parser.add_argument(
+        "-m",
+        "--model-path",
+        type=str,
+        default="models/local_transformer_models/best_model.ckpt",
+        help="Path to the trained model checkpoint.",
+    )
+    parser.add_argument(
+        "-km",
+        "--kernel-mode",
+        type=str,
+        default="performance",
+        choices=["speed", "performance"],
+        help="Demucs kernel mode.",
+    )
+    parser.add_argument(
+        "-r",
+        "--resolution",
+        type=int,
+        default=16,
+        help="Note resolution for the drum chart.",
+    )
+    parser.add_argument(
+        "-b", "--backtrack", action="store_true", help="Enable backtrack for onset detection."
+    )
+    parser.add_argument(
+        "-f",
+        "--fixed-clip-length",
+        action="store_true",
+        help="Use fixed clip length for drum frames.",
+    )
 
     args = parser.parse_args()
 
-    if args.link!=None:
-        print(f'Downloading audio track from {args.link}')
+    if args.link is not None:
+        print(f"Downloading audio track from {args.link}")
         f_path = get_yt_audio(args.link)
-        print(f'Audio track saved to {f_path}')
     else:
-        f_path=args.path
-        print(f'Retriving audio track from {args.path}')
-    
-    print('Getting song info')
-    song_info = identify_song(f_path)
-    
-    acousticbrainz_info = get_data_from_acousticbrainz(song_info)
-    
-    with open('acousticbrainz_result.json', 'w') as f:
-        f.write(acousticbrainz_info.__str__())
-    
-    print('Start Demixing Process...')
-    drum_track, sample_rate = drum_extraction(f_path,
-                                              mode=args.kernel_mode)
+        f_path = args.path
 
-    print('Drum track extracted')
+    out_path = Path(args.output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
 
-    print('Loading model...')
-    from chart_hero.model_training.transformer_config import get_config
-    config = get_config('local') # Use a default config
+    # Identify song
+    audd_result = identify_song(f_path)
+    with open(out_path / "audd_result.json", "w") as f:
+        json.dump(audd_result, f, indent=4)
+
+    # Get acoustic data
+    if audd_result and audd_result.get("musicbrainz"):
+        mbid = audd_result["musicbrainz"][0]["id"]
+        acousticbrainz_result = get_data_from_acousticbrainz(mbid)
+        with open(out_path / "acousticbrainz_result.json", "w") as f:
+            json.dump(acousticbrainz_result, f, indent=4)
+        bpm = acousticbrainz_result.get("bpm")
+    else:
+        bpm = None
+
+    # Drum extraction
+    drum_track, sr = drum_extraction(
+        f_path,
+        mode=args.kernel_mode,
+    )
+
+    # Drum to frame
+    df, sr, bpm = drum_to_frame(
+        drum_track,
+        sr,
+        estimated_bpm=bpm,
+        resolution=args.resolution,
+        backtrack=args.backtrack,
+        fixed_clip_length=args.fixed_clip_length,
+    )
+
+    # Load model
+    config = get_config("local")
     model = DrumTranscriptionModule.load_from_checkpoint(args.model_path, config=config)
+    model.eval()
 
-    print('Converting drum track and making predictions...')
-    df_pred, bpm = predict_with_transformer(model, drum_track, sample_rate, config)
+    # Predict
+    predictions = []
+    for _, row in df.iterrows():
+        spectrogram = torch.from_numpy(row["audio_clip"]).unsqueeze(0).unsqueeze(0)
+        with torch.no_grad():
+            output = model(spectrogram)
+        predictions.append(output["logits"].squeeze().numpy())
 
-    print('Creating chart...')
+    df_pred = pd.DataFrame(predictions, columns=get_drum_hits())
+    df_pred = pd.concat([df, df_pred], axis=1)
 
-    song_duration = librosa.get_duration(y=drum_track, sr=sample_rate)
+    # Create drum chart
+    song_duration = librosa.get_duration(y=drum_track, sr=sr)
+    sheet_music = drum_charter(
+        df_pred,
+        song_duration=song_duration,
+        bpm=bpm,
+        sample_rate=sr,
+        song_title=audd_result.get("title"),
+    )
 
-    sheet_music = drum_charter(df_pred,
-                                    song_duration,
-                                    bpm,
-                                    sample_rate,
-                                    beats_in_measure=args.beat,
-                                    note_value=args.note)
-    
-    if args.format=='pdf':
-        out_path=sheet_music.sheet.write(fmt='musicxml.pdf', fp=os.path.join(args.outpath, song_info['title']))
-        print(f'Sheet music saved at {out_path}')
-    else:
-        out_path= sheet_music.sheet.write(fp=os.path.join(args.outpath, song_info['title']))
-        print(f'Sheet music saved at {out_path}')
-    if args.link!=None:
+    # Save chart
+    sheet_music.chart.write(
+        "musicxml.pdf", fp=out_path / f"{audd_result.get('title', 'chart')}.pdf"
+    )
+    print(f"Sheet music saved at {out_path}")
+    if args.link is not None:
         os.remove(f_path)
+
+
 if __name__ == "__main__":
     main()
