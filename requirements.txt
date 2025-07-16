@@ -36,4 +36,6 @@ black
 isort
 ruff
 mypy
-pyfakefs
+pyfakefs==5.9.1
+resampy==0.4.3
+six==1.16.0
