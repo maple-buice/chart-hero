@@ -223,8 +223,10 @@ def augment_pitch(
         )
         n_steps = 0
     else:
-        # Ensure integer steps are chosen
+        # Ensure integer steps are chosen, and that the step is not 0
         n_steps = random.randint(n_steps_range[0], n_steps_range[1] + 1)
+        while n_steps == 0:
+            n_steps = random.randint(n_steps_range[0], n_steps_range[1] + 1)
 
     if n_steps == 0:
         return audio_clip  # No shift needed

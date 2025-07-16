@@ -37,3 +37,21 @@ def test_run_experiment(mock_subprocess_run):
     # Check that the result is correct
     assert result["status"] == "success"
     assert result["params"] == params
+
+
+@patch("chart_hero.model_training.run_experiments.run_experiment")
+@patch("sys.argv", ["run_experiments.py", "--quick-test"])
+def test_main(mock_run_experiment):
+    """Test the main function of the experiment runner."""
+    from chart_hero.model_training.run_experiments import main
+
+    # Configure the mock to return a dictionary
+    mock_run_experiment.return_value = {
+        "tag": "test_tag",
+        "status": "success",
+        "duration_seconds": 1.23,
+        "params": {},
+    }
+
+    main()
+    mock_run_experiment.assert_called_once()

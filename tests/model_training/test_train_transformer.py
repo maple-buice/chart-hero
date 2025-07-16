@@ -90,3 +90,54 @@ def test_configure_optimizers(config):
     optimizers = module.configure_optimizers()
     assert "optimizer" in optimizers
     assert "lr_scheduler" in optimizers
+
+
+def test_setup_callbacks(config):
+    """Test the setup_callbacks function."""
+    from chart_hero.model_training.train_transformer import setup_callbacks
+
+    callbacks = setup_callbacks(config)
+    assert len(callbacks) == 3
+
+
+@patch("chart_hero.model_training.train_transformer.WandbLogger")
+def test_setup_logger(mock_wandb_logger, config):
+    """Test the setup_logger function."""
+    from chart_hero.model_training.train_transformer import setup_logger
+
+    # Test with W&B enabled
+    logger = setup_logger(config, use_wandb=True)
+    assert logger is not None
+    mock_wandb_logger.assert_called_once()
+
+    # Test with W&B disabled
+    mock_wandb_logger.reset_mock()
+    logger = setup_logger(config, use_wandb=False)
+    assert logger is None
+    mock_wandb_logger.assert_not_called()
+
+
+@patch("pytorch_lightning.Trainer")
+@patch("chart_hero.model_training.train_transformer.create_data_loaders")
+def test_train_model(mock_create_data_loaders, mock_trainer, config):
+    """Test the train_model function."""
+    from chart_hero.model_training.train_transformer import train_model
+
+    # Mock the data loaders
+    mock_create_data_loaders.return_value = (MagicMock(), MagicMock(), MagicMock())
+
+    # Run the training function
+    model, trainer = train_model(
+        config,
+        project_name="test_project",
+        experiment_tag="test_tag",
+        use_wandb_logging=False,
+        monitor_gpu_usage=False,
+        train_loader=MagicMock(),
+        val_loader=MagicMock(),
+        test_loader=MagicMock(),
+    )
+
+    # Check that the trainer was called correctly
+    mock_trainer.assert_called_once()
+    trainer.fit.assert_called_once()
