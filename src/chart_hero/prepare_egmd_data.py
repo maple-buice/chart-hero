@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -89,13 +90,13 @@ def main(args=None):
         ):
             if spectrogram is None or label_matrix is None:
                 continue
-            torch.save(
-                spectrogram,
+            np.save(
                 os.path.join(args.output_dir, f"{name}_{i}_mel.npy"),
+                spectrogram.numpy(),
             )
-            torch.save(
-                label_matrix,
+            np.save(
                 os.path.join(args.output_dir, f"{name}_{i}_label.npy"),
+                label_matrix.numpy(),
             )
 
     save_data(train_loader, "train")

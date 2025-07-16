@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -153,8 +154,8 @@ class NpyDrumDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         spec_file, label_file = self.data_files[idx]
-        spectrogram = torch.load(spec_file)
-        label_matrix = torch.load(label_file)
+        spectrogram = torch.from_numpy(np.load(spec_file))
+        label_matrix = torch.from_numpy(np.load(label_file))
 
         # Get a random segment
         num_frames = spectrogram.shape[1]
