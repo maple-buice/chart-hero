@@ -270,6 +270,14 @@ class DrumTranscriptionModule(pl.LightningModule):
                     )
                     self.log(f"val_f1_class_{i}", class_f1)
 
+        # Print a summary of the validation results
+        val_loss = self.trainer.callback_metrics.get("val_loss")
+        val_f1 = self.trainer.callback_metrics.get("val_f1")
+        if val_loss is not None and val_f1 is not None:
+            print(
+                f"\nEpoch {self.current_epoch}: Val Loss: {val_loss:.4f}, Val F1: {val_f1:.4f}"
+            )
+
         # Clear memory
         self.validation_step_outputs.clear()
         optimize_memory()
@@ -405,6 +413,7 @@ def train_model(
     val_loader,
     test_loader,
     resume_from_checkpoint=None,
+    no_progress_bar: bool = False,
 ):  # Add project_name
     """Trains the model using PyTorch Lightning."""
     # Determine accelerator
@@ -456,7 +465,7 @@ def train_model(
         gradient_clip_val=config.gradient_clip_val,
         accumulate_grad_batches=config.accumulate_grad_batches,
         deterministic=config.deterministic_training,
-        enable_progress_bar=True,
+        enable_progress_bar=not no_progress_bar,
         enable_model_summary=True,
         limit_train_batches=(
             5 if hasattr(config, "is_quick_test") and config.is_quick_test else None
@@ -510,6 +519,8 @@ def setup_arg_parser():
         default="auto",  # Default to auto-detection
         choices=[
             "local",
+            "local_performance",
+            "local_max_performance",
             "cloud",
             "auto",
             "overnight_default",
@@ -547,6 +558,21 @@ def setup_arg_parser():
         type=str,
         default="chart-hero-transformer",
         help="Name of the W&B project.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from the last checkpoint for the given experiment tag.",
+    )
+    parser.add_argument(
+        "--no-progress-bar",
+        action="store_true",
+        help="Disable the progress bar during training.",
+    )
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Run evaluation on the test set using the last checkpoint.",
     )
 
     # Allow overriding specific config parameters via command line
@@ -689,6 +715,12 @@ def configure_run(args):
     # Determine the experiment tag to use, defaulting if not provided
     experiment_tag_to_use = args.experiment_tag
     if experiment_tag_to_use is None:
+        # If resuming or evaluating, tag must be provided
+        if args.resume or args.evaluate:
+            logger.error(
+                "--experiment-tag is required when using --resume or --evaluate."
+            )
+            sys.exit(1)
         experiment_tag_to_use = datetime.now().strftime("%Y%m%d_%H%M%S")
         logger.info(
             f"No --experiment-tag provided by CLI. Using generated tag for this run: {experiment_tag_to_use}"
@@ -718,7 +750,7 @@ def configure_run(args):
     # Initialize W&B if enabled, before anything else that might log
     if effective_use_wandb:
         # Ensure W&B is initialized only once if setup_logger is also called later
-        # The WandbLogger instance will pick up the active run.
+        # The WandbLogger instance itself will pick up the active run.
         # Check if a run is already active
         if wandb.run is None:
             # Make sure config attributes used for run name and dir are available
@@ -737,6 +769,8 @@ def configure_run(args):
                     config.__dict__ if hasattr(config, "__dict__") else vars(config)
                 ),  # Handle both class and SimpleNamespace
                 dir=wandb_log_dir,
+                resume="allow",
+                id=experiment_tag_to_use,
             )
             logger.info(
                 f"W&B run initialized with project: {args.project_name}, name: {wandb.run.name}"
@@ -774,6 +808,34 @@ def main():
         config=config, data_dir=config.data_dir
     )
 
+    # Handle resuming from checkpoint or evaluating
+    checkpoint_path = None
+    if args.resume or args.evaluate:
+        model_dir = Path(config.model_dir)
+        last_ckpt = model_dir / "last.ckpt"
+        if last_ckpt.exists():
+            checkpoint_path = str(last_ckpt)
+            logger.info(f"Found checkpoint to resume from: {checkpoint_path}")
+        else:
+            logger.error(
+                f"Resume/evaluate flag was set, but no 'last.ckpt' found in {model_dir}. Exiting."
+            )
+            sys.exit(1)
+
+    if args.evaluate:
+        logger.info(f"Starting evaluation for experiment: {experiment_tag_to_use}")
+        model = DrumTranscriptionModule.load_from_checkpoint(
+            checkpoint_path, config=config
+        )
+        trainer = pl.Trainer(
+            accelerator="auto",
+            devices="auto",
+            enable_progress_bar=not args.no_progress_bar,
+        )
+        trainer.test(model, dataloaders=test_loader)
+        logger.info("Evaluation complete.")
+        return
+
     trained_model, trainer_instance = (
         None,
         None,
@@ -789,6 +851,8 @@ def main():
             train_loader=train_loader,
             val_loader=val_loader,
             test_loader=test_loader,
+            resume_from_checkpoint=checkpoint_path,
+            no_progress_bar=args.no_progress_bar,
         )
 
         if trained_model and trainer_instance:

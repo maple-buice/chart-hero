@@ -38,7 +38,6 @@ class PatchEmbedding(nn.Module):
         Returns:
             Patch embeddings [batch_size, num_patches, embed_dim]
         """
-        print(f"PatchEmbedding input shape: {x.shape}")
         # x shape: (batch_size, 1, time, freq)
         x = x.squeeze(1)  # (batch_size, time, freq)
         x = x.transpose(1, 2)  # (batch_size, freq, time)

@@ -222,6 +222,23 @@ class LocalConfig(BaseConfig):
 
 
 @dataclass
+class LocalPerformanceConfig(LocalConfig):
+    """A more aggressive configuration for powerful local machines."""
+
+    train_batch_size: int = 16
+    val_batch_size: int = 32
+    num_workers: int = 8
+    pin_memory: bool = True
+
+
+@dataclass
+class LocalMaxPerformanceConfig(LocalPerformanceConfig):
+    """An even more aggressive configuration for powerful local machines."""
+
+    train_batch_size: int = 24
+
+
+@dataclass
 class OvernightConfig(LocalConfig):  # Inherits from LocalConfig for MPS settings
     """Configuration optimized for overnight training on local MPS."""
 
@@ -287,6 +304,10 @@ def get_config(config_type: str = "local") -> BaseConfig:
     config_type_lower = config_type.lower()
     if config_type_lower == "local":
         return LocalConfig()
+    elif config_type_lower == "local_performance":
+        return LocalPerformanceConfig()
+    elif config_type_lower == "local_max_performance":
+        return LocalMaxPerformanceConfig()
     elif config_type_lower == "cloud":
         return CloudConfig()
     elif config_type_lower == "overnight_default":  # Added new config type

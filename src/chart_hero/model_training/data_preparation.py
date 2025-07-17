@@ -1,5 +1,6 @@
 import logging
 import shutil
+import sys
 from pathlib import Path
 
 import mido
@@ -151,6 +152,7 @@ def main(
     config,
     limit: int = None,
     clear_output: bool = False,
+    no_progress: bool = False,
 ):
     """
     Main function to process the E-GMD dataset.
@@ -191,11 +193,16 @@ def main(
         config.max_audio_length * config.sample_rate / config.hop_length
     )
 
+    # Disable progress bar if not in a TTY or if --no-progress is set
+    progress_disabled = no_progress or not sys.stdout.isatty()
+
     # Process and save data
     for split, indices in split_map.items():
         split_dir = output_path / split
         split_dir.mkdir(exist_ok=True)
-        for i in tqdm(indices, desc=f"Processing {split} set"):
+        for i in tqdm(
+            indices, desc=f"Processing {split} set", disable=progress_disabled
+        ):
             spectrogram, label_matrix = dataset[i]
             if spectrogram is None or label_matrix is None:
                 continue
@@ -237,8 +244,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Clear the output directory before processing.",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the progress bar.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
     config = get_config(args.config)
-    main(args.dataset_dir, args.output_dir, config, args.limit, args.clear_output)
+    main(
+        args.dataset_dir,
+        args.output_dir,
+        config,
+        args.limit,
+        args.clear_output,
+        args.no_progress,
+    )
