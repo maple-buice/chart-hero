@@ -39,15 +39,16 @@ class PatchEmbedding(nn.Module):
             Patch embeddings [batch_size, num_patches, embed_dim]
         """
         # x shape: (batch_size, 1, time, freq)
-        x = x.squeeze(1)  # (batch_size, time, freq)
-        x = x.transpose(1, 2)  # (batch_size, freq, time)
+        # The Conv1d layer expects (batch_size, in_channels, length)
+        # where in_channels is freq (n_mels) and length is time.
+        x = x.squeeze(1)  # -> (batch_size, time, freq)
+        x = x.transpose(1, 2)  # -> (batch_size, freq, time)
 
         # Extract patches and project
-        x = self.projection(x)  # (batch_size, embed_dim, num_patches_time)
+        x = self.projection(x)  # -> (batch_size, embed_dim, num_patches_time)
 
-        # Flatten spatial dimensions
-        x = x.transpose(1, 2)  # (batch_size, num_patches_time, embed_dim)
-
+        # Reshape for the transformer encoder
+        x = x.transpose(1, 2)  # -> (batch_size, num_patches_time, embed_dim)
         return x
 
 

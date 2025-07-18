@@ -143,6 +143,19 @@ class BaseConfig:
     label_smoothing: float = 0.1
     mixup_alpha: float = 0.2
 
+    # SpecAugment
+    enable_spec_augmentation: bool = True
+    spec_aug_num_time_masks: int = 2
+    spec_aug_max_time_mask_percentage: float = 0.05
+    spec_aug_num_freq_masks: int = 2
+    spec_aug_max_freq_mask_percentage: float = 0.15
+
+    # Timbre Augmentation
+    enable_timbre_augmentation: bool = True
+    pitch_jitter_prob: float = 0.5
+    time_stretch_prob: float = 0.5
+    dynamic_eq_prob: float = 0.5
+
     # Checkpointing
     save_top_k: int = 3
     monitor: str = "val_f1"

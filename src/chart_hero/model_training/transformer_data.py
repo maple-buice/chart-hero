@@ -13,6 +13,10 @@ import torch.nn.functional as F
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
 
+from .augment_audio import (
+    augment_spectrogram_frequency_masking,
+    augment_spectrogram_time_masking,
+)
 from .transformer_config import BaseConfig
 
 logger = logging.getLogger(__name__)
@@ -103,7 +107,25 @@ class NpyDrumDataset(Dataset):
         spectrogram = torch.from_numpy(np.load(spec_file)).float()
         label_matrix = torch.from_numpy(np.load(label_file)).float()
 
-        return spectrogram, label_matrix
+        # Apply SpecAugment only during training
+        if self.mode == "train" and self.config.enable_spec_augmentation:
+            spec_for_aug = spectrogram.clone()
+            spec_for_aug = augment_spectrogram_time_masking(
+                spec_for_aug,
+                num_masks=self.config.spec_aug_num_time_masks,
+                max_mask_percentage=self.config.spec_aug_max_time_mask_percentage,
+            )
+            spectrogram = augment_spectrogram_frequency_masking(
+                spec_for_aug,
+                num_masks=self.config.spec_aug_num_freq_masks,
+                max_mask_percentage=self.config.spec_aug_max_freq_mask_percentage,
+            )
+
+        # Ensure tensor is (1, freq, time) and then transpose to (1, time, freq) for the model
+        if spectrogram.dim() == 2:
+            spectrogram = spectrogram.unsqueeze(0)
+
+        return spectrogram.transpose(1, 2), label_matrix
 
 
 def create_data_loaders(

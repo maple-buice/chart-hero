@@ -3,14 +3,19 @@ import shutil
 import sys
 from pathlib import Path
 
+import librosa
 import mido
 import numpy as np
 import pandas as pd
 import torch
-import torchaudio
 from torch.utils.data import Dataset, random_split
 from tqdm import tqdm
 
+from chart_hero.model_training.augment_audio import (
+    augment_dynamic_eq,
+    augment_pitch_jitter,
+    augment_time_stretch,
+)
 from chart_hero.model_training.transformer_config import (
     DRUM_HIT_MAP,
     DRUM_HIT_TO_INDEX,
@@ -20,6 +25,34 @@ from chart_hero.model_training.transformer_config import (
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
 
 logger = logging.getLogger(__name__)
+
+
+def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
+    """
+    Creates a mel spectrogram where transients are enhanced.
+    """
+    # 1. Mel Spectrogram
+    mel_spec = librosa.feature.melspectrogram(
+        y=y, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels
+    )
+    log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+
+    # 2. Onset Strength Envelope
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+
+    # 3. Align and Gate
+    min_len = min(log_mel_spec.shape[1], len(onset_env))
+    log_mel_spec = log_mel_spec[:, :min_len]
+    onset_env = onset_env[:min_len]
+
+    # Normalize onset envelope to [0, 1]
+    if np.max(onset_env) > 0:
+        onset_env = onset_env / np.max(onset_env)
+
+    # Gate the spectrogram
+    transient_enhanced_spec = log_mel_spec * onset_env
+
+    return transient_enhanced_spec
 
 
 class EGMDRawDataset(Dataset):
@@ -42,22 +75,29 @@ class EGMDRawDataset(Dataset):
         audio_filename = self.dataset_dir / row["audio_filename"]
         midi_filename = self.dataset_dir / row["midi_filename"]
 
-        # Load and process audio to full spectrogram
         try:
-            audio, sr = torchaudio.load(audio_filename)
-            if sr != self.config.sample_rate:
-                audio = torchaudio.functional.resample(
-                    audio, sr, self.config.sample_rate
-                )
-            spectrogram = self.processor.audio_to_spectrogram(audio)
+            audio_np, sr = librosa.load(audio_filename, sr=self.config.sample_rate)
+
+            spectrogram = create_transient_enhanced_spectrogram(
+                y=audio_np,
+                sr=sr,
+                n_fft=self.config.n_fft,
+                hop_length=self.config.hop_length,
+                n_mels=self.config.n_mels,
+            )
+            # Convert to torch tensor and add channel dimension
+            spectrogram = torch.from_numpy(spectrogram).float().unsqueeze(0)
+
         except Exception as e:
-            logger.warning(f"Could not load audio file {audio_filename}: {e}")
+            logger.warning(
+                f"Could not load or process audio file {audio_filename}: {e}"
+            )
             return None, None
 
         # Create frame-by-frame label matrix from MIDI
         try:
             label_matrix = self._create_label_matrix(
-                midi_filename, spectrogram.shape[1]
+                midi_filename, spectrogram.shape[2]
             )
         except Exception as e:
             logger.warning(f"Could not process MIDI file {midi_filename}: {e}")
@@ -115,34 +155,21 @@ def _save_segments(
     base_filename: str,
 ):
     """Segments spectrogram and labels and saves them to disk."""
-    num_frames = spectrogram.shape[1]
+    # Convert tensor to numpy array for saving
+    spec_np = spectrogram.squeeze(0).numpy()
+    num_frames = spec_np.shape[1]
+
     for i in range(0, num_frames, segment_length):
         end_frame = i + segment_length
         if end_frame > num_frames:
             continue  # Skip incomplete segments
 
-        spec_segment = spectrogram[:, i:end_frame, :]
+        spec_segment = spec_np[:, i:end_frame]
         label_segment = label_matrix[i:end_frame, :]
 
-        # Ensure correct dimensions before saving
-        if spec_segment.dim() == 2:
-            spec_segment = spec_segment.unsqueeze(0)  # Add channel dim: [C, T, F]
-        if spec_segment.dim() != 3:
-            logger.warning(
-                f"Skipping segment {base_filename}_{i}: incorrect spec dimensions: {spec_segment.dim()}"
-            )
-            continue
-
-        if label_segment.dim() != 2:
-            logger.warning(
-                f"Skipping segment {base_filename}_{i}: incorrect label dimensions: {label_segment.dim()}"
-            )
-            continue
-
-        # Save to .npy files
         spec_filename = output_dir / f"{base_filename}_{i}_mel.npy"
         label_filename = output_dir / f"{base_filename}_{i}_label.npy"
-        np.save(spec_filename, spec_segment.numpy())
+        np.save(spec_filename, spec_segment)
         np.save(label_filename, label_segment.numpy())
 
 
@@ -200,21 +227,84 @@ def main(
     for split, indices in split_map.items():
         split_dir = output_path / split
         split_dir.mkdir(exist_ok=True)
+
         for i in tqdm(
             indices, desc=f"Processing {split} set", disable=progress_disabled
         ):
-            spectrogram, label_matrix = dataset[i]
-            if spectrogram is None or label_matrix is None:
+            # Get the original spectrogram and label
+            original_spectrogram, label_matrix = dataset[i]
+            if original_spectrogram is None or label_matrix is None:
                 continue
 
-            base_filename = f"{split}_{i}"
+            # Save the original version
+            base_filename = f"{split}_{i}_original"
             _save_segments(
-                spectrogram,
+                original_spectrogram,
                 label_matrix,
                 segment_length_frames,
                 split_dir,
                 base_filename,
             )
+
+            # --- Create and save augmented versions (only for training set) ---
+            if split == "train" and config.enable_timbre_augmentation:
+                audio_path = (
+                    dataset.dataset_dir / dataset.data_map.iloc[i]["audio_filename"]
+                )
+                if not audio_path.exists():
+                    logger.warning(
+                        f"Audio file not found, skipping augmentations: {audio_path}"
+                    )
+                    continue
+
+                audio_np, sr = librosa.load(audio_path, sr=config.sample_rate)
+
+                # 1. Pitch Jitter
+                audio_pitch_jitter = augment_pitch_jitter(audio_np, sr)
+                spec_pitch_jitter = create_transient_enhanced_spectrogram(
+                    audio_pitch_jitter,
+                    sr,
+                    config.n_fft,
+                    config.hop_length,
+                    config.n_mels,
+                )
+                _save_segments(
+                    torch.from_numpy(spec_pitch_jitter).float().unsqueeze(0),
+                    label_matrix,
+                    segment_length_frames,
+                    split_dir,
+                    f"{split}_{i}_pitch",
+                )
+
+                # 2. Time Stretch
+                audio_time_stretch = augment_time_stretch(audio_np)
+                spec_time_stretch = create_transient_enhanced_spectrogram(
+                    audio_time_stretch,
+                    sr,
+                    config.n_fft,
+                    config.hop_length,
+                    config.n_mels,
+                )
+                _save_segments(
+                    torch.from_numpy(spec_time_stretch).float().unsqueeze(0),
+                    label_matrix,
+                    segment_length_frames,
+                    split_dir,
+                    f"{split}_{i}_stretch",
+                )
+
+                # 3. Dynamic EQ
+                audio_eq = augment_dynamic_eq(audio_np, sr)
+                spec_eq = create_transient_enhanced_spectrogram(
+                    audio_eq, sr, config.n_fft, config.hop_length, config.n_mels
+                )
+                _save_segments(
+                    torch.from_numpy(spec_eq).float().unsqueeze(0),
+                    label_matrix,
+                    segment_length_frames,
+                    split_dir,
+                    f"{split}_{i}_eq",
+                )
 
 
 if __name__ == "__main__":

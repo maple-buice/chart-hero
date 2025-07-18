@@ -7,6 +7,7 @@ from math import sqrt
 import librosa.display
 import matplotlib.pyplot as plt
 import numpy as np  # Use np consistently
+import pedalboard
 from librosa.effects import pitch_shift
 from numpy import mean, random
 from pedalboard import LowpassFilter, Pedalboard, Reverb
@@ -244,6 +245,90 @@ def augment_pitch(
         return audio_clip  # Return original clip on error
 
 
+def augment_pitch_jitter(audio_clip, sample_rate=44100, pitch_range_cents=(-50, 50)):
+    """
+    Apply subtle, random pitch jitter to an audio clip.
+    This helps prevent the model from overfitting to the specific tuning of kit pieces.
+    """
+    cents_shift = _get_random_value(pitch_range_cents)
+    n_steps = cents_shift / 100.0  # Convert cents to semitones
+
+    if abs(n_steps) < 0.01:  # No significant shift
+        return audio_clip
+
+    try:
+        return pitch_shift(y=audio_clip, sr=sample_rate, n_steps=n_steps)
+    except Exception as e:
+        print(f"Error applying pitch jitter: {e}")
+        return audio_clip
+
+
+def augment_time_stretch(audio_clip, rate_range=(0.95, 1.05)):
+    """
+    Apply subtle, random time stretching to an audio clip.
+    This alters the attack/decay characteristics.
+    """
+    rate = _get_random_value(rate_range)
+
+    if abs(rate - 1.0) < 0.01:  # No significant stretch
+        return audio_clip
+
+    try:
+        return librosa.effects.time_stretch(y=audio_clip, rate=rate)
+    except Exception as e:
+        print(f"Error applying time stretch: {e}")
+        return audio_clip
+
+
+def augment_dynamic_eq(audio_clip, sample_rate=44100):
+    """
+    Apply a randomized EQ to alter the timbre of the audio.
+    """
+    # Apply pre-emphasis outside of the Pedalboard chain
+    audio_clip = librosa.effects.preemphasis(audio_clip)
+
+    board = Pedalboard(
+        [
+            pedalboard.PeakFilter(
+                cutoff_frequency_hz=_get_random_value((200, 2000)),
+                gain_db=_get_random_value((-6, 6)),
+                q=_get_random_value((0.5, 2.0)),
+            ),
+            pedalboard.HighShelfFilter(
+                cutoff_frequency_hz=_get_random_value((1500, 8000)),
+                gain_db=_get_random_value((-10, 10)),
+                q=_get_random_value((0.5, 1.5)),
+            ),
+            pedalboard.LowShelfFilter(
+                cutoff_frequency_hz=_get_random_value((80, 400)),
+                gain_db=_get_random_value((-10, 10)),
+                q=_get_random_value((0.5, 1.5)),
+            ),
+        ]
+    )
+    try:
+        return board(audio_clip, sample_rate)
+    except Exception as e:
+        print(f"Error applying dynamic EQ: {e}")
+        return audio_clip
+
+
+def augment_distortion(audio_clip, sample_rate=44100, drive_db_range=(0, 12)):
+    """
+    Apply subtle distortion to the audio.
+    """
+    drive_db = _get_random_value(drive_db_range)
+    if drive_db < 0.1:
+        return audio_clip
+
+    board = Pedalboard([pedalboard.Distortion(drive_db=drive_db)])
+    try:
+        return board(audio_clip, sample_rate)
+    except Exception as e:
+        print(f"Error applying distortion: {e}")
+        return audio_clip
+
+
 # --- Spectrogram Augmentation ---
 
 
@@ -265,7 +350,7 @@ def augment_spectrogram_time_masking(
         Augmented spectrogram (numpy array).
     """
     if not overwrite:
-        spec = spec.copy()
+        spec = spec.clone()
 
     if mask_value is None:
         mask_value = spec.min()
@@ -308,7 +393,7 @@ def augment_spectrogram_frequency_masking(
         Augmented spectrogram (numpy array).
     """
     if not overwrite:
-        spec = spec.copy()
+        spec = spec.clone()
 
     if mask_value is None:
         mask_value = spec.min()
@@ -481,7 +566,7 @@ def augment_spectrogram_spans(
         An augmented spectrogram (or other numpy array) with dropout spans applied.
     """
     if not overwrite:
-        spec = spec.copy()
+        spec = spec.clone()
 
     if sig_val is None:  # Corrected check for None
         sig_val = spec.min()  # use for setting to background

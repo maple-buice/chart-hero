@@ -1,229 +1,82 @@
-import multiprocessing
 import os
 
 import librosa
 import librosa.feature.rhythm
 import numpy as np
-import pandas as pd
-from pedalboard import Compressor, Pedalboard
+import torch
 from yt_dlp import YoutubeDL
 
 
-def drum_extraction(path, dir=None, mode="performance", drum_start=None, drum_end=None):
+def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
     """
-    This is a function to transform the input audio file into a ready-dataframe for prediction task
-    :param path (str):                  the path to the audio file
-    :param dir(str):                    the path to the demucs model directory
-    :param kernel (str):                'spleeter' or 'demucs'. spleeter run faster but lower quality, demucs run slower but higher quality. Always recommend to use demucs as it produce a much better quality.
-                                        Please note that the demucs kernel could take 4-6 mins to process a song depends on the capability of your machine and the length of the audio
-    :param mode (str):                  only applicable when demucs kernel is used. Accept either 'speed' or 'performance', default 'performance.
-                                        demucs is a bad of 4 models, speed mode will only use 1 of the 4 models, performance mode will use all 4 modesls
-                                        As a result, speed mode will run 4x faster, but quality could be worse. Performance mode will ensure the best quality but much slower.
-    :param drum_start (int):            the start of the music in the file (in seconds). Shorter audio will reduce the processing time significantly. If not set, assume to start at the begining of the track
-    :param drum_end (int):              the end of the music in the file (in seconds). Shorter audio will reduce the processing time significantly. If not set, assume to end at the end of the track
-
-    :return drum_track (numpy array):   the extracted drum track
-    :return sample_rate (int):          the sampling rate of the extracted drum track
+    Creates a mel spectrogram where transients are enhanced.
+    This function MUST be identical to the one in data_preparation.py
     """
+    # 1. Mel Spectrogram
+    mel_spec = librosa.feature.melspectrogram(
+        y=y, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels
+    )
+    log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
 
-    if drum_start is not None or drum_end is not None:
-        if isinstance(drum_start, type(None)):
-            raise ValueError(
-                "Please specify the music start time (in seconds) of your file / Youtube link"
+    # 2. Onset Strength Envelope
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+
+    # 3. Align and Gate
+    min_len = min(log_mel_spec.shape[1], len(onset_env))
+    log_mel_spec = log_mel_spec[:, :min_len]
+    onset_env = onset_env[:min_len]
+
+    # Normalize onset envelope to [0, 1]
+    if np.max(onset_env) > 0:
+        onset_env = onset_env / np.max(onset_env)
+
+    # Gate the spectrogram
+    transient_enhanced_spec = log_mel_spec * onset_env
+
+    return transient_enhanced_spec
+
+
+def audio_to_tensors(audio_path: str, config) -> list:
+    """
+    Transforms an audio file into a list of tensor segments for the model.
+    """
+    try:
+        y, sr = librosa.load(audio_path, sr=config.sample_rate)
+    except Exception as e:
+        print(f"Error loading audio file: {e}")
+        return []
+
+    # Create the full transient-enhanced spectrogram
+    full_spec = create_transient_enhanced_spectrogram(
+        y=y,
+        sr=sr,
+        n_fft=config.n_fft,
+        hop_length=config.hop_length,
+        n_mels=config.n_mels,
+    )
+
+    # Segment the spectrogram into chunks the model can handle
+    segment_length_frames = int(
+        config.max_audio_length * config.sample_rate / config.hop_length
+    )
+
+    tensors = []
+    num_frames = full_spec.shape[1]
+    for i in range(0, num_frames, segment_length_frames):
+        end_frame = i + segment_length_frames
+        if end_frame > num_frames:
+            spec_segment = np.pad(
+                full_spec[:, i:],
+                ((0, 0), (0, end_frame - num_frames)),
+                mode="constant",
+                constant_values=np.min(full_spec),
             )
-        if isinstance(drum_end, type(None)):
-            raise ValueError(
-                "Please specify the music end time (in seconds) of your file / Youtube link"
-            )
+        else:
+            spec_segment = full_spec[:, i:end_frame]
 
-    from demucs import apply, audio, pretrained
+        tensors.append(torch.from_numpy(spec_segment).float().unsqueeze(0))
 
-    if mode == "speed":
-        model = pretrained.get_model(name="83fc094f")
-        model = apply.BagOfModels([model])
-        print("The precessing time could take 1-2 mins.")
-    elif mode == "performance":
-        model_1 = pretrained.get_model(name="14fc6a69")
-        model_2 = pretrained.get_model(name="464b36d7")
-        model_3 = pretrained.get_model(name="7fd6ef75")
-        model_4 = pretrained.get_model(name="83fc094f")
-        model = apply.BagOfModels([model_1, model_2, model_3, model_4])
-        print(
-            "The demucs kernel is a bag of 4 models. The track will be processed 4 times and output the best one. You will see 4 progress bars per track. The total processing time could take 4-6 mins depends on total Audio length"
-        )
-    wav = audio.AudioFile(path).read(
-        streams=0,
-        samplerate=model.samplerate,
-        channels=model.audio_channels,
-        seek_time=drum_start if drum_start is not None else None,
-        duration=drum_end - drum_start if drum_end is not None else None,
-    )
-
-    # The task will use all your available CPU cores by default. Although it is possible to accelerate by using GPU, this is currently not implemented yet.
-    ref = wav.mean(0)
-    wav = (wav - ref.mean()) / ref.std()
-    sources = apply.apply_model(
-        model,
-        wav[None],
-        device="cpu",
-        shifts=1,
-        split=True,
-        overlap=0.25,
-        progress=True,
-        num_workers=multiprocessing.cpu_count(),
-    )[0]
-
-    sources = sources * ref.std() + ref.mean()
-    drum = sources[0].numpy()
-    sample_rate = model.samplerate
-    drum_track = librosa.to_mono(drum)
-
-    return drum_track, sample_rate
-
-
-def _get_window_size(resolution, bpm, sample_rate, onset_samples):
-    if resolution is None:
-        return int(pd.Series(onset_samples).diff().quantile(q=0.1))
-
-    note_durations = {
-        4: 60 / bpm,
-        8: 60 / bpm / 2,
-        16: 60 / bpm / 4,
-        32: 60 / bpm / 8,
-    }
-    if resolution in note_durations:
-        return librosa.time_to_samples(note_durations[resolution], sr=sample_rate)
-    elif resolution < 1:
-        return librosa.time_to_samples(resolution, sr=sample_rate)
-    else:
-        raise ValueError("Invalid resolution value")
-
-
-def drum_to_frame(
-    drum_track,
-    sample_rate,
-    estimated_bpm=None,
-    resolution=16,
-    fixed_clip_length=False,
-    hop_length=1024,
-    backtrack=False,
-):
-    """
-    This is a function to detect and extract onset from a drum track and format the onsets into a df for prediction task
-    :param drum_track (numpy array):    The extracted drum track
-    :param sample_rate (int):           The sampling rate of the drum track
-    :param estimated_bpm (int):         Beat per minute. it is best to provide a estimated bpm to improve the bpm detection accuracy
-    :param resolution (int):            Either 8/16/32. default 16. control the window size of the onset sound clip if "fixed_clip_length" is not set. 8 means the window size equal to the 8th note duration (calculated by the bpm value), etc.
-    :param fixed_clip_length (bool):    Default True. set window_size of the clip to 0.2 seconds as default, override resolution setting if set to True.
-    :param hop_length (int) :           Default 1024. 1024 should work in most cases, this value will be auto adjusted to 512 if the song is really fast (>110 bpm)
-    :param backtrack (bool) :           Default False. if True, the detected onset position will roll back to the previous local minima to capture the full sound. However, after a few testing, this does not work well for drum sound. Only turn this on in special cases!
-
-    :return df (pd dataframe):          the dataframe that contains the information of all onset found in the track
-    :return bpm (float):                the estimated bpm value
-    """
-
-    if not isinstance(drum_track, np.ndarray):
-        drum_track, sample_rate = librosa.load(drum_track, sr=None)
-
-    o_env = librosa.onset.onset_strength(
-        y=drum_track, sr=sample_rate, hop_length=hop_length
-    )
-    onset_frames = librosa.onset.onset_detect(
-        y=drum_track, onset_envelope=o_env, sr=sample_rate, backtrack=backtrack
-    )
-    peak_frames = librosa.onset.onset_detect(
-        y=drum_track, onset_envelope=o_env, sr=sample_rate
-    )
-    onset_samples = librosa.frames_to_samples(onset_frames * (hop_length / 512))
-    peak_samples = librosa.frames_to_samples(peak_frames * (hop_length / 512))
-
-    if len(peak_samples) == 0:
-        return pd.DataFrame(), 120, None
-
-    if estimated_bpm is None:
-        _8_duration = pd.Series(peak_samples).diff().mode()[0]
-        estimated_bpm = 60 / (librosa.samples_to_time(_8_duration, sr=sample_rate) * 2)
-    bpm = librosa.feature.tempo(y=drum_track, sr=sample_rate, start_bpm=estimated_bpm)[
-        0
-    ]
-
-    print(f"Estimated BPM value: {bpm}")
-    if bpm > 110:
-        print(
-            "Detected BPM value is larger than 110, re-calibrate the hop-length to 512 for more accurate result"
-        )
-        hop_length = 512
-        o_env = librosa.onset.onset_strength(
-            y=drum_track, sr=sample_rate, hop_length=hop_length
-        )
-        onset_frames = librosa.onset.onset_detect(
-            y=drum_track, onset_envelope=o_env, sr=sample_rate, backtrack=backtrack
-        )
-        peak_frames = librosa.onset.onset_detect(
-            y=drum_track, onset_envelope=o_env, sr=sample_rate
-        )
-        onset_samples = librosa.frames_to_samples(onset_frames * (hop_length / 512))
-        peak_samples = librosa.frames_to_samples(peak_frames * (hop_length / 512))
-
-    if fixed_clip_length:
-        window_size = librosa.time_to_samples(0.18, sr=sample_rate)
-    else:
-        window_size = _get_window_size(resolution, bpm, sample_rate, onset_samples)
-
-    padding = 0
-    if not backtrack:
-        thirty_second_note_duration = 60 / bpm / 8
-        padding = librosa.time_to_samples(
-            thirty_second_note_duration / 2 / 2, sr=sample_rate
-        )
-
-    df_dict = {
-        "audio_clip": [],
-        "sample_start": [],
-        "sample_end": [],
-        "sampling_rate": [],
-    }
-
-    for onset in onset_samples:
-        if onset - padding < 0:
-            onset = 0
-        df_dict["audio_clip"].append(drum_track[onset - padding : onset + window_size])
-        df_dict["sample_start"].append(onset - padding)
-        df_dict["sample_end"].append(onset + window_size)
-        df_dict["sampling_rate"].append(sample_rate)
-
-    df = pd.DataFrame.from_dict(df_dict)
-    df["peak_sample"] = pd.Series(peak_samples)
-
-    def resampling(x, target_length):
-        org_sr = x["sampling_rate"]
-        tar_sr_ratio = target_length / len(x["audio_clip"])
-        return pd.Series(
-            [
-                librosa.resample(
-                    x["audio_clip"],
-                    orig_sr=org_sr,
-                    target_sr=int(org_sr * tar_sr_ratio),
-                ),
-                int(org_sr * tar_sr_ratio),
-            ]
-        )
-
-    df[["audio_clip", "sampling_rate"]] = df.apply(
-        lambda x: (
-            resampling(x, 8820)
-            if len(x["audio_clip"]) != 8820
-            else pd.Series([x["audio_clip"], x["sampling_rate"]])
-        ),
-        axis=1,
-    )
-
-    pb = Pedalboard(
-        [Compressor(threshold_db=-27, ratio=4, attack_ms=1, release_ms=200)]
-    )
-    df["audio_clip"] = df.apply(lambda x: pb(x.audio_clip, x.sampling_rate), axis=1)
-
-    return df, sample_rate, bpm
+    return tensors
 
 
 class yt_audio:
@@ -244,9 +97,8 @@ def get_yt_audio(link) -> str:
     ydl_opts = {
         "format": "m4a/bestaudio/best",
         "outtmpl": download_path + "song.%(ext)s",
-        # ℹ️ See help(yt_dlp.postprocessor) for a list of available Postprocessors and their arguments
         "postprocessors": [
-            {  # Extract audio using ffmpeg
+            {
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "m4a",
             }
@@ -254,6 +106,9 @@ def get_yt_audio(link) -> str:
     }
 
     with YoutubeDL(ydl_opts) as ydl:
-        ydl.download([link])
+        info = ydl.extract_info(link, download=True)
+        return os.path.join(download_path, "song.m4a"), info.get(
+            "title", "Unknown Title"
+        )
 
-    return os.path.join(download_path, "song.m4a")
+    return None, None
