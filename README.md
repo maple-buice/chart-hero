@@ -11,7 +11,6 @@ This project has been significantly updated to use a modern transformer-based ar
 - **Multi-Environment Support**: Configured for both local (M1-Max) and cloud (Google Colab) training.
 
 For detailed information on model training, see `model_training/README.md`.
-For the refactoring plan and current progress, see `TRANSFORMER_REFACTORING_PLAN.md`.
 
 ## Quick Start
 
@@ -30,3 +29,5 @@ You can get a free API token by signing up at [audd.io](https://audd.io).
 ```bash
 export AUDD_API_TOKEN="your_api_token_here"
 ```
+
+**Testing the pre-commit hooks.**
