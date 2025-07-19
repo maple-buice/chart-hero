@@ -2,6 +2,7 @@
 This module provides utilities for processing MIDI files, specifically for
 creating label matrices for drum transcription.
 """
+
 from pathlib import Path
 
 import mido

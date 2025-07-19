@@ -11,7 +11,7 @@ from chart_hero.inference.song_identifier import (
 
 
 @patch("requests.post")
-def test_identify_song_success(mock_post):
+def test_identify_song_success(mock_post, tmp_path):
     """
     Test that identify_song correctly processes a successful API response.
     """
@@ -29,26 +29,22 @@ def test_identify_song_success(mock_post):
     }
 
     # Create a dummy file for the test
-    dummy_file_path = "test.mp3"
-    with open(dummy_file_path, "w") as f:
-        f.write("test")
+    dummy_file_path = tmp_path / "test.mp3"
+    dummy_file_path.write_text("test")
 
     # Set the dummy API token
     os.environ["AUDD_API_TOKEN"] = "test_token"
 
     # Call the function
-    result = identify_song(dummy_file_path)
+    result = identify_song(str(dummy_file_path))
 
     # Assert that the function returns the correct result
     assert result["artist"] == "Test Artist"
     assert result["title"] == "Test Song"
 
-    # Clean up the dummy file
-    os.remove(dummy_file_path)
-
 
 @patch("requests.post")
-def test_identify_song_no_result(mock_post):
+def test_identify_song_no_result(mock_post, tmp_path):
     """
     Test that identify_song raises a ValueError when the API response has no result.
     """
@@ -58,23 +54,19 @@ def test_identify_song_no_result(mock_post):
     mock_response.json.return_value = {"status": "success", "result": None}
 
     # Create a dummy file for the test
-    dummy_file_path = "test.mp3"
-    with open(dummy_file_path, "w") as f:
-        f.write("test")
+    dummy_file_path = tmp_path / "test.mp3"
+    dummy_file_path.write_text("test")
 
     # Set the dummy API token
     os.environ["AUDD_API_TOKEN"] = "test_token"
 
     # Assert that a ValueError is raised
     with pytest.raises(ValueError, match="No result found in AudD API response"):
-        identify_song(dummy_file_path)
-
-    # Clean up the dummy file
-    os.remove(dummy_file_path)
+        identify_song(str(dummy_file_path))
 
 
 @patch("requests.post")
-def test_identify_song_api_error(mock_post):
+def test_identify_song_api_error(mock_post, tmp_path):
     """
     Test that identify_song raises an HTTPError for a bad API response.
     """
@@ -84,19 +76,15 @@ def test_identify_song_api_error(mock_post):
     mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError
 
     # Create a dummy file for the test
-    dummy_file_path = "test.mp3"
-    with open(dummy_file_path, "w") as f:
-        f.write("test")
+    dummy_file_path = tmp_path / "test.mp3"
+    dummy_file_path.write_text("test")
 
     # Set the dummy API token
     os.environ["AUDD_API_TOKEN"] = "test_token"
 
     # Assert that an HTTPError is raised
     with pytest.raises(requests.exceptions.HTTPError):
-        identify_song(dummy_file_path)
-
-    # Clean up the dummy file
-    os.remove(dummy_file_path)
+        identify_song(str(dummy_file_path))
 
 
 def test_identify_song_no_api_token():

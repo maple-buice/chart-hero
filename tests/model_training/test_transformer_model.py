@@ -5,6 +5,7 @@ Test script to verify transformer setup and basic functionality.
 import logging
 import os
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -58,30 +59,33 @@ def test_model_creation():
     assert model is not None, "Model creation failed"
 
 
-def test_data_loading():
-    """
-    Test that the data loaders can be created.
-    """
+@pytest.fixture
+def dummy_processed_data(tmp_path: Path):
+    """Creates a dummy processed dataset in a temporary directory."""
     config = get_config("local")
-    # Create dummy data for testing
-    dummy_data_dir = "tests/assets/dummy_data"
-    os.makedirs(dummy_data_dir, exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "train"), exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "val"), exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "test"), exist_ok=True)
+    dummy_data_dir = tmp_path / "processed"
+    dummy_data_dir.mkdir()
 
-    # Create dummy data files
     for split in ["train", "val", "test"]:
+        split_dir = dummy_data_dir / split
+        split_dir.mkdir()
         for i in range(2):
             np.save(
-                os.path.join(dummy_data_dir, split, f"{split}_{i}_mel.npy"),
+                split_dir / f"{split}_{i}_mel.npy",
                 np.random.rand(config.n_mels, config.max_seq_len),
             )
             np.save(
-                os.path.join(dummy_data_dir, split, f"{split}_{i}_label.npy"),
+                split_dir / f"{split}_{i}_label.npy",
                 np.random.randint(0, 2, (config.max_seq_len, config.num_drum_classes)),
             )
+    return str(dummy_data_dir), config
 
+
+def test_data_loading(dummy_processed_data):
+    """
+    Test that the data loaders can be created from a processed data directory.
+    """
+    dummy_data_dir, config = dummy_processed_data
     train_loader, val_loader, test_loader = create_data_loaders(
         config, data_dir=dummy_data_dir
     )

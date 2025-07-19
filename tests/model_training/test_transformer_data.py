@@ -1,77 +1,52 @@
-"""
-Test script to verify the data loading fixes work correctly.
-"""
-
-# Set up logging
-import argparse
 import logging
-import os
+from pathlib import Path
 
 import mido
+import numpy as np
 import pandas as pd
+import pytest
 import torch
 import torchaudio
 
+from chart_hero.model_training.data_preparation import main as prepare_egmd_data
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import create_data_loaders
-from chart_hero.prepare_egmd_data import main as prepare_egmd_data
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def test_data_loading():
-    """Test that data loading works without dimension errors."""
-
-    # Get local config
+@pytest.fixture
+def dummy_processed_dataset(tmp_path: Path):
+    """Creates a dummy processed dataset in a temporary directory."""
     config = get_config("local")
+    processed_dir = tmp_path / "processed"
 
-    # Create dummy data for testing
-    dummy_data_dir = "tests/assets/dummy_data"
-    os.makedirs(dummy_data_dir, exist_ok=True)
-    dummy_audio_dir = os.path.join(dummy_data_dir, "audio")
-    os.makedirs(dummy_audio_dir, exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "processed"), exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "train"), exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "val"), exist_ok=True)
-    os.makedirs(os.path.join(dummy_data_dir, "test"), exist_ok=True)
+    for split in ["train", "val", "test"]:
+        split_dir = processed_dir / split
+        split_dir.mkdir(parents=True)
+        for i in range(10):
+            # Ensure all spectrograms and labels have the exact same dimensions
+            spec_shape = (config.n_mels, config.max_seq_len)
+            label_shape = (config.max_seq_len, config.num_drum_classes)
 
-    # Create dummy metadata file
-    dummy_metadata = {
-        "audio_filename": [f"audio/dummy_{i}.wav" for i in range(10)],
-        "midi_filename": [f"dummy_{i}.mid" for i in range(10)],
-        "split": ["train"] * 8 + ["val"] * 1 + ["test"] * 1,
-    }
-    pd.DataFrame(dummy_metadata).to_csv(
-        os.path.join(dummy_data_dir, "metadata.csv"), index=False
-    )
+            dummy_spectrogram = np.random.rand(*spec_shape).astype(np.float32)
+            dummy_labels = np.random.randint(0, 2, size=label_shape).astype(np.float32)
 
-    # Create dummy audio and midi files
-    for i in range(10):
-        dummy_audio_path = os.path.join(dummy_audio_dir, f"dummy_{i}.wav")
-        dummy_audio = torch.randn(1, int(config.sample_rate * 5))
-        torchaudio.save(dummy_audio_path, dummy_audio, config.sample_rate)
+            np.save(split_dir / f"{split}_{i}_mel.npy", dummy_spectrogram)
+            np.save(split_dir / f"{split}_{i}_label.npy", dummy_labels)
 
-        dummy_midi_path = os.path.join(dummy_data_dir, f"dummy_{i}.mid")
-        mid = mido.MidiFile()
-        track = mido.MidiTrack()
-        mid.tracks.append(track)
-        track.append(mido.Message("note_on", note=60, velocity=64, time=32))
-        track.append(mido.Message("note_off", note=60, velocity=127, time=32))
-        mid.save(dummy_midi_path)
+    return processed_dir, config
 
-    # Run data preparation
 
-    args = argparse.Namespace()
-    args.input_dir = dummy_data_dir
-    args.output_dir = os.path.join(dummy_data_dir, "processed")
-    args.splits = [0.8, 0.1, 0.1]
-    prepare_egmd_data(args)
+def test_data_loading(dummy_processed_dataset):
+    """Test that data loading works without dimension errors."""
+    processed_dir, config = dummy_processed_dataset
 
     # Test data loaders creation
     train_loader, val_loader, test_loader = create_data_loaders(
         config=config,
-        data_dir=os.path.join(dummy_data_dir, "processed"),
+        data_dir=str(processed_dir),
     )
 
     assert train_loader is not None
@@ -82,5 +57,17 @@ def test_data_loading():
     for i, (spectrogram, labels) in enumerate(train_loader):
         assert spectrogram is not None
         assert labels is not None
+        # Check for correct dimensions
+        assert spectrogram.shape == (
+            config.train_batch_size,
+            1,
+            config.n_mels,
+            config.max_seq_len,
+        )
+        assert labels.shape == (
+            config.train_batch_size,
+            config.max_seq_len,
+            config.num_drum_classes,
+        )
         if i >= 2:
             break
