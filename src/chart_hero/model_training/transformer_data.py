@@ -122,11 +122,13 @@ class NpyDrumDataset(Dataset):
             )
             spectrogram = torch.from_numpy(spec_np).unsqueeze(0)
 
-        # Ensure tensor is (1, freq, time) and then transpose to (1, time, freq) for the model
+        # Ensure tensor is (1, freq, time)
         if spectrogram.dim() == 2:
             spectrogram = spectrogram.unsqueeze(0)
 
-        return spectrogram.transpose(1, 2), label_matrix
+        # The model's PatchEmbedding expects (Batch, Channels, Freq, Time),
+        # so we do NOT transpose here. The loaded npy is already (Freq, Time).
+        return spectrogram, label_matrix
 
 
 def create_data_loaders(
