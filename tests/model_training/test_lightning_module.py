@@ -27,8 +27,12 @@ def test_initialization(config):
 
 def test_training_step(config):
     """Test a single training step."""
+    config.max_seq_len = 512
     device = torch.device(config.device)
-    module = DrumTranscriptionModule(config).to(device)
+    max_time_patches = config.max_seq_len // config.patch_size[0]
+    module = DrumTranscriptionModule(config, max_time_patches=max_time_patches).to(
+        device
+    )
     module.trainer = MagicMock()
 
     batch = (
@@ -46,8 +50,12 @@ def test_training_step(config):
 
 def test_validation_step(config):
     """Test a single validation step."""
+    config.max_seq_len = 512
     device = torch.device(config.device)
-    module = DrumTranscriptionModule(config).to(device)
+    max_time_patches = config.max_seq_len // config.patch_size[0]
+    module = DrumTranscriptionModule(config, max_time_patches=max_time_patches).to(
+        device
+    )
     module.trainer = MagicMock()
 
     batch = (

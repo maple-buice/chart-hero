@@ -2,7 +2,6 @@
 This module provides utilities for processing MIDI files, specifically for
 creating label matrices for drum transcription.
 """
-
 from pathlib import Path
 
 import mido
@@ -73,5 +72,4 @@ class MidiProcessor:
         for msg in midi_file.tracks[0]:
             if msg.type == "set_tempo":
                 return msg.tempo
-        # If no tempo is found, default to 500,000 microseconds per beat, which is 120 BPM.
-        return 500000
+        return 500000  # Default tempo (120 BPM)
