@@ -154,23 +154,40 @@ def _save_segments(
     output_dir: Path,
     base_filename: str,
 ):
-    """Segments spectrogram and labels and saves them to disk."""
+    """
+    Segments spectrogram and labels, padding the last segment if necessary,
+    and saves them to disk.
+    """
     # Convert tensor to numpy array for saving
     spec_np = spectrogram.squeeze(0).numpy()
     num_frames = spec_np.shape[1]
+    min_spec_val = np.min(spec_np)
 
     for i in range(0, num_frames, segment_length):
         end_frame = i + segment_length
-        if end_frame > num_frames:
-            continue  # Skip incomplete segments
-
         spec_segment = spec_np[:, i:end_frame]
         label_segment = label_matrix[i:end_frame, :]
+
+        # Pad the last segment if it's shorter than the required length
+        if spec_segment.shape[1] < segment_length:
+            pad_width = segment_length - spec_segment.shape[1]
+            spec_segment = np.pad(
+                spec_segment,
+                ((0, 0), (0, pad_width)),
+                mode="constant",
+                constant_values=min_spec_val,
+            )
+            label_segment = np.pad(
+                label_segment,
+                ((0, pad_width), (0, 0)),
+                mode="constant",
+                constant_values=0,  # Pad with zeros for labels
+            )
 
         spec_filename = output_dir / f"{base_filename}_{i}_mel.npy"
         label_filename = output_dir / f"{base_filename}_{i}_label.npy"
         np.save(spec_filename, spec_segment)
-        np.save(label_filename, label_segment.numpy())
+        np.save(label_filename, label_segment)
 
 
 def main(
