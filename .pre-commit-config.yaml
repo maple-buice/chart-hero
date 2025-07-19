@@ -1,5 +1,20 @@
 fail_fast: true
 repos:
+-   repo: local
+    hooks:
+    -   id: check-dirty-workdir
+        name: Check for unstaged changes or untracked files
+        language: system
+        entry: >
+            bash -c '
+            if ! git diff --quiet --exit-code || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+              echo "ERROR: You have unstaged changes or untracked files." >&2
+              echo "Please stage, stash, or .gitignore them before committing." >&2
+              git status --short >&2
+              exit 1
+            fi
+            '
+        stages: [commit]
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
