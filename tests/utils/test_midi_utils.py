@@ -44,4 +44,4 @@ def test_create_label_matrix(midi_processor, dummy_midi_file, config):
 
     assert isinstance(label_matrix, torch.Tensor)
     assert label_matrix.shape == (num_time_frames, config.num_drum_classes)
-    assert torch.sum(label_matrix) > 0
+    assert torch.sum(label_matrix) > 0  # Check that some notes were found
