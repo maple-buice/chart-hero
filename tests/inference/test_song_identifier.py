@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import pytest
 import requests
-
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
     identify_song,

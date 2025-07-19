@@ -175,7 +175,9 @@ class LocalConfig(BaseConfig):
     device: str = (
         "mps"
         if torch.backends.mps.is_available()
-        else "cuda" if torch.cuda.is_available() else "cpu"
+        else "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
     )
     mixed_precision: bool = False  # MPS has limited mixed precision support
     precision: str = (
@@ -212,9 +214,7 @@ class LocalConfig(BaseConfig):
         "datasets/processed/"  # Should contain the actual audio files, or be derivable
     )
     log_dir: str = "logs/"
-    model_dir: str = (
-        "models/local_transformer_models/"  # Renamed from model_save_path and changed to a directory
-    )
+    model_dir: str = "models/local_transformer_models/"  # Renamed from model_save_path and changed to a directory
 
     # Conservative settings for local development
     max_audio_length: float = 5.0  # Further reduced for memory efficiency

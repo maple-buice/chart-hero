@@ -1,14 +1,8 @@
 import logging
 from pathlib import Path
 
-import mido
 import numpy as np
-import pandas as pd
 import pytest
-import torch
-import torchaudio
-
-from chart_hero.model_training.data_preparation import main as prepare_egmd_data
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import create_data_loaders
 

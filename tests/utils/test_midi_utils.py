@@ -5,7 +5,6 @@ Tests for the MidiProcessor in utils/midi_utils.py.
 import mido
 import pytest
 import torch
-
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.utils.midi_utils import MidiProcessor
 

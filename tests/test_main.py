@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import torch
 import torchaudio
-
 from chart_hero.main import main
 
 

@@ -1,6 +1,5 @@
 import pandas as pd
 import torch
-
 from chart_hero.model_training.data_preparation import EGMDRawDataset
 from chart_hero.model_training.transformer_config import get_config
 

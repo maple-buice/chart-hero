@@ -5,7 +5,6 @@ Tests for the main training orchestration script train_transformer.py.
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from chart_hero.model_training.train_transformer import main as train_main
 from chart_hero.model_training.transformer_config import get_config
 

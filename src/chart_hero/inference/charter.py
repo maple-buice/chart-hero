@@ -178,7 +178,6 @@ class ChartGenerator:
         stream_note = []
         synced_8_div = np.around(self.synced_8_div, 8)
         for i in range(len(synced_8_div) // self.beats_in_measure):
-
             measure_iter = list(
                 synced_8_div[measure_log : measure_log + self.beats_in_measure]
             )

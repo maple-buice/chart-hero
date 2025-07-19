@@ -2,7 +2,6 @@ import os
 from unittest.mock import patch
 
 import torch
-
 from chart_hero.__main__ import main
 
 

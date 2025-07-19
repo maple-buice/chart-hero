@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_config
 

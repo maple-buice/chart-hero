@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from chart_hero.inference.input_transform import audio_to_tensors
 from chart_hero.model_training.transformer_config import get_config
 

@@ -1,7 +1,6 @@
 import os
 
 import pytest
-
 from chart_hero.utils.file_utils import (
     get_dataset_dir,
     get_dir,

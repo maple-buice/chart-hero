@@ -81,7 +81,6 @@ def analyze_system_metrics(df):
         and "network_download" in system_df.columns
         and "network_upload" in system_df.columns
     ):
-
         # Convert to MB/s for easier visualization
         for col in [
             "disk_read_rate",

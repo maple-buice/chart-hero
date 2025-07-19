@@ -2,7 +2,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import create_data_loaders
 
