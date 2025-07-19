@@ -274,7 +274,7 @@ class DrumTranscriptionTransformer(nn.Module):
 
     def get_attention_maps(
         self, spectrograms: torch.Tensor, layer_idx: int = -1
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         """Extract attention maps from a specific layer."""
         # This would require modifying the attention modules to return attention weights
         # For now, return None as placeholder

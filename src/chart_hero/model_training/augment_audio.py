@@ -11,6 +11,9 @@ import pedalboard
 from librosa.effects import pitch_shift
 from numpy import mean, random
 from pedalboard import LowpassFilter, Pedalboard, Reverb
+from tqdm.auto import tqdm
+
+tqdm.pandas()
 
 # Consider using audiomentations for a more robust and efficient pipeline in the future
 # from audiomentations import Compose, AddGaussianNoise, PitchShift, LowPassFilter, TimeStretch
@@ -517,7 +520,7 @@ def compare_waveforms(
     for col, lab, alp in list(zip(signal_cols, signal_labs, alpha)):
         # Ensure data is float for waveplot
         audio_data = df.loc[i, col].astype(np.float32)
-        librosa.display.waveplot(
+        librosa.display.waveshow(
             audio_data, sr=sample_rate, max_points=max_pts, label=lab, alpha=alp
         )
 
@@ -531,7 +534,7 @@ def compare_waveforms(
     else:
         plt.title(title, fontsize=fontsizes[0])
 
-    plt.gca().xaxis.label.set_size(fontsizes[1])
+    plt.gca().xaxis.label.set_fontsize(fontsizes[1])
     plt.legend(signal_labs, loc=leg_loc, fontsize=fontsizes[2])
 
 

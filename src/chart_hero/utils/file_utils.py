@@ -42,7 +42,7 @@ def get_training_data_dir() -> str:
         return get_dir(os.getcwd(), dir_name, False)
     except FileNotFoundError:
         try:
-            return get_dir(Path(os.getcwd()).parent, dir_name, False)
+            return get_dir(str(Path(os.getcwd()).parent), dir_name, False)
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"Unable to locate directory '{dir_name}' in "
@@ -57,7 +57,7 @@ def get_model_training_dir() -> str:
         return get_dir(os.getcwd(), dir_name, False)
     except FileNotFoundError:
         try:
-            return get_dir(Path(os.getcwd()).parent, dir_name, False)
+            return get_dir(str(Path(os.getcwd()).parent), dir_name, False)
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"Unable to locate directory '{dir_name}' in "
@@ -70,7 +70,7 @@ def get_dataset_dir() -> str:
     training_data_dir = get_training_data_dir()
     data_set_dir_name = "e-gmd-v1.0.0"
     try:
-        get_dir(training_data_dir, data_set_dir_name, False)
+        return get_dir(training_data_dir, data_set_dir_name, False)
     except FileNotFoundError:
         raise FileNotFoundError(
             f"Unable to locate trainind data directory '{data_set_dir_name}' in '{training_data_dir}'.\n"
@@ -78,6 +78,7 @@ def get_dataset_dir() -> str:
             + "Please download the training data from https://magenta.tensorflow.org/datasets/e-gmd "
             + f"and extract it as '{data_set_dir_name}' into '{training_data_dir}'"
         )
+
 
 
 def get_audio_set_dir() -> str:

@@ -128,6 +128,8 @@ class BaseConfig:
     warmup_steps: int = 1000
     gradient_clip_val: float = 1.0
     accumulate_grad_batches: int = 1
+    gradient_checkpointing: bool = False
+    deterministic_training: bool = True
 
     # Data
     train_batch_size: int = 32
@@ -135,6 +137,15 @@ class BaseConfig:
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
+    data_dir: str = "../datasets/processed/"
+    audio_dir: str = "../datasets/processed/"
+    log_dir: str = "logs/"
+    model_dir: str = "models/local_transformer_models/"
+
+    # Device
+    device: str = "cpu"
+    mixed_precision: bool = False
+    precision: str = "32"
 
     # Drum classification
     num_drum_classes: int = len(TARGET_CLASSES)
@@ -185,10 +196,7 @@ class LocalConfig(BaseConfig):
     )
 
     # Smaller model for memory efficiency
-    hidden_size: int = 384  # Reduced from 768
-    num_layers: int = 6  # Reduced from 12
     num_heads: int = 4  # Changed from 6 to 4 for compatibility with hidden_size 256
-    intermediate_size: int = 1536  # Reduced from 3072
 
     # Memory optimization for 64GB RAM with MPS GPU
     train_batch_size: int = 4  # Conservative default for MPS
@@ -206,24 +214,9 @@ class LocalConfig(BaseConfig):
     cache_dataset: bool = False  # Disable caching to save memory
     prefetch_factor: int = 2
 
-    # Paths
-    data_dir: str = "../datasets/processed/"  # Corrected to point to where _train.pkl etc. are saved
-    audio_dir: str = "../datasets/processed/"  # Should contain the actual audio files, or be derivable
-    log_dir: str = "logs/"
-    model_dir: str = "models/local_transformer_models/"  # Renamed from model_save_path and changed to a directory
-
     # Conservative settings for local development
     max_audio_length: float = 5.0  # Further reduced for memory efficiency
     max_seq_len: int = 512  # Reduced from 768
-
-    # Logging and saving
-    log_every_n_steps: int = 50
-    val_check_interval: float = 1.0  # How often to run validation (1.0 = every epoch)
-    device: str = "mps"  # Device to use for training (e.g., cpu, mps, cuda)
-    mixed_precision: bool = False  # Whether to use mixed precision training
-    precision: str = "32"  # Precision for training (e.g., 16, 32, bf16)
-    gradient_checkpointing: bool = True  # Enable gradient checkpointing to save memory
-    deterministic_training: bool = True  # Added: For reproducibility
 
     @property
     def effective_batch_size(self) -> int:
@@ -365,12 +358,7 @@ def validate_config(config: BaseConfig) -> None:
 
     # Validate paths exist
     os.makedirs(config.data_dir, exist_ok=True)
-    # Use model_save_path for LocalConfig and model_dir for CloudConfig
-    if hasattr(config, "model_save_path") and isinstance(config.model_save_path, str):
-        os.makedirs(os.path.dirname(config.model_save_path), exist_ok=True)
-    elif hasattr(config, "model_dir") and isinstance(config.model_dir, str):
-        os.makedirs(config.model_dir, exist_ok=True)
-
+    os.makedirs(config.model_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
 
     # Validate audio parameters

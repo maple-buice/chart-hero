@@ -36,7 +36,7 @@ def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
     return transient_enhanced_spec
 
 
-def audio_to_tensors(audio_path: str, config) -> list:
+def audio_to_tensors(audio_path: str, config) -> list[torch.Tensor]:
     """
     Transforms an audio file into a list of tensor segments for the model.
     """
@@ -92,7 +92,7 @@ class yt_audio:
         self.thumbnail_url = thumbnail_url
 
 
-def get_yt_audio(link) -> str:
+def get_yt_audio(link) -> tuple[str | None, str | None]:
     download_path = "music/YouTube/"
     ydl_opts = {
         "format": "m4a/bestaudio/best",
@@ -110,5 +110,3 @@ def get_yt_audio(link) -> str:
         return os.path.join(download_path, "song.m4a"), info.get(
             "title", "Unknown Title"
         )
-
-    return None, None

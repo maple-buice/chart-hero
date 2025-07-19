@@ -75,7 +75,7 @@ click_track = librosa.clicks(
     times=beats_static, sr=sr, click_freq=660, click_duration=0.25, length=len(y)
 )
 
-print(f"Tempo estimate: {tempo[0]:.2f} BPM")
+print(f"Tempo estimate: {tempo[0]:.2f} BPM")  # type: ignore
 Audio(data=y + click_track, rate=sr)
 
 #########################################
@@ -97,7 +97,7 @@ tempo_dynamic = librosa.feature.tempo(y=y, sr=sr, aggregate=None, std_bpm=4)
 fig, ax = plt.subplots()
 times = librosa.times_like(tempo_dynamic, sr=sr)
 ax.plot(times, tempo_dynamic, label="Dynamic tempo estimate")
-ax.axhline(tempo, label="Static tempo estimate", color="r")
+ax.axhline(tempo, label="Static tempo estimate", color="r")  # type: ignore
 ax.legend()
 ax.set(xlabel="Time (s)", ylabel="Tempo (BPM)")
 

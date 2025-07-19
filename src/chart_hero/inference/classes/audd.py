@@ -4,19 +4,20 @@ from typing import Any, Optional, Type, TypeVar
 T = TypeVar("T")
 
 
-def _from_dict(data_class: Type[T], data: Any) -> T:
+def _from_dict(data_class: Type[T], data: Any) -> Optional[T]:
     if data is None:
         return None
     if is_dataclass(data_class):
         field_types = {f.name: f.type for f in data_class.__dataclass_fields__.values()}
         return data_class(
             **{
-                key: _from_dict(field_types.get(key), value)
+                key: _from_dict(field_types.get(key), value)  # type: ignore
                 for key, value in data.items()
+                if field_types.get(key) is not None
             }
         )
-    if hasattr(data_class, "__origin__") and data_class.__origin__ is list:
-        return [_from_dict(data_class.__args__[0], item) for item in data]
+    if hasattr(data_class, "__origin__") and data_class.__origin__ is list:  # type: ignore
+        return [_from_dict(data_class.__args__[0], item) for item in data]  # type: ignore
     return data
 
 
@@ -92,7 +93,7 @@ class spotify_image:
 class spotify_album:
     album_type: str
     artists: list[spotify_artist]
-    available_markets: list
+    available_markets: list[Any]
     external_urls: spotify_external_urls
     href: str
     id: str
@@ -109,7 +110,7 @@ class spotify_album:
 class spotify_result:
     album: spotify_album
     artists: list[spotify_artist]
-    available_markets: list
+    available_markets: list[Any]
     disc_number: int
     duration_ms: int
     explicit: bool
@@ -232,5 +233,5 @@ class audd_song_response:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls: Type[T], data: Any) -> T:
+    def from_dict(cls: Type[T], data: Any) -> Optional[T]:
         return _from_dict(cls, data)

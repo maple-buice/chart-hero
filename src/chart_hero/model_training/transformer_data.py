@@ -83,7 +83,7 @@ class SpectrogramProcessor:
         return spectrogram, (time_patches, freq_patches)
 
 
-class NpyDrumDataset(Dataset):
+class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     """Dataset for loading pre-computed spectrogram and label segments."""
 
     def __init__(
@@ -133,14 +133,14 @@ class NpyDrumDataset(Dataset):
 
 def create_data_loaders(
     config: BaseConfig, data_dir: str, batch_size: Optional[int] = None
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
+) -> Tuple[DataLoader[Tuple[torch.Tensor, torch.Tensor]], DataLoader[Tuple[torch.Tensor, torch.Tensor]], DataLoader[Tuple[torch.Tensor, torch.Tensor]]]:
     """Create data loaders for train, validation, and test sets from .npy files."""
 
     if batch_size is None:
         batch_size = config.train_batch_size
 
     data_path = Path(data_dir)
-    data_files = {"train": [], "val": [], "test": []}
+    data_files: dict[str, list[tuple[str, str]]] = {"train": [], "val": [], "test": []}
 
     for split in ["train", "val", "test"]:
         split_dir = data_path / split

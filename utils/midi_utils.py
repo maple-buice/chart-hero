@@ -22,7 +22,7 @@ class MidiProcessor:
 
     def create_label_matrix(
         self, midi_path: Path, num_time_frames: int
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         """
         Creates a frame-by-frame multi-label matrix from a MIDI file.
 

@@ -16,7 +16,7 @@ from chart_hero.model_training.transformer_model import create_model
 class DrumTranscriptionModule(pl.LightningModule):
     """PyTorch Lightning module for drum transcription training."""
 
-    def __init__(self, config: BaseConfig, max_time_patches: int = None):
+    def __init__(self, config: BaseConfig, max_time_patches: int | None = None):
         super().__init__()
         self.config = config
         self.save_hyperparameters(config.__dict__)
@@ -45,8 +45,8 @@ class DrumTranscriptionModule(pl.LightningModule):
             task="multilabel", num_labels=config.num_drum_classes
         )
 
-        self.validation_step_outputs = []
-        self.test_step_outputs = []
+        self.validation_step_outputs: list[dict[str, torch.Tensor]] = []
+        self.test_step_outputs: list[dict[str, torch.Tensor]] = []
 
     def forward(self, spectrograms):
         return self.model(spectrograms)
@@ -127,6 +127,8 @@ class DrumTranscriptionModule(pl.LightningModule):
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
+        if self.trainer.max_epochs is None:
+            raise ValueError("trainer.max_epochs must be set")
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.trainer.max_epochs
         )

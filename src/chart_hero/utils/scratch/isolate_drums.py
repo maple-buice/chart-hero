@@ -33,7 +33,7 @@ def getDrumNotesFromCharts(chartFiles):
 
 
 def getNoteCountsFromCharts(drumNotes):
-    noteCounts = {}
+    noteCounts: dict[int, int] = {}
     for note in drumNotes:
         noteValue = note.split(" ")[5]
         if not noteValue.isnumeric():
@@ -65,7 +65,7 @@ def getDrumNotesFromMidis(midiFiles):
 
 
 def getNoteCountsFromMidis(drumNotes):
-    noteCounts = {}
+    noteCounts: dict[int, int] = {}
     for noteInt in drumNotes:
         if noteInt in noteCounts:
             noteCounts[noteInt] += 1
@@ -77,7 +77,7 @@ def getNoteCountsFromMidis(drumNotes):
 songsRoot = "/Users/maple/Clone Hero/Songs"
 # chartFiles = getChartFiles(songsRoot, "notes.chart")
 # drumNotesFromCharts = getDrumNotesFromCharts(chartFiles)
-# noteCountsFromCharts = getNoteCounts(drumNotesFromCharts)
+# noteCountsFromCharts = getNoteCountsFromCharts(drumNotesFromCharts)
 
 # print(noteCountsFromCharts)
 

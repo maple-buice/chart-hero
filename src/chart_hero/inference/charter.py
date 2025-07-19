@@ -153,6 +153,7 @@ class ChartGenerator:
             for i, pitch_list in enumerate(music21_data[measure_num]["pitch"]):
                 note_type = music21_data[measure_num]["note_type"][i]
 
+                n: note.GeneralNote
                 if "rest" in pitch_list:
                     n = note.Rest()
                 else:
@@ -174,7 +175,7 @@ class ChartGenerator:
         """
         measure_log = 0
         stream_time_map = []
-        stream_pitch = []
+        stream_pitch: list[list[list[int | str]]] = []
         stream_note = []
         synced_8_div = np.around(self.synced_8_div, 8)
         for i in range(len(synced_8_div) // self.beats_in_measure):
@@ -201,10 +202,10 @@ class ChartGenerator:
                     if len(self.pitch_dict[note_val]) == 0:
                         pitch_set.append(["rest"])
                     else:
-                        pitch_set.append(self.pitch_dict[note_val])
+                        pitch_set.append([str(p) for p in self.pitch_dict[note_val]])
                 else:
                     pitch_set.append(["rest"])
-            stream_pitch.append(pitch_set)
+            stream_pitch.append(pitch_set)  # type: ignore
         return stream_time_map, stream_pitch, stream_note
 
     def get_note_duration(self):
@@ -246,10 +247,8 @@ class ChartGenerator:
                 diff_log = diff_log + diff
                 synced_8_div.append(note_val + diff_log)
         if self.offset:
-            [
+            for i in range(self.beats_in_measure):
                 synced_8_div.insert(0, synced_8_div[0] - self._8_duration)
-                for i in range(self.beats_in_measure)
-            ]
         return np.array(synced_8_div)
 
     def get_note_division(self):
@@ -298,7 +297,7 @@ class ChartGenerator:
             if len(sub_notes) > 0:
                 # if onsets are deteced between 2 consecuive eighth notes,
                 # the below algo will match each note (based on its position in the time domain) to the closest note division (16th, 32th, eighth triplets or eighth sixthlet note)
-                dist_dict = {"_16": [], "_32": [], "_8_3": [], "_8_6": []}
+                dist_dict: dict[str, list[float]] = {"_16": [], "_32": [], "_8_3": [], "_8_6": []}
                 sub_notes_dict = {
                     "_16": np.round(
                         np.linspace(self.synced_8_div[i], self.synced_8_div[i + 1], 3),
@@ -360,8 +359,8 @@ class ChartGenerator:
                     )
 
                 for key in dist_dict.keys():
-                    dist_dict[key] = sum(dist_dict[key]) / len(dist_dict[key])
-                best_div = min(dist_dict, key=dist_dict.get)
+                    dist_dict[key] = [sum(dist_dict[key]) / len(dist_dict[key])]
+                best_div = min(dist_dict, key=lambda k: dist_dict[k][0])
                 if best_div == "_16":
                     synced_16_div.extend(sub_notes_dict["_16"])
                 elif best_div == "_32":
@@ -414,14 +413,14 @@ class ChartGenerator:
                     note_dur.append([div[2]] * div[1])
                     _div = True
             if not _div:
-                measure.append([note])
+                measure.append([note_val])
                 note_dur.append([0.5])
 
         measure = [item for sublist in measure for item in sublist]
         note_dur = [item for sublist in note_dur for item in sublist]
         return measure, note_dur
 
-    def get_pitch_dict(self):
+    def get_pitch_dict(self) -> dict[float, list[int]]:
         """
         A function to reformat the prediction result in a format that can pass to the build_stream step to build all the required data for sheet music construction step
         """
@@ -437,7 +436,7 @@ class ChartGenerator:
             "peak_sample"
         )
         pitch_mapping = pitch_mapping.to_dict(orient="index")
-        pitch_dict = {}
+        pitch_dict: dict[float, list[int]] = {}
         for p in pitch_mapping.keys():
             time = round(librosa.samples_to_time(p, sr=self.sample_rate), 8)
             pitch_dict[time] = []

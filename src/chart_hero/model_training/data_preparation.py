@@ -7,7 +7,7 @@ import librosa
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, random_split
+from torch.utils.data import Dataset, random_split, TensorDataset
 from tqdm import tqdm
 
 from chart_hero.model_training.augment_audio import (
@@ -35,7 +35,7 @@ def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
     return log_mel_spec * onset_env
 
 
-class EGMDRawDataset(Dataset):
+class EGMDRawDataset(Dataset[tuple[torch.Tensor | None, torch.Tensor | None]]):
     def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config):
         self.data_map = data_map
         self.dataset_dir = Path(dataset_dir)
@@ -52,14 +52,14 @@ class EGMDRawDataset(Dataset):
 
         try:
             audio_np, sr = librosa.load(audio_filename, sr=self.config.sample_rate)
-            spectrogram = create_transient_enhanced_spectrogram(
+            spec_np = create_transient_enhanced_spectrogram(
                 y=audio_np,
                 sr=sr,
                 n_fft=self.config.n_fft,
                 hop_length=self.config.hop_length,
                 n_mels=self.config.n_mels,
             )
-            spectrogram = torch.from_numpy(spectrogram).float().unsqueeze(0)
+            spectrogram = torch.from_numpy(spec_np).float().unsqueeze(0)
         except Exception as e:
             logger.warning(f"Could not process audio file {audio_filename}: {e}")
             return None, None
@@ -114,7 +114,7 @@ def main(
     dataset_dir: str,
     output_dir: str,
     config,
-    limit: int = None,
+    limit: int | None = None,
     clear_output: bool = False,
     no_progress: bool = False,
 ):
@@ -136,7 +136,7 @@ def main(
     val_size = int(0.1 * len(dataset))
     test_size = len(dataset) - train_size - val_size
     train_indices, val_indices, test_indices = random_split(
-        range(len(dataset)), [train_size, val_size, test_size], generator=generator
+        TensorDataset(torch.arange(len(dataset))), [train_size, val_size, test_size], generator=generator
     )
     split_map = {"train": train_indices, "val": val_indices, "test": test_indices}
     segment_length_frames = int(

@@ -79,15 +79,19 @@ def main():
 
     if args.link is not None:
         print(f"Downloading audio track from {args.link}")
-        f_path = get_yt_audio(args.link)
+        f_path, title = get_yt_audio(args.link)
+        if f_path is None:
+            print("Could not download audio from link.")
+            return
     else:
         f_path = args.path
+        title = Path(f_path).stem
 
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
     if args.no_api:
-        audd_result = {"title": "test_song", "artist": "test_artist"}
+        audd_result = None
         bpm = 120
     else:
         # Identify song
@@ -96,9 +100,8 @@ def main():
             json.dump(audd_result, f, indent=4)
 
         # Get acoustic data
-        if audd_result and audd_result.get("musicbrainz"):
-            mbid = audd_result["musicbrainz"][0]["id"]
-            acousticbrainz_result = get_data_from_acousticbrainz(mbid)
+        if audd_result and audd_result.musicbrainz:
+            acousticbrainz_result = get_data_from_acousticbrainz(audd_result)
             with open(out_path / "acousticbrainz_result.json", "w") as f:
                 json.dump(acousticbrainz_result, f, indent=4)
             bpm = acousticbrainz_result.get("bpm")
@@ -124,12 +127,12 @@ def main():
         song_duration=librosa.get_duration(path=f_path),
         bpm=bpm,
         sample_rate=config.sample_rate,
-        song_title=audd_result.get("title"),
+        song_title=title,
     )
 
     # Save the chart
     chart_generator.sheet.write(
-        "musicxml", fp=out_path / f"{audd_result.get('title', 'chart')}.musicxml"
+        "musicxml", fp=out_path / f"{title}.musicxml"
     )
     print(f"Sheet music saved at {out_path}")
     if args.link is not None:

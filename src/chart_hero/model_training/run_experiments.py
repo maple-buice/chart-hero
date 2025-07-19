@@ -5,6 +5,7 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 # Setup logging for the experimentation script
 log_file_path = (
@@ -35,7 +36,7 @@ TRAIN_SCRIPT_PATH = Path(__file__).parent / "train_transformer.py"
 CHART_HERO_BASE_DIR = Path(__file__).parent.parent
 
 
-def run_experiment(params: dict, use_wandb: bool, quick_test: bool, monitor_gpu: bool):
+def run_experiment(params: dict[str, Any], use_wandb: bool, quick_test: bool, monitor_gpu: bool):
     """
     Runs a single training experiment with the given parameters.
     """
@@ -164,7 +165,7 @@ def main():
     param_names = list(PARAM_RANGES.keys())
     param_values = [PARAM_RANGES[name] for name in param_names]
 
-    all_combinations = list(itertools.product(*param_values))
+    all_combinations = list(itertools.product(*param_values))  # type: ignore
     # Limit to 1 experiment if quick_test is enabled, for faster iteration
     if args.quick_test:
         logger.info(
