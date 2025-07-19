@@ -169,7 +169,7 @@ def apply_augmentations(
             augmentation_func = AVAILABLE_AUGMENTATIONS[func_name]
             try:
                 # Using progress_apply can be slow; consider alternatives for large datasets
-                aug_df[func_name] = aug_df[audio_col].progress_apply(
+                aug_df[func_name] = aug_df[audio_col].progress_apply(  # type: ignore[attr-defined]
                     lambda x: augmentation_func(x, **params)
                 )
                 applied_funcs.append(func_name)

@@ -196,16 +196,16 @@ class ChartGenerator:
         stream_note.append(note_dur)
 
         for measure in stream_time_map:
-            pitch_set = []
+            pitch_set: list[list[int | str]] = []
             for note_val in measure:
                 if note_val in self.pitch_dict.keys():
                     if len(self.pitch_dict[note_val]) == 0:
                         pitch_set.append(["rest"])
                     else:
-                        pitch_set.append([str(p) for p in self.pitch_dict[note_val]])
+                        pitch_set.append(self.pitch_dict[note_val])
                 else:
                     pitch_set.append(["rest"])
-            stream_pitch.append(pitch_set)  # type: ignore
+            stream_pitch.append(pitch_set)
         return stream_time_map, stream_pitch, stream_note
 
     def get_note_duration(self):
@@ -396,8 +396,8 @@ class ChartGenerator:
         synced_32_div = np.around(self.synced_32_div, 8)
         synced_8_3_div = np.around(self.synced_8_3_div, 8)
         synced_8_6_div = np.around(self.synced_8_6_div, 8)
-        measure = []
-        note_dur = []
+        measure: list[list[float]] = []
+        note_dur: list[list[float]] = []
         for note_val in measure_iter:
             _div = False
             for div in [
@@ -416,9 +416,9 @@ class ChartGenerator:
                 measure.append([note_val])
                 note_dur.append([0.5])
 
-        measure = [item for sublist in measure for item in sublist]
-        note_dur = [item for sublist in note_dur for item in sublist]
-        return measure, note_dur
+        flat_measure = [item for sublist in measure for item in sublist]
+        flat_note_dur = [item for sublist in note_dur for item in sublist]
+        return flat_measure, flat_note_dur
 
     def get_pitch_dict(self) -> dict[float, list[int]]:
         """

@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from typing import Any
 # Setup logging for the experimentation script
 log_file_path = (
     Path(__file__).parent.parent
@@ -22,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Define hyperparameter ranges
-PARAM_RANGES = {
+PARAM_RANGES: dict[str, list[Any]] = {
     "batch_size": [2, 4, 8],
     "hidden_size": [256, 384, 512],
     "learning_rate": [1e-5, 5e-5, 1e-4],
@@ -36,7 +37,9 @@ TRAIN_SCRIPT_PATH = Path(__file__).parent / "train_transformer.py"
 CHART_HERO_BASE_DIR = Path(__file__).parent.parent
 
 
-def run_experiment(params: dict[str, Any], use_wandb: bool, quick_test: bool, monitor_gpu: bool):
+def run_experiment(
+    params: dict[str, Any], use_wandb: bool, quick_test: bool, monitor_gpu: bool
+):
     """
     Runs a single training experiment with the given parameters.
     """
@@ -163,9 +166,9 @@ def main():
     logger.info(f"GPU monitoring: {'Enabled' if args.monitor_gpu else 'Disabled'}")
 
     param_names = list(PARAM_RANGES.keys())
-    param_values = [PARAM_RANGES[name] for name in param_names]
+    param_values: list[list[Any]] = [PARAM_RANGES[name] for name in param_names]
 
-    all_combinations = list(itertools.product(*param_values))  # type: ignore
+    all_combinations = list(itertools.product(*param_values))
     # Limit to 1 experiment if quick_test is enabled, for faster iteration
     if args.quick_test:
         logger.info(

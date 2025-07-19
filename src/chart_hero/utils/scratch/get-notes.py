@@ -69,13 +69,13 @@ Audio(data=y, rate=sr)
 # Note: by default, `beat_track` assumes that there is silence at the end of the
 # signal, and trims last beats to avoid false detections. Here, there is no silence
 # at the end, so we set `trim=False` to avoid this effect.
-tempo, beats_static = librosa.beat.beat_track(y=y, sr=sr, units="time", trim=False)
+static_tempo, beats_static = librosa.beat.beat_track(y=y, sr=sr, units="time", trim=False)
 
 click_track = librosa.clicks(
     times=beats_static, sr=sr, click_freq=660, click_duration=0.25, length=len(y)
 )
 
-print(f"Tempo estimate: {tempo[0]:.2f} BPM")  # type: ignore
+print(f"Tempo estimate: {static_tempo:.2f} BPM")
 Audio(data=y + click_track, rate=sr)
 
 #########################################
@@ -97,7 +97,8 @@ tempo_dynamic = librosa.feature.tempo(y=y, sr=sr, aggregate=None, std_bpm=4)
 fig, ax = plt.subplots()
 times = librosa.times_like(tempo_dynamic, sr=sr)
 ax.plot(times, tempo_dynamic, label="Dynamic tempo estimate")
-ax.axhline(tempo, label="Static tempo estimate", color="r")  # type: ignore
+if isinstance(static_tempo, (int, float)):
+    ax.axhline(static_tempo, label="Static tempo estimate", color="r")
 ax.legend()
 ax.set(xlabel="Time (s)", ylabel="Tempo (BPM)")
 
