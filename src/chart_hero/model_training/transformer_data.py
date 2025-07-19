@@ -109,17 +109,18 @@ class NpyDrumDataset(Dataset):
 
         # Apply SpecAugment only during training
         if self.mode == "train" and self.config.enable_spec_augmentation:
-            spec_for_aug = spectrogram.clone()
-            spec_for_aug = augment_spectrogram_time_masking(
-                spec_for_aug,
+            spec_np = spectrogram.clone().squeeze(0).numpy()
+            spec_np = augment_spectrogram_time_masking(
+                spec_np,
                 num_masks=self.config.spec_aug_num_time_masks,
                 max_mask_percentage=self.config.spec_aug_max_time_mask_percentage,
             )
-            spectrogram = augment_spectrogram_frequency_masking(
-                spec_for_aug,
+            spec_np = augment_spectrogram_frequency_masking(
+                spec_np,
                 num_masks=self.config.spec_aug_num_freq_masks,
                 max_mask_percentage=self.config.spec_aug_max_freq_mask_percentage,
             )
+            spectrogram = torch.from_numpy(spec_np).unsqueeze(0)
 
         # Ensure tensor is (1, freq, time) and then transpose to (1, time, freq) for the model
         if spectrogram.dim() == 2:

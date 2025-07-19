@@ -106,13 +106,13 @@ def optimize_memory(force_gc: bool = True, aggressive: bool = False):
 class DrumTranscriptionModule(pl.LightningModule):
     """PyTorch Lightning module for drum transcription training."""
 
-    def __init__(self, config):
+    def __init__(self, config, max_time_patches: Optional[int] = None):
         super().__init__()
         self.config = config
         self.save_hyperparameters(config.__dict__)
 
         # Create model
-        self.model = create_model(config)
+        self.model = create_model(config, max_time_patches=max_time_patches)
 
         # Loss function with label smoothing
         device_type = (

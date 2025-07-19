@@ -41,8 +41,8 @@ class PatchEmbedding(nn.Module):
         # x shape: (batch_size, 1, time, freq)
         # The Conv1d layer expects (batch_size, in_channels, length)
         # where in_channels is freq (n_mels) and length is time.
-        x = x.squeeze(1)  # -> (batch_size, time, freq)
-        x = x.transpose(1, 2)  # -> (batch_size, freq, time)
+        # Input x shape: (batch_size, 1, n_mels, time)
+        x = x.squeeze(1)  # -> (batch_size, n_mels, time)
 
         # Extract patches and project
         x = self.projection(x)  # -> (batch_size, embed_dim, num_patches_time)
@@ -55,7 +55,7 @@ class PatchEmbedding(nn.Module):
 class PositionalEncoding1D(nn.Module):
     """1D positional encoding for time patches."""
 
-    def __init__(self, embed_dim: int, max_time_patches: int = 256):
+    def __init__(self, embed_dim: int, max_time_patches: int):
         super().__init__()
         self.embed_dim = embed_dim
         self.max_time_patches = max_time_patches
@@ -168,7 +168,7 @@ class TransformerBlock(nn.Module):
 class DrumTranscriptionTransformer(nn.Module):
     """Audio Spectrogram Transformer for drum transcription."""
 
-    def __init__(self, config: BaseConfig):
+    def __init__(self, config: BaseConfig, max_time_patches: Optional[int] = None):
         super().__init__()
         self.config = config
 
@@ -179,16 +179,18 @@ class DrumTranscriptionTransformer(nn.Module):
             embed_dim=config.hidden_size,
         )
 
-        # Calculate maximum patch dimensions with conservative bounds for memory efficiency
-        max_time_frames = (
-            int(config.max_audio_length * config.sample_rate / config.hop_length) + 1
-        )
-        max_time_patches = (
-            max_time_frames + config.patch_size[0] - 1
-        ) // config.patch_size[0]
+        if max_time_patches is None:
+            # Calculate maximum patch dimensions with conservative bounds for memory efficiency
+            max_time_frames = (
+                int(config.max_audio_length * config.sample_rate / config.hop_length)
+                + 1
+            )
+            max_time_patches = (
+                max_time_frames + config.patch_size[0] - 1
+            ) // config.patch_size[0]
 
-        # Apply conservative limits to prevent memory explosion
-        max_time_patches = min(max_time_patches, 256)  # Cap at 256 time patches
+            # Apply conservative limits to prevent memory explosion
+            max_time_patches = min(max_time_patches, 256)  # Cap at 256 time patches
 
         self.pos_encoding = PositionalEncoding1D(
             embed_dim=config.hidden_size,
@@ -258,6 +260,7 @@ class DrumTranscriptionTransformer(nn.Module):
         x = self.norm(x)
 
         # Remove CLS token and apply classifier to each time step
+        cls_embedding = x[:, 0, :]
         x = x[:, 1:, :]
         logits = self.classifier(x)
 
@@ -265,6 +268,7 @@ class DrumTranscriptionTransformer(nn.Module):
         if return_embeddings:
             output["layer_embeddings"] = layer_embeddings
             output["final_embedding"] = x
+            output["cls_embedding"] = cls_embedding
 
         return output
 
@@ -277,9 +281,11 @@ class DrumTranscriptionTransformer(nn.Module):
         return None
 
 
-def create_model(config: BaseConfig) -> DrumTranscriptionTransformer:
+def create_model(
+    config: BaseConfig, max_time_patches: Optional[int] = None
+) -> DrumTranscriptionTransformer:
     """Factory function to create a drum transcription transformer."""
-    model = DrumTranscriptionTransformer(config)
+    model = DrumTranscriptionTransformer(config, max_time_patches=max_time_patches)
 
     # Calculate and print model parameters
     total_params = sum(p.numel() for p in model.parameters())

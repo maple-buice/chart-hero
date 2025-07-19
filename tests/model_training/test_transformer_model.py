@@ -7,7 +7,7 @@ import os
 import sys
 from unittest.mock import patch
 
-import pandas as pd
+import numpy as np
 import pytest
 import torch
 
@@ -27,7 +27,7 @@ from chart_hero.model_training.transformer_data import (
 from chart_hero.model_training.transformer_model import (
     MultiHeadSelfAttention,
     PatchEmbedding,
-    PositionalEncoding2D,
+    PositionalEncoding1D,
     TransformerBlock,
     create_model,
 )
@@ -66,15 +66,21 @@ def test_data_loading():
     # Create dummy data for testing
     dummy_data_dir = "tests/assets/dummy_data"
     os.makedirs(dummy_data_dir, exist_ok=True)
-    # Create dummy metadata file
-    dummy_metadata = {
-        "audio_filename": ["dummy.wav"],
-        "midi_filename": ["dummy.mid"],
-        "split": ["train"],
-    }
-    pd.DataFrame(dummy_metadata).to_csv(
-        os.path.join(dummy_data_dir, "metadata.csv"), index=False
-    )
+    os.makedirs(os.path.join(dummy_data_dir, "train"), exist_ok=True)
+    os.makedirs(os.path.join(dummy_data_dir, "val"), exist_ok=True)
+    os.makedirs(os.path.join(dummy_data_dir, "test"), exist_ok=True)
+
+    # Create dummy data files
+    for split in ["train", "val", "test"]:
+        for i in range(2):
+            np.save(
+                os.path.join(dummy_data_dir, split, f"{split}_{i}_mel.npy"),
+                np.random.rand(config.n_mels, config.max_seq_len),
+            )
+            np.save(
+                os.path.join(dummy_data_dir, split, f"{split}_{i}_label.npy"),
+                np.random.randint(0, 2, (config.max_seq_len, config.num_drum_classes)),
+            )
 
     train_loader, val_loader, test_loader = create_data_loaders(
         config, data_dir=dummy_data_dir
@@ -91,14 +97,21 @@ def test_training_module(mock_trainer):
     """
     config = get_config("local")
     device = torch.device(config.device)
-    model = DrumTranscriptionModule(config).to(device)
+    max_time_patches = config.max_seq_len // config.patch_size[0]
+    model = DrumTranscriptionModule(config, max_time_patches=max_time_patches).to(
+        device
+    )
     model.trainer = mock_trainer
     assert model is not None, "Training module creation failed"
 
     # Create a dummy batch
     dummy_spectrogram = torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device)
-    dummy_labels = torch.randint(0, 2, (1, config.num_drum_classes)).to(device).float()
-    dummy_batch = {"spectrogram": dummy_spectrogram, "labels": dummy_labels}
+    dummy_labels = (
+        torch.randint(0, 2, (1, config.max_seq_len, config.num_drum_classes))
+        .to(device)
+        .float()
+    )
+    dummy_batch = (dummy_spectrogram, dummy_labels)
 
     # Test training step
     loss = model.training_step(dummy_batch, 0)
@@ -184,7 +197,6 @@ def test_model():
         logger.info(f"Auto-detected config for model test: {type(config).__name__}")
     else:
         config = get_config(config_name)  # Use passed config_name
-    model = create_model(config)
 
     # Test forward pass
     batch_size = 2
@@ -204,8 +216,10 @@ def test_model():
 
     time_frames = patch_size_t * 16
     freq_bins = patch_size_f * 8
+    max_time_patches = time_frames // patch_size_t
+    model = create_model(config, max_time_patches=max_time_patches)
 
-    dummy_input = torch.randn(batch_size, 1, time_frames, freq_bins)
+    dummy_input = torch.randn(batch_size, 1, freq_bins, time_frames)
 
     with torch.no_grad():
         output = model(dummy_input, return_embeddings=True)
@@ -215,7 +229,11 @@ def test_model():
     logger.info(f"✓ CLS embedding shape: {output['cls_embedding'].shape}")
 
     # Check output dimensions
-    assert output["logits"].shape == (batch_size, config.num_drum_classes)
+    assert output["logits"].shape == (
+        batch_size,
+        max_time_patches,
+        config.num_drum_classes,
+    )
     assert output["cls_embedding"].shape == (batch_size, config.hidden_size)
 
     assert True
@@ -251,22 +269,23 @@ def test_patch_embedding():
     """Test the PatchEmbedding class."""
     config = get_config("local")
     patch_embed = PatchEmbedding(
-        patch_size=config.patch_size,
-        in_channels=1,
+        patch_size=config.patch_size[0],
+        in_channels=config.n_mels,
         embed_dim=config.hidden_size,
     )
-    dummy_spectrogram = torch.randn(1, 1, 256, 128)
+    dummy_spectrogram = torch.randn(1, 1, config.n_mels, 256)
     patch_embeddings = patch_embed(dummy_spectrogram)
-    assert patch_embeddings.shape == (1, 128, config.hidden_size)
+    assert patch_embeddings.shape == (1, 16, config.hidden_size)
 
 
 def test_positional_encoding():
-    """Test the PositionalEncoding2D class."""
+    """Test the PositionalEncoding1D class."""
     config = get_config("local")
-    pos_encoding = PositionalEncoding2D(embed_dim=config.hidden_size)
+    pos_encoding = PositionalEncoding1D(
+        embed_dim=config.hidden_size, max_time_patches=128
+    )
     dummy_embeddings = torch.randn(1, 128, config.hidden_size)
-    patch_shape = (16, 8)
-    encoded_embeddings = pos_encoding(dummy_embeddings, patch_shape)
+    encoded_embeddings = pos_encoding(dummy_embeddings)
     assert encoded_embeddings.shape == (1, 129, config.hidden_size)  # +1 for CLS token
 
 

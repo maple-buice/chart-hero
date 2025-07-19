@@ -14,13 +14,13 @@ import sys
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 # Add project root to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from chart_hero.model_training.data_preparation import EGMDRawDataset, Subset
+from chart_hero.model_training.data_preparation import EGMDRawDataset
 from chart_hero.model_training.transformer_config import get_config
 
 # Set up logging
@@ -30,32 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main(args=None):
-    parser = argparse.ArgumentParser(
-        description="Prepare E-GMD dataset for transformer training using the new pipeline."
-    )
-    parser.add_argument(
-        "--input-dir",
-        type=str,
-        default="datasets/e-gmd-v1.0.0",
-        help="Path to E-GMD dataset directory",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="datasets/processed_transformer",
-        help="Output directory for processed .npy data",
-    )
-    parser.add_argument(
-        "--splits",
-        nargs=3,
-        type=float,
-        default=[0.8, 0.1, 0.1],
-        help="Train, validation, and test split ratios (e.g., 0.8 0.1 0.1)",
-    )
-
-    args = parser.parse_args(args)
-
+def main(args):
     torch.manual_seed(42)
 
     config = get_config("local")
@@ -84,6 +59,8 @@ def main(args=None):
     os.makedirs(args.output_dir, exist_ok=True)
 
     def save_data(loader, name):
+        split_dir = os.path.join(args.output_dir, name)
+        os.makedirs(split_dir, exist_ok=True)
         for i, (spectrogram, label_matrix) in enumerate(
             tqdm(loader, desc=f"Saving {name} data")
         ):
@@ -91,11 +68,11 @@ def main(args=None):
                 continue
             # Squeeze the batch dimension before saving
             np.save(
-                os.path.join(args.output_dir, f"{name}_{i}_mel.npy"),
+                os.path.join(split_dir, f"{name}_{i}_mel.npy"),
                 spectrogram.squeeze(0).numpy(),
             )
             np.save(
-                os.path.join(args.output_dir, f"{name}_{i}_label.npy"),
+                os.path.join(split_dir, f"{name}_{i}_label.npy"),
                 label_matrix.squeeze(0).numpy(),
             )
 
@@ -105,4 +82,27 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Prepare E-GMD dataset for transformer training using the new pipeline."
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=str,
+        default="datasets/e-gmd-v1.0.0",
+        help="Path to E-GMD dataset directory",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="datasets/processed_transformer",
+        help="Output directory for processed .npy data",
+    )
+    parser.add_argument(
+        "--splits",
+        nargs=3,
+        type=float,
+        default=[0.8, 0.1, 0.1],
+        help="Train, validation, and test split ratios (e.g., 0.8 0.1 0.1)",
+    )
+    args = parser.parse_args()
+    main(args)

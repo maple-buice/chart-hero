@@ -1,115 +1,40 @@
-from unittest.mock import patch
-
-import librosa
 import numpy as np
-import pandas as pd
 import pytest
-import torch
-import torch.nn as nn
-import torchaudio
 
-from chart_hero.inference.input_transform import drum_extraction, drum_to_frame
+from chart_hero.inference.input_transform import audio_to_tensors
+from chart_hero.model_training.transformer_config import get_config
 
 
-class MockDemucs(nn.Module):
-    def __init__(self, sample_rate=44100, audio_channels=2):
-        super().__init__()
-        self.samplerate = sample_rate
-        self.audio_channels = audio_channels
-        self.sources = ["drums", "bass", "other", "vocals"]
+@pytest.fixture
+def dummy_audio_file(tmp_path):
+    """Create a dummy audio file for testing."""
+    sr = 22050
+    duration = 15  # seconds
+    dummy_audio = np.random.randn(sr * duration)
+    file_path = tmp_path / "dummy_audio.wav"
+    import soundfile as sf
 
-    def forward(self, x):
-        return torch.randn(1, 4, x.shape[-1])
-
-
-def test_drum_extraction(tmp_path):
-    """Test the drum_extraction function."""
-
-    # Create a dummy audio file
-    dummy_audio_path = tmp_path / "test.wav"
-    sample_rate = 44100
-    dummy_audio = torch.randn(1, sample_rate * 5)  # 5 seconds of audio
-    torchaudio.save(dummy_audio_path, dummy_audio, sample_rate)
-
-    # Mock the demucs separator
-    with patch("demucs.apply.apply_model") as mock_apply_model:
-        # Mock the return value of apply_model to be a dummy drum track
-        mock_apply_model.return_value = torch.randn(1, 4, sample_rate * 5)
-
-        with patch("demucs.pretrained.get_model") as mock_get_model:
-            mock_model = MockDemucs(sample_rate=sample_rate)
-            mock_get_model.return_value = mock_model
-
-            drum_track, sr = drum_extraction(str(dummy_audio_path))
-
-            assert drum_track is not None
-            assert isinstance(drum_track, np.ndarray)
-            assert sr == sample_rate
+    sf.write(file_path, dummy_audio, sr)
+    return file_path
 
 
-def test_drum_to_frame():
-    """Test the drum_to_frame function."""
+def test_audio_to_tensors(dummy_audio_file):
+    """
+    Test that audio_to_tensors returns a list of tensors of the correct shape.
+    """
+    config = get_config("local")
+    tensors = audio_to_tensors(str(dummy_audio_file), config)
 
-    # Create a dummy drum track
-    sample_rate = 22050
-    dummy_drum_track = np.random.randn(sample_rate * 10)  # 10 seconds of audio
+    assert isinstance(tensors, list)
+    assert len(tensors) > 0
 
-    # Run the drum_to_frame function
-    df, sr, bpm = drum_to_frame(dummy_drum_track, sample_rate)
+    # Check the shape of the first tensor
+    tensor = tensors[0]
+    assert tensor.dim() == 3  # (1, freq, time)
 
-    assert df is not None
-    assert isinstance(df, pd.DataFrame)
-    assert not df.empty
-    assert "audio_clip" in df.columns
-    assert "sample_start" in df.columns
-    assert "sample_end" in df.columns
-    assert "sampling_rate" in df.columns
-    assert "peak_sample" in df.columns
-
-    assert bpm is not None
-    assert isinstance(bpm, float)
-
-
-def test_drum_to_frame_options():
-    """Test the drum_to_frame function with different options."""
-    sample_rate = 22050
-    dummy_drum_track = np.random.randn(sample_rate * 10)
-
-    # Test with backtrack=True
-    df_backtrack, _, _ = drum_to_frame(dummy_drum_track, sample_rate, backtrack=True)
-    assert not df_backtrack.empty
-
-    # Test with fixed_clip_length=True
-    df_fixed, _, _ = drum_to_frame(
-        dummy_drum_track, sample_rate, fixed_clip_length=True
-    )
-    assert not df_fixed.empty
-    # Check that all clips have the same length
-    clip_lengths = df_fixed["audio_clip"].apply(len)
-    assert clip_lengths.nunique() == 1
-
-
-def test_drum_to_frame_bpm_estimation():
-    """Test the BPM estimation in drum_to_frame."""
-    sample_rate = 22050
-    # Create a dummy track with a known BPM
-    bpm = 120
-    beats = np.linspace(0, 10, 10 * bpm // 60)
-    dummy_drum_track = librosa.clicks(
-        times=beats, sr=sample_rate, length=10 * sample_rate
+    expected_time_frames = int(
+        config.max_audio_length * config.sample_rate / config.hop_length
     )
 
-    _, _, estimated_bpm = drum_to_frame(dummy_drum_track, sample_rate)
-    assert (
-        pytest.approx(estimated_bpm, rel=0.1) == bpm
-        or pytest.approx(estimated_bpm, rel=0.1) == bpm / 2
-    )
-
-
-def test_drum_to_frame_silent_audio():
-    """Test drum_to_frame with a silent audio clip."""
-    sample_rate = 22050
-    dummy_drum_track = np.zeros(sample_rate * 10)  # 10 seconds of silence
-
-    df, _, _ = drum_to_frame(dummy_drum_track, sample_rate)
-    assert df.empty
+    assert tensor.shape[1] == config.n_mels
+    assert tensor.shape[2] == expected_time_frames

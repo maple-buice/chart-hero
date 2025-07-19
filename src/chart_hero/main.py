@@ -4,22 +4,17 @@ import os
 from pathlib import Path
 
 import librosa
-import pandas as pd
-import torch
 
-from chart_hero.inference.charter import drum_charter
+from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import (
-    drum_extraction,
-    drum_to_frame,
+    audio_to_tensors,
     get_yt_audio,
 )
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
     identify_song,
 )
-from chart_hero.model_training.train_transformer import DrumTranscriptionModule
-from chart_hero.model_training.transformer_config import get_config, get_drum_hits
-from chart_hero.model_training.transformer_data import SpectrogramProcessor
+from chart_hero.model_training.transformer_config import get_config
 
 
 def main():
@@ -110,54 +105,30 @@ def main():
         else:
             bpm = None
 
-    # Drum extraction
-    drum_track, sr = drum_extraction(
-        f_path,
-        mode=args.kernel_mode,
-    )
-
-    # Drum to frame
-    df, sr, bpm = drum_to_frame(
-        drum_track,
-        sr,
-        estimated_bpm=bpm,
-        resolution=args.resolution,
-        backtrack=args.backtrack,
-        fixed_clip_length=args.fixed_clip_length,
-    )
-
-    # Load model
+    # Process the audio file to get the spectrogram tensors
     config = get_config("local")
-    model = DrumTranscriptionModule.load_from_checkpoint(args.model_path, config=config)
-    model.eval()
+    spectrogram_tensors = audio_to_tensors(f_path, config)
+    if not spectrogram_tensors:
+        print("Could not process audio file.")
+        return
 
-    # Create a spectrogram processor
-    processor = SpectrogramProcessor(config)
+    # Load the charter with the model
+    charter = Charter(config, args.model_path)
 
-    # Predict
-    predictions = []
-    for _, row in df.iterrows():
-        audio_clip = torch.from_numpy(row["audio_clip"]).float()
-        spectrogram = processor.audio_to_spectrogram(audio_clip)
-        with torch.no_grad():
-            output = model(spectrogram.unsqueeze(0))
-        predictions.append(output["logits"].squeeze().numpy())
+    # Predict the drum chart
+    prediction_df = charter.predict(spectrogram_tensors)
 
-    df_pred = pd.DataFrame(predictions, columns=get_drum_hits())
-    df_pred = pd.concat([df, df_pred], axis=1)
-
-    # Create drum chart
-    song_duration = librosa.get_duration(y=drum_track, sr=sr)
-    sheet_music = drum_charter(
-        df_pred,
-        song_duration=song_duration,
+    # Create the chart
+    chart_generator = ChartGenerator(
+        prediction_df,
+        song_duration=librosa.get_duration(path=f_path),
         bpm=bpm,
-        sample_rate=sr,
+        sample_rate=config.sample_rate,
         song_title=audd_result.get("title"),
     )
 
-    # Save chart
-    sheet_music.sheet.write(
+    # Save the chart
+    chart_generator.sheet.write(
         "musicxml", fp=out_path / f"{audd_result.get('title', 'chart')}.musicxml"
     )
     print(f"Sheet music saved at {out_path}")

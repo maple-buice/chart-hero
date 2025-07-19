@@ -29,14 +29,20 @@ def test_initialization(config):
 
 def test_training_step(config):
     """Test a single training step."""
+    config.max_seq_len = 512
     device = torch.device(config.device)
-    module = DrumTranscriptionModule(config).to(device)
+    max_time_patches = config.max_seq_len // config.patch_size[0]
+    module = DrumTranscriptionModule(config, max_time_patches=max_time_patches).to(
+        device
+    )
     module.trainer = MagicMock()
 
-    batch = {
-        "spectrogram": torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device),
-        "labels": torch.randint(0, 2, (1, config.num_drum_classes)).float().to(device),
-    }
+    batch = (
+        torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device),
+        torch.randint(0, 2, (1, config.max_seq_len, config.num_drum_classes))
+        .float()
+        .to(device),
+    )
 
     with patch.object(module, "log") as mock_log:
         loss = module.training_step(batch, 0)
@@ -47,14 +53,20 @@ def test_training_step(config):
 
 def test_validation_step(config):
     """Test a single validation step."""
+    config.max_seq_len = 512
     device = torch.device(config.device)
-    module = DrumTranscriptionModule(config).to(device)
+    max_time_patches = config.max_seq_len // config.patch_size[0]
+    module = DrumTranscriptionModule(config, max_time_patches=max_time_patches).to(
+        device
+    )
     module.trainer = MagicMock()
 
-    batch = {
-        "spectrogram": torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device),
-        "labels": torch.randint(0, 2, (1, config.num_drum_classes)).float().to(device),
-    }
+    batch = (
+        torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device),
+        torch.randint(0, 2, (1, config.max_seq_len, config.num_drum_classes))
+        .float()
+        .to(device),
+    )
 
     with patch.object(module, "log") as mock_log:
         loss = module.validation_step(batch, 0)
@@ -66,14 +78,20 @@ def test_validation_step(config):
 
 def test_test_step(config):
     """Test a single test step."""
+    config.max_seq_len = 512
     device = torch.device(config.device)
-    module = DrumTranscriptionModule(config).to(device)
+    max_time_patches = config.max_seq_len // config.patch_size[0]
+    module = DrumTranscriptionModule(config, max_time_patches=max_time_patches).to(
+        device
+    )
     module.trainer = MagicMock()
 
-    batch = {
-        "spectrogram": torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device),
-        "labels": torch.randint(0, 2, (1, config.num_drum_classes)).float().to(device),
-    }
+    batch = (
+        torch.randn(1, 1, config.n_mels, config.max_seq_len).to(device),
+        torch.randint(0, 2, (1, config.max_seq_len, config.num_drum_classes))
+        .float()
+        .to(device),
+    )
 
     with patch.object(module, "log") as mock_log:
         loss = module.test_step(batch, 0)

@@ -1,7 +1,6 @@
 import sys
 from unittest.mock import patch
 
-import numpy as np
 import torch
 import torchaudio
 
@@ -53,14 +52,16 @@ def test_main_script(tmp_path, monkeypatch):
             "chart_hero.main.get_data_from_acousticbrainz"
         ) as mock_get_data_from_acousticbrainz:
             mock_get_data_from_acousticbrainz.return_value = {}
-            with patch("chart_hero.main.drum_extraction") as mock_drum_extraction:
-                mock_drum_extraction.return_value = (
-                    np.random.randn(sample_rate * 5),
-                    sample_rate,
-                )
-                # Run the main function
-                main()
+            with patch("chart_hero.main.audio_to_tensors") as mock_audio_to_tensors:
+                mock_audio_to_tensors.return_value = [torch.randn(1, 1, 100, 128)]
+                with patch("chart_hero.main.Charter") as mock_charter:
+                    mock_charter.return_value.predict.return_value = "dummy_chart"
+                    with patch(
+                        "chart_hero.main.ChartGenerator"
+                    ) as mock_chart_generator:
+                        # Run the main function
+                        main()
 
-        # Check that an output file was created
-        output_files = list(tmp_path.glob("*.musicxml"))
-        assert len(output_files) > 0, "No output file was created"
+                        # Check that the charter was called
+                        mock_charter.assert_called_once()
+                        mock_chart_generator.assert_called_once()

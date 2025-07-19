@@ -3,10 +3,9 @@ Test script to verify the data loading fixes work correctly.
 """
 
 # Set up logging
+import argparse
 import logging
 import os
-import sys
-from unittest.mock import patch
 
 import mido
 import pandas as pd
@@ -32,6 +31,10 @@ def test_data_loading():
     os.makedirs(dummy_data_dir, exist_ok=True)
     dummy_audio_dir = os.path.join(dummy_data_dir, "audio")
     os.makedirs(dummy_audio_dir, exist_ok=True)
+    os.makedirs(os.path.join(dummy_data_dir, "processed"), exist_ok=True)
+    os.makedirs(os.path.join(dummy_data_dir, "train"), exist_ok=True)
+    os.makedirs(os.path.join(dummy_data_dir, "val"), exist_ok=True)
+    os.makedirs(os.path.join(dummy_data_dir, "test"), exist_ok=True)
 
     # Create dummy metadata file
     dummy_metadata = {
@@ -58,27 +61,17 @@ def test_data_loading():
         mid.save(dummy_midi_path)
 
     # Run data preparation
-    with patch.object(
-        sys,
-        "argv",
-        [
-            "prepare_egmd_data",
-            "--input-dir",
-            dummy_data_dir,
-            "--output-dir",
-            dummy_data_dir,
-            "--splits",
-            "0.8",
-            "0.1",
-            "0.1",
-        ],
-    ):
-        prepare_egmd_data()
+
+    args = argparse.Namespace()
+    args.input_dir = dummy_data_dir
+    args.output_dir = os.path.join(dummy_data_dir, "processed")
+    args.splits = [0.8, 0.1, 0.1]
+    prepare_egmd_data(args)
 
     # Test data loaders creation
     train_loader, val_loader, test_loader = create_data_loaders(
         config=config,
-        data_dir=dummy_data_dir,
+        data_dir=os.path.join(dummy_data_dir, "processed"),
     )
 
     assert train_loader is not None
@@ -86,8 +79,8 @@ def test_data_loading():
     assert test_loader is not None
 
     # Test loading a few samples
-    for i, batch in enumerate(train_loader):
-        assert "spectrogram" in batch
-        assert "labels" in batch
+    for i, (spectrogram, labels) in enumerate(train_loader):
+        assert spectrogram is not None
+        assert labels is not None
         if i >= 2:
             break

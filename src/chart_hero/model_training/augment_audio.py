@@ -350,7 +350,7 @@ def augment_spectrogram_time_masking(
         Augmented spectrogram (numpy array).
     """
     if not overwrite:
-        spec = spec.clone()
+        spec = spec.copy()
 
     if mask_value is None:
         mask_value = spec.min()
@@ -393,7 +393,7 @@ def augment_spectrogram_frequency_masking(
         Augmented spectrogram (numpy array).
     """
     if not overwrite:
-        spec = spec.clone()
+        spec = spec.copy()
 
     if mask_value is None:
         mask_value = spec.min()
@@ -566,7 +566,7 @@ def augment_spectrogram_spans(
         An augmented spectrogram (or other numpy array) with dropout spans applied.
     """
     if not overwrite:
-        spec = spec.clone()
+        spec = spec.copy()
 
     if sig_val is None:  # Corrected check for None
         sig_val = spec.min()  # use for setting to background
