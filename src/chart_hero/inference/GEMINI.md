@@ -2,6 +2,7 @@ The `inference` directory contains the necessary modules and scripts to run the 
 
 - **`charter.py`**: Orchestrates the chart generation process.
 - **`input_transform.py`**: Handles the transformation of input audio into a format suitable for the model.
-- **`prediction.py`**: Uses the trained model to predict drum patterns.
 - **`song_identifier.py`**: Identifies song information using external APIs.
-- **`classes/audd.py`**: A class for interacting with the AudD music identification API.
+- **`classes/`**: Contains helper classes for inference tasks.
+  - **`audd.py`**: A class for interacting with the AudD music identification API.
+- **`pretrained_models/`**: Directory for storing pretrained models used in inference.
