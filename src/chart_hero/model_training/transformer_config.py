@@ -207,12 +207,8 @@ class LocalConfig(BaseConfig):
     prefetch_factor: int = 2
 
     # Paths
-    data_dir: str = (
-        "datasets/processed/"  # Corrected to point to where _train.pkl etc. are saved
-    )
-    audio_dir: str = (
-        "datasets/processed/"  # Should contain the actual audio files, or be derivable
-    )
+    data_dir: str = "../datasets/processed/"  # Corrected to point to where _train.pkl etc. are saved
+    audio_dir: str = "../datasets/processed/"  # Should contain the actual audio files, or be derivable
     log_dir: str = "logs/"
     model_dir: str = "models/local_transformer_models/"  # Renamed from model_save_path and changed to a directory
 
@@ -294,7 +290,7 @@ class CloudConfig(BaseConfig):
     gradient_checkpointing: bool = False  # GPU has more memory
 
     # Colab-specific paths (will be created if they don't exist)
-    data_dir: str = "datasets/"
+    data_dir: str = "../datasets/"
     model_dir: str = "model_training/transformer_models/"
     log_dir: str = "logs/"
 

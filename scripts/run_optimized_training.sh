@@ -56,7 +56,7 @@ echo "Ensure 'train_transformer.py' is configured for a long run (e.g., sufficie
 # Launch training process using caffeinate to prevent sleep, and immediately get its PID
 # Removed --debug flag for overnight training. Changed python to python3.
 echo "Starting caffeinated training process..."
-caffeinate -i -s python3 model_training/train_transformer.py --config local --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0 --monitor-gpu > >(tee $LOG_FILE) &
+caffeinate -i -s python3 model_training/train_transformer.py --config local --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0 --monitor-gpu > >(tee $LOG_FILE) &
 TRAINING_PID=$!
 
 # Give the training process a moment to initialize

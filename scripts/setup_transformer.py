@@ -105,7 +105,7 @@ def create_directories():
     """Create necessary directories."""
     print("📁 Creating directories...")
 
-    directories = ["datasets", "model_training/transformer_models", "logs", "colab"]
+    directories = ["model_training/transformer_models", "logs", "colab"]
 
     for dir_path in directories:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
@@ -182,7 +182,7 @@ def main():
 
     print("\n🎉 Setup completed successfully!")
     print("\nNext steps:")
-    print("1. Prepare your EGMD dataset in the datasets/ directory")
+    print("1. Prepare your EGMD dataset in the ../datasets/ directory")
     print("2. Run: python model_training/test_transformer_setup.py")
     print("3. Start training: python model_training/train_transformer.py --config auto")
 

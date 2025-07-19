@@ -2,7 +2,7 @@
 tokens.py
 
 # Training data
-datasets/*
+../datasets/
 
 # Processing directories
 midi_output/

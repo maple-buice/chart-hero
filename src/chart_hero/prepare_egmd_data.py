@@ -88,13 +88,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input-dir",
         type=str,
-        default="datasets/e-gmd-v1.0.0",
+        default="../datasets/e-gmd-v1.0.0",
         help="Path to E-GMD dataset directory",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="datasets/processed_transformer",
+        default="../datasets/processed_transformer",
         help="Output directory for processed .npy data",
     )
     parser.add_argument(

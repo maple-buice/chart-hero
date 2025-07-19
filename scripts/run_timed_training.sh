@@ -63,8 +63,8 @@ echo "Output Directory: ${OUTPUT_DIR}"
 # Launch training process with custom parameters and immediately get its PID
 python model_training/train_transformer.py \
   --config local \
-  --data-dir datasets/processed \
-  --audio-dir datasets/e-gmd-v1.0.0 \
+  --data-dir ../datasets/processed \
+  --audio-dir ../datasets/e-gmd-v1.0.0 \
   --monitor-gpu \
   --batch-size ${BATCH_SIZE} \
   --hidden-size ${HIDDEN_SIZE} \

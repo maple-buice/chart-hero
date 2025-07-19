@@ -2,9 +2,9 @@
 
 This document outlines the plan for significant improvements to the project's tooling and infrastructure. These steps are designed to enhance reproducibility, code quality, and developer efficiency.
 
-## Prerequisite: Poetry Migration
+## Prerequisite: Conda Environment
 
-Before proceeding with the steps below, the project's dependency management must be migrated from `requirements.txt` to Poetry. The detailed steps for this are documented in `POETRY_MIGRATION.md`.
+Before proceeding with the steps below, the project's dependency management must be migrated from `requirements.txt` to Conda. This has been completed, and the environment is defined in `environment.yml`.
 
 ---
 
@@ -26,13 +26,10 @@ Before proceeding with the steps below, the project's dependency management must
 
 **Actions:**
 
-1.  **Add `mypy`:** Add `mypy` as a development dependency in `pyproject.toml`.
-    ```bash
-    poetry add --group dev mypy
-    ```
-2.  **Configure `mypy`:** Add a `[tool.mypy]` section to `pyproject.toml` to configure paths and checking strictness.
-3.  **Add to Pre-Commit:** Add a `mypy` hook to `.pre-commit-config.yaml` to run type checks automatically before each commit.
-4.  **Add Type Hints:** Incrementally add type hints to the function signatures throughout the codebase.
+1.  **Add `mypy`:** Add `mypy` as a dependency in the `environment.yml` file. **(Done)**
+2.  **Configure `mypy`:** Add a `[tool.mypy]` section to `pyproject.toml` to configure paths and checking strictness. **(Done)**
+3.  **Add to Pre-Commit:** Add a `mypy` hook to `.pre-commit-config.yaml` to run type checks automatically before each commit. **(Done)**
+4.  **Add Type Hints:** Incrementally add type hints to the function signatures throughout the codebase. **(In Progress)**
 
 ---
 
@@ -42,10 +39,7 @@ Before proceeding with the steps below, the project's dependency management must
 
 **Actions:**
 
-1.  **Add `dvc`:** Add `dvc` as a development dependency.
-    ```bash
-    poetry add --group dev dvc
-    ```
+1.  **Add `dvc`:** Add `dvc` as a dependency in the `environment.yml` file.
 2.  **Initialize DVC:** Set up DVC in the project. This will create a few configuration files.
     ```bash
     dvc init
@@ -72,5 +66,5 @@ Before proceeding with the steps below, the project's dependency management must
 2.  **Create `devcontainer.json`:** Inside `.devcontainer`, create a `devcontainer.json` file that specifies:
     *   A base Docker image (e.g., a standard Python 3.12 image).
     *   A list of VS Code extensions to automatically install (e.g., Python, Ruff, Mypy).
-    *   A `postCreateCommand` to automatically run `poetry install` after the container is built.
+    *   A `postCreateCommand` to automatically run `conda env update --file environment.yml --prune` after the container is built.
 3.  **Commit:** Commit the `.devcontainer` directory to the repository. This will enable any developer with VS Code and Docker to instantly build and connect to a consistent development environment.

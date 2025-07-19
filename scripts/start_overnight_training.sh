@@ -67,8 +67,8 @@ echo "Press Ctrl+C in the terminal running this script to stop caffeinate and th
 caffeinate -i -s python3 model_training/train_transformer.py \
     --config "${TRAINING_CONFIG_NAME}" \
     --experiment-tag "${EXPERIMENT_TAG}" \
-    --data-dir "datasets/processed" \
-    --audio-dir "datasets/e-gmd-v1.0.0" \
+    --data-dir "../datasets/processed" \
+    --audio-dir "../datasets/e-gmd-v1.0.0" \
     --monitor-gpu \
     # --use-wandb # Uncomment if you want to use Weights & Biases
     # Add any other essential command-line arguments for train_transformer.py here.

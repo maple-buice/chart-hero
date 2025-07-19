@@ -21,10 +21,10 @@ python prepare_egmd_data.py --sample-ratio 0.1 --memory-limit-gb 32 --high-perfo
 **Training:**
 ```bash
 # Full training
-python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0
+python model_training/train_transformer.py --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0
 
 # Quick test (1 epoch)
-python model_training/train_transformer.py --config auto --data-dir datasets/processed --audio-dir datasets/e-gmd-v1.0.0 --quick-test
+python model_training/train_transformer.py --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0 --quick-test
 ```
 
 ## Legacy Documentation: Drum Note Mapping
