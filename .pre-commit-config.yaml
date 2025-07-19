@@ -14,7 +14,7 @@ repos:
               exit 1
             fi
             '
-        stages: [pre-commit]
+        stages: [commit]
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
