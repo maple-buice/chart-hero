@@ -12,6 +12,26 @@ This project has been significantly updated to use a modern transformer-based ar
 
 For detailed information on model training, see `model_training/README.md`.
 
+## Setup
+
+This project uses [Conda](https://docs.conda.io/en/latest/) to manage dependencies. To get started, create the conda environment using the provided `environment.yml` file:
+
+```bash
+conda env create -f environment.yml
+```
+
+This will create a new conda environment named `chart-hero`. To activate the environment, run:
+
+```bash
+conda activate chart-hero
+```
+
+After creating the environment, install the `chart-hero` package in editable mode:
+
+```bash
+pip install -e .
+```
+
 ## Quick Start
 
 Refer to `model_training/README.md` for data preparation and training commands.

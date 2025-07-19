@@ -1,37 +1,4 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "chart-hero"
-version = "0.1.0"
-authors = [
-  { name="Maple Buice", email="maple.buice@gmail.com" },
-]
-description = "A project to automatically generate drum charts from audio files."
-readme = "README.md"
-requires-python = ">=3.8"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-]
-
-[project.urls]
-"Homepage" = "https://github.com/maple-buice/chart-hero"
-"Bug Tracker" = "https://github.com/maple-buice/chart-hero/issues"
-
-[project.scripts]
-chart-hero = "chart_hero.main:main"
-prepare-egmd-data = "chart_hero.prepare_egmd_data:main"
-
-[tool.black]
-line-length = 88
-target-version = ['py38']
-
-[tool.isort]
-profile = "black"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "C90", "I"]
-ignore = ["E501"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --cov=model_training --cov=inference --cov-report=term-missing"
