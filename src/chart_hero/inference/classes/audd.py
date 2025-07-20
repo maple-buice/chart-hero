@@ -399,8 +399,8 @@ class audd_song_result:
     label: str
     timecode: str
     song_link: str
-    apple_music: apple_music_result
-    spotify: spotify_result
+    apple_music: Optional[apple_music_result]
+    spotify: Optional[spotify_result]
     musicbrainz: list[musicbrainz_result]
 
     def to_dict(self):
@@ -431,7 +431,7 @@ class audd_song_result:
 @dataclass
 class audd_song_response:
     status: str
-    result: audd_song_result
+    result: Optional[audd_song_result]
 
     def to_dict(self):
         return asdict(self)

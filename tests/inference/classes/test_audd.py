@@ -184,4 +184,5 @@ def test_audd_song_response_from_dict():
     response = audd_song_response.from_dict(dummy_response)
     assert response is not None
     assert response.status == "success"
+    assert response.result is not None
     assert response.result.artist == "Test Artist"
