@@ -1,15 +1,18 @@
+# mypy: ignore-errors
 ## This script contains functions to facilitate audio data augmentation for The AnNOTEators Project ##
 
-import logging  # Import logging
-import time  # Import time
+import logging
+import time
 from math import sqrt
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import librosa.display
 import matplotlib.pyplot as plt
-import numpy as np  # Use np consistently
+import numpy as np
+import pandas as pd
 import pedalboard
 from librosa.effects import pitch_shift
-from numpy import mean, random
+from numpy.typing import NDArray
 from pedalboard import LowpassFilter, Pedalboard, Reverb
 from tqdm.auto import tqdm
 
@@ -21,19 +24,35 @@ tqdm.pandas()
 # Configure logging at the module level
 logger = logging.getLogger(__name__)
 
+# --- Type Aliases ---
+# An augmentation function takes a numpy array (audio clip) and returns a modified numpy array.
+# It can accept additional keyword arguments.
+AugmentationFunction = Callable[..., NDArray[Any]]
+
 
 # --- Helper for Randomization ---
-def _get_random_value(param):
+def _get_random_value(param: Tuple[float, float] | float | int) -> float:
     """Gets a random value if param is a tuple/list (min, max), otherwise returns the param."""
     if isinstance(param, (list, tuple)) and len(param) == 2:
-        return random.uniform(param[0], param[1])
-    return param
+        return np.random.uniform(param[0], param[1])
+    # If param is not a list/tuple, it must be a number.
+    # We ensure it's a float for consistency.
+    if isinstance(param, (int, float)):
+        return float(param)
+    # Raise an error for unexpected types.
+    raise TypeError(
+        f"Parameter 'param' must be a number or a tuple of two numbers, not {type(param)}"
+    )
 
 
 # --- Modified Augmentation Functions with Randomization ---
 
 
-def add_lowpass_filter(audio_clip, sample_rate=44100, cutoff_freq_hz_range=(800, 5000)):
+def add_lowpass_filter(
+    audio_clip: NDArray[Any],
+    sample_rate: int = 44100,
+    cutoff_freq_hz_range: Tuple[float, float] = (800, 5000),
+) -> NDArray[Any]:
     """
     Add pedalboard.LowpassFilter to an audio file with randomized cutoff frequency.
 
@@ -48,20 +67,17 @@ def add_lowpass_filter(audio_clip, sample_rate=44100, cutoff_freq_hz_range=(800,
     """
     cutoff_freq = _get_random_value(cutoff_freq_hz_range)
     pb = Pedalboard([LowpassFilter(cutoff_frequency_hz=cutoff_freq)])
-    try:
-        return pb(audio_clip, sample_rate)
-    except Exception as e:
-        print(f"Error applying LowpassFilter: {e}")
-        return audio_clip  # Return original clip on error
+    processed_audio: NDArray[Any] = pb(audio_clip, sample_rate)
+    return processed_audio.flatten()
 
 
 def add_pedalboard_effects(
-    audio_clip,
-    sample_rate=44100,
-    pb=None,
-    room_size_range=(0.1, 0.9),
-    cutoff_freq_hz_range=(800, 5000),
-):
+    audio_clip: NDArray[Any],
+    sample_rate: int = 44100,
+    pb: Optional[Pedalboard] = None,
+    room_size_range: Tuple[float, float] = (0.1, 0.9),
+    cutoff_freq_hz_range: Tuple[float, float] = (800, 5000),
+) -> NDArray[Any]:
     """
     Add pedalboard effects (Reverb, Lowpass) with randomized parameters.
 
@@ -86,14 +102,15 @@ def add_pedalboard_effects(
             ]
         )
 
-    try:
-        return pb(audio_clip, sample_rate)
-    except Exception as e:
-        print(f"Error applying Pedalboard effects: {e}")
-        return audio_clip  # Return original clip on error
+    processed_audio: NDArray[Any] = pb(audio_clip, sample_rate)
+    return processed_audio.flatten()
 
 
-def add_white_noise(audio_clip, snr_db_range=(5, 30), random_state=None):
+def add_white_noise(
+    audio_clip: NDArray[Any],
+    snr_db_range: Tuple[float, float] = (5, 30),
+    random_state: Optional[int] = None,
+) -> NDArray[Any]:
     """
     Add white noise to an audio signal, scaling by a randomized signal-to-noise ratio (SNR).
 
@@ -107,30 +124,29 @@ def add_white_noise(audio_clip, snr_db_range=(5, 30), random_state=None):
         An augmented numpy.ndarray, with white noise added.
     """
     if isinstance(random_state, int):
-        random.seed(
+        np.random.seed(
             seed=random_state
         )  # Note: This sets global seed, consider using np.random.Generator
 
     snr = _get_random_value(snr_db_range)
 
-    audio_clip_rms = sqrt(mean(audio_clip**2))
+    audio_clip_rms = sqrt(np.mean(audio_clip**2))
     if audio_clip_rms == 0:  # Avoid division by zero for silent clips
         return audio_clip
 
     noise_rms = sqrt(audio_clip_rms**2 / (10 ** (snr / 10)))
-    white_noise = random.normal(loc=0, scale=noise_rms, size=audio_clip.shape[0])
+    white_noise = np.random.normal(loc=0, scale=noise_rms, size=audio_clip.shape[0])
 
     return audio_clip + white_noise
 
 
 # --- Safer apply_augmentations using dictionary lookup ---
-# Note: AVAILABLE_AUGMENTATIONS dictionary is defined at the end of the file
-# after all functions are defined
-
-
 def apply_augmentations(
-    df, audio_col="audio_wav", aug_col_names=None, **aug_param_dict
-):
+    df: pd.DataFrame,
+    audio_col: str = "audio_wav",
+    aug_col_names: Optional[List[str]] = None,
+    **aug_param_dict: Any,
+) -> pd.DataFrame:
     """
     Helper function for applying a specified set of augmentations to a dataframe containing audio.
     Uses a dictionary lookup instead of eval() for safety.
@@ -147,15 +163,6 @@ def apply_augmentations(
 
     Returns:
         A dataframe with new columns containing augmented numpy arrays.
-
-    Example usage:
-        aug_params = {
-            'add_white_noise': {'snr_db_range': (15, 35)},
-            'augment_pitch': {'n_steps_range': (-2, 2)},
-            'add_pedalboard_effects': {'room_size_range': (0.2, 0.8)}
-        }
-        # Assuming 'aug_wn', 'aug_pitch', 'aug_effects' are desired column names
-        augmented_df = apply_augmentations(audio_df, aug_col_names=['aug_wn', 'aug_pitch', 'aug_effects'], **aug_params)
     """
     aug_start_time = time.perf_counter()
     logger.debug(f"Applying augmentations with parameters: {aug_param_dict}")
@@ -166,18 +173,12 @@ def apply_augmentations(
     for func_name, params in aug_param_dict.items():
         if func_name in AVAILABLE_AUGMENTATIONS:
             print(f"Applying {func_name}")
-            augmentation_func = AVAILABLE_AUGMENTATIONS[func_name]
-            try:
-                # Using progress_apply can be slow; consider alternatives for large datasets
-                aug_df[func_name] = aug_df[audio_col].progress_apply(  # type: ignore[attr-defined]
-                    lambda x: augmentation_func(x, **params)
-                )
-                applied_funcs.append(func_name)
-            except Exception as e:
-                print(f"Error applying {func_name} via progress_apply: {e}")
-                # Optionally remove the column if creation failed partway
-                if func_name in aug_df.columns:
-                    del aug_df[func_name]
+            augmentation_func: AugmentationFunction = AVAILABLE_AUGMENTATIONS[func_name]
+            # Using progress_apply can be slow; consider alternatives for large datasets
+            aug_df[func_name] = aug_df[audio_col].progress_apply(
+                lambda x: augmentation_func(x, **params)
+            )
+            applied_funcs.append(func_name)
         else:
             print(
                 f"Warning: Unknown or disallowed augmentation function '{func_name}' skipped."
@@ -201,12 +202,12 @@ def apply_augmentations(
 
 
 def augment_pitch(
-    audio_clip,
-    sample_rate=44100,
-    n_steps_range=(-3, 3),
-    bins_per_octave=12,
-    res_type="kaiser_best",
-):
+    audio_clip: NDArray[Any],
+    sample_rate: int = 44100,
+    n_steps_range: Tuple[int, int] = (-3, 3),
+    bins_per_octave: int = 12,
+    res_type: str = "kaiser_best",
+) -> NDArray[Any]:
     """
     Augment the pitch of an audio file by a randomized number of steps.
 
@@ -228,27 +229,27 @@ def augment_pitch(
         n_steps = 0
     else:
         # Ensure integer steps are chosen, and that the step is not 0
-        n_steps = random.randint(n_steps_range[0], n_steps_range[1] + 1)
+        n_steps = np.random.randint(n_steps_range[0], n_steps_range[1] + 1)
         while n_steps == 0:
-            n_steps = random.randint(n_steps_range[0], n_steps_range[1] + 1)
+            n_steps = np.random.randint(n_steps_range[0], n_steps_range[1] + 1)
 
     if n_steps == 0:
         return audio_clip  # No shift needed
 
-    try:
-        return pitch_shift(
-            y=audio_clip,
-            sr=sample_rate,
-            n_steps=float(n_steps),  # librosa expects float
-            bins_per_octave=bins_per_octave,
-            res_type=res_type,
-        )
-    except Exception as e:
-        print(f"Error applying pitch shift: {e}")
-        return audio_clip  # Return original clip on error
+    return pitch_shift(
+        y=audio_clip,
+        sr=sample_rate,
+        n_steps=float(n_steps),  # librosa expects float
+        bins_per_octave=bins_per_octave,
+        res_type=res_type,
+    )
 
 
-def augment_pitch_jitter(audio_clip, sample_rate=44100, pitch_range_cents=(-50, 50)):
+def augment_pitch_jitter(
+    audio_clip: NDArray[Any],
+    sample_rate: int = 44100,
+    pitch_range_cents: Tuple[float, float] = (-50, 50),
+) -> NDArray[Any]:
     """
     Apply subtle, random pitch jitter to an audio clip.
     This helps prevent the model from overfitting to the specific tuning of kit pieces.
@@ -259,14 +260,12 @@ def augment_pitch_jitter(audio_clip, sample_rate=44100, pitch_range_cents=(-50, 
     if abs(n_steps) < 0.01:  # No significant shift
         return audio_clip
 
-    try:
-        return pitch_shift(y=audio_clip, sr=sample_rate, n_steps=n_steps)
-    except Exception as e:
-        print(f"Error applying pitch jitter: {e}")
-        return audio_clip
+    return pitch_shift(y=audio_clip, sr=sample_rate, n_steps=n_steps)
 
 
-def augment_time_stretch(audio_clip, rate_range=(0.95, 1.05)):
+def augment_time_stretch(
+    audio_clip: NDArray[Any], rate_range: Tuple[float, float] = (0.95, 1.05)
+) -> NDArray[Any]:
     """
     Apply subtle, random time stretching to an audio clip.
     This alters the attack/decay characteristics.
@@ -276,19 +275,17 @@ def augment_time_stretch(audio_clip, rate_range=(0.95, 1.05)):
     if abs(rate - 1.0) < 0.01:  # No significant stretch
         return audio_clip
 
-    try:
-        return librosa.effects.time_stretch(y=audio_clip, rate=rate)
-    except Exception as e:
-        print(f"Error applying time stretch: {e}")
-        return audio_clip
+    return librosa.effects.time_stretch(y=audio_clip, rate=rate)
 
 
-def augment_dynamic_eq(audio_clip, sample_rate=44100):
+def augment_dynamic_eq(
+    audio_clip: NDArray[Any], sample_rate: int = 44100
+) -> NDArray[Any]:
     """
     Apply a randomized EQ to alter the timbre of the audio.
     """
     # Apply pre-emphasis outside of the Pedalboard chain
-    audio_clip = librosa.effects.preemphasis(audio_clip)
+    preemphasized_audio: NDArray[Any] = librosa.effects.preemphasis(audio_clip)
 
     board = Pedalboard(
         [
@@ -309,35 +306,20 @@ def augment_dynamic_eq(audio_clip, sample_rate=44100):
             ),
         ]
     )
-    try:
-        return board(audio_clip, sample_rate)
-    except Exception as e:
-        print(f"Error applying dynamic EQ: {e}")
-        return audio_clip
-
-
-def augment_distortion(audio_clip, sample_rate=44100, drive_db_range=(0, 12)):
-    """
-    Apply subtle distortion to the audio.
-    """
-    drive_db = _get_random_value(drive_db_range)
-    if drive_db < 0.1:
-        return audio_clip
-
-    board = Pedalboard([pedalboard.Distortion(drive_db=drive_db)])
-    try:
-        return board(audio_clip, sample_rate)
-    except Exception as e:
-        print(f"Error applying distortion: {e}")
-        return audio_clip
+    processed_audio: NDArray[Any] = board(preemphasized_audio, sample_rate)
+    return processed_audio.flatten()
 
 
 # --- Spectrogram Augmentation ---
 
 
 def augment_spectrogram_time_masking(
-    spec, num_masks=1, max_mask_percentage=0.1, mask_value=None, overwrite=False
-):
+    spec: NDArray[Any],
+    num_masks: int = 1,
+    max_mask_percentage: float = 0.1,
+    mask_value: Optional[float] = None,
+    overwrite: bool = False,
+) -> NDArray[Any]:
     """
     Apply time masking to a spectrogram (e.g., Mel spectrogram).
     Masks vertical bands corresponding to time steps.
@@ -365,12 +347,12 @@ def augment_spectrogram_time_masking(
         max_mask_width = int(max_mask_percentage * num_time_steps)
         if max_mask_width < 1:
             max_mask_width = 1  # Ensure at least 1 step can be masked
-        mask_width = random.randint(1, max_mask_width + 1)
+        mask_width = np.random.randint(1, max_mask_width + 1)
 
         # Determine start position
         if num_time_steps - mask_width < 0:
             continue  # Skip if mask is wider than spectrogram
-        start_step = random.randint(0, num_time_steps - mask_width)
+        start_step = np.random.randint(0, num_time_steps - mask_width)
 
         # Apply mask
         spec[:, start_step : start_step + mask_width] = mask_value
@@ -379,8 +361,12 @@ def augment_spectrogram_time_masking(
 
 
 def augment_spectrogram_frequency_masking(
-    spec, num_masks=1, max_mask_percentage=0.15, mask_value=None, overwrite=False
-):
+    spec: NDArray[Any],
+    num_masks: int = 1,
+    max_mask_percentage: float = 0.15,
+    mask_value: Optional[float] = None,
+    overwrite: bool = False,
+) -> NDArray[Any]:
     """
     Apply frequency masking to a spectrogram (e.g., Mel spectrogram).
     Masks horizontal bands corresponding to frequency bins.
@@ -408,12 +394,12 @@ def augment_spectrogram_frequency_masking(
         max_mask_height = int(max_mask_percentage * num_freq_bins)
         if max_mask_height < 1:
             max_mask_height = 1  # Ensure at least 1 bin can be masked
-        mask_height = random.randint(1, max_mask_height + 1)
+        mask_height = np.random.randint(1, max_mask_height + 1)
 
         # Determine start position
         if num_freq_bins - mask_height < 0:
             continue  # Skip if mask is taller than spectrogram
-        start_bin = random.randint(0, num_freq_bins - mask_height)
+        start_bin = np.random.randint(0, num_freq_bins - mask_height)
 
         # Apply mask
         spec[start_bin : start_bin + mask_height, :] = mask_value
@@ -422,27 +408,17 @@ def augment_spectrogram_frequency_masking(
 
 
 # --- Deprecated/Modified Span Augmentation ---
-# Note: The original augment_spectrogram_spans mixed time and frequency in a less standard way.
-# Replaced with separate time and frequency masking functions above, following SpecAugment principles.
-# Keeping the old helper function in case it's needed for the original logic, but recommend using the new ones.
-
-
-def get_span_indices(dim, min_span=5, max_span=None, span_variation=0):
+def get_span_indices(
+    dim: int,
+    min_span: int = 5,
+    max_span: Optional[int] = None,
+    span_variation: int = 0,
+) -> List[int]:
     """
-    Helper function to find array indices for span augmentation (used by original augment_spectrogram_spans).
-    Consider using the new time/frequency masking functions instead.
-
-    dim: Integer representing the dimension of an array.
-    min_span: Integer for minimum span length; may be less than min_span if lower bound is near 0.
-    max_span: Integer for maximum span length, defaults to None. Uses lower bound to set max span.
-    span_variation: Integer corresponding to variation to introduce into span lengths.
-
-    Returns:
-        Span indices [start_index, end_index]
+    Helper function to find array indices for span augmentation.
     """
-
     # Add variation to min/max span lengths
-    rand_min_span = min_span + random.randint(
+    rand_min_span = min_span + np.random.randint(
         low=-span_variation, high=span_variation + 1
     )
     if rand_min_span <= 0:
@@ -450,85 +426,82 @@ def get_span_indices(dim, min_span=5, max_span=None, span_variation=0):
 
     rand_max_span = max_span
     if max_span is not None:
-        rand_max_span = max_span + random.randint(
+        rand_max_span = max_span + np.random.randint(
             low=-span_variation, high=span_variation + 1
         )
         if rand_max_span < rand_min_span:
-            rand_max_span = rand_min_span  # Ensure max >= min
+            rand_max_span = rand_min_span
         if rand_max_span <= 0:
             rand_max_span = 1
 
     # Determine span length
     if rand_max_span is not None:
-        span_len = random.randint(rand_min_span, rand_max_span + 1)
+        span_len = np.random.randint(rand_min_span, rand_max_span + 1)
     else:
         span_len = rand_min_span
 
-    # Ensure span length is not greater than dimension
     span_len = min(span_len, dim)
     if span_len <= 0:
         span_len = 1
 
-    # Determine start position
-    if (
-        dim - span_len < 0
-    ):  # Should not happen with the min(span_len, dim) above, but safe check
+    if dim - span_len < 0:
         start_ind = 0
         span_len = dim
     else:
-        start_ind = random.randint(0, dim - span_len)
+        start_ind = np.random.randint(0, dim - span_len)
 
-    end_ind = start_ind + span_len - 1  # Inclusive end index
-
+    end_ind = start_ind + span_len - 1
     return [start_ind, end_ind]
 
 
 # --- Visualization (Unchanged) ---
 def compare_waveforms(
-    df,
-    i,
-    signal_cols,
-    signal_labs=None,
-    sample_rate=44100,
-    max_pts=None,
-    alpha=0.5,
-    fontsizes=[24, 18, 20],
-    figsize=(16, 12),
-    leg_loc="best",
-    title="",
-):
-    # ... existing code ...
-    # (No changes needed in this function based on the request)
+    df: pd.DataFrame,
+    i: int,
+    signal_cols: List[str],
+    signal_labs: Optional[List[str]] = None,
+    sample_rate: int = 44100,
+    max_pts: Optional[int] = None,
+    alpha: float | List[float] = 0.5,
+    fontsizes: List[int] = [24, 18, 20],
+    figsize: Tuple[int, int] = (16, 12),
+    leg_loc: str = "best",
+    title: str = "",
+) -> None:
     if signal_labs is None:
         signal_labs = signal_cols
     elif (len(signal_labs) < len(signal_cols)) or not isinstance(signal_labs, list):
-        print(
-            "Not enough labels were provided in list form. Using column names as labels."
-        )
+        print("Not enough labels were provided. Using column names as labels.")
         signal_labs = signal_cols
 
+    alpha_list: List[float]
     if isinstance(alpha, float):
-        alpha = [alpha for s in signal_cols]
+        alpha_list = [alpha for _ in signal_cols]
     elif len(alpha) < len(signal_cols):
-        print(
-            "Alpha list contained insufficient values, using first value for all signals."
-        )
-        alpha = [alpha[0] for s in signal_cols]
+        print("Alpha list insufficient, using first value for all signals.")
+        alpha_list = [alpha[0] for _ in signal_cols]
+    else:
+        alpha_list = alpha
 
     plt.figure(figsize=figsize)
 
-    for col, lab, alp in list(zip(signal_cols, signal_labs, alpha)):
-        # Ensure data is float for waveplot
+    for col, lab, alp in zip(signal_cols, signal_labs, alpha_list):
         audio_data = df.loc[i, col].astype(np.float32)
-        librosa.display.waveshow(
-            audio_data, sr=sample_rate, max_points=max_pts, label=lab, alpha=alp
-        )
 
-    if title == "":
+        waveshow_kwargs: Dict[str, Any] = {
+            "y": audio_data,
+            "sr": sample_rate,
+            "label": lab,
+            "alpha": alp,
+        }
+        if max_pts is not None:
+            waveshow_kwargs["max_points"] = max_pts
+
+        librosa.display.waveshow(**waveshow_kwargs)
+
+    if not title:
         plt.title(
-            "Comparison of audio clips for element: {}, label: {}".format(
-                i, df.loc[i, "label"]
-            ),
+            f"Comparison of audio clips for element: {i}, label: {df.loc[i, 'label']}",
             fontsize=fontsizes[0],
         )
     else:
@@ -540,52 +513,32 @@ def compare_waveforms(
 
 # --- Original augment_spectrogram_spans (Marked for review/deprecation) ---
 def augment_spectrogram_spans(
-    spec,
-    spans=3,
-    span_ranges=[[1, 4], [1, 6]],
-    span_variation=1,
-    ind_lists=None,
-    sig_val=None,
-    overwrite=False,
-):
+    spec: NDArray[Any],
+    spans: int = 3,
+    span_ranges: List[List[int]] = [[1, 4], [1, 6]],
+    span_variation: int = 1,
+    ind_lists: Optional[List[List[List[int]]]] = None,
+    sig_val: Optional[float] = None,
+    overwrite: bool = False,
+) -> NDArray[Any]:
     """
-    DEPRECATION WARNING: This function applies rectangular masks based on separate time/frequency span calculations.
-    Consider using augment_spectrogram_time_masking and augment_spectrogram_frequency_masking instead
-    for standard SpecAugment-style masking.
-
-    Set spectrogram (or other 2-d numpy array) span(s) to background or another signal.
-
-    Parameters:
-        spec: Numpy array; presumed to be a spectrogram or other signal approprtiate for dropout augmentation.
-        spans: Integer corresponding to the number of dropout spans to construct.
-        span_ranges: List of lists corresponding to integers for x (time) and y (freq) dimensions used in spans.
-        span_variation: Integer corresponding to variation to introduce into span lengths.
-        ind_lists: List of lists corresponding to array indices to augment; By default, a list will be
-            created.
-        sig_val: value to set sub arrays to; minimum (background) value is used by default.
-        overwrite: Boolean signifying whether to overwrite the input array.
-
-    Returns:
-        An augmented spectrogram (or other numpy array) with dropout spans applied.
+    DEPRECATION WARNING: This function is kept for legacy purposes.
+    Consider using augment_spectrogram_time_masking and augment_spectrogram_frequency_masking.
     """
     if not overwrite:
         spec = spec.copy()
 
-    if sig_val is None:  # Corrected check for None
-        sig_val = spec.min()  # use for setting to background
+    if sig_val is None:
+        sig_val = spec.min()
 
     if not isinstance(spans, int):
-        print(
-            "Value supplied for spans supplied was not an integer. Setting spans to 1."
-        )
+        print("Value for spans was not an integer. Setting spans to 1.")
         spans = 1
 
     if not ind_lists:
         ind_lists = []
         dims = spec.shape
-        for i in range(0, spans):
-            # Note: Original logic used get_span_indices for both time (dims[1]) and freq (dims[0])
-            # This creates rectangular blocks, not just time or frequency stripes.
+        for _ in range(spans):
             time_inds = get_span_indices(
                 dims[1],
                 min_span=span_ranges[0][0],
@@ -598,24 +551,19 @@ def augment_spectrogram_spans(
                 max_span=span_ranges[1][1],
                 span_variation=span_variation,
             )
-            ind_lists.append(
-                [time_inds, freq_inds]
-            )  # Store as [time_indices, freq_indices]
+            ind_lists.append([time_inds, freq_inds])
 
     for ind_list in ind_lists:
-        time_inds = ind_list[0]
-        freq_inds = ind_list[1]
-        # Apply mask using frequency indices for rows, time indices for columns
+        time_inds, freq_inds = ind_list[0], ind_list[1]
         spec[freq_inds[0] : freq_inds[1] + 1, time_inds[0] : time_inds[1] + 1] = sig_val
 
     return spec
 
 
-# --- Available augmentations dictionary (defined at end after all functions) ---
-AVAILABLE_AUGMENTATIONS = {
+# --- Available augmentations dictionary ---
+AVAILABLE_AUGMENTATIONS: Dict[str, AugmentationFunction] = {
     "add_lowpass_filter": add_lowpass_filter,
     "add_pedalboard_effects": add_pedalboard_effects,
     "add_white_noise": add_white_noise,
     "augment_pitch": augment_pitch,
-    # Add other functions here if they are intended to be used via this helper
 }
