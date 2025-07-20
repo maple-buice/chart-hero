@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import torch
 import torchaudio
+from chart_hero.inference.classes.audd import audd_song_result
 from chart_hero.main import main
 
 
@@ -42,11 +43,33 @@ def test_main_script(tmp_path, monkeypatch):
     )
 
     with patch("chart_hero.main.identify_song") as mock_identify_song:
-        mock_identify_song.return_value = {
-            "title": "test_song",
-            "artist": "test_artist",
-            "musicbrainz": [{"id": "123"}],
-        }
+        mock_identify_song.return_value = audd_song_result.from_dict(
+            {
+                "artist": "test_artist",
+                "title": "test_song",
+                "album": "test_album",
+                "release_date": "2025-01-01",
+                "label": "test_label",
+                "timecode": "00:00",
+                "song_link": "https://example.com",
+                "apple_music": None,
+                "spotify": None,
+                "musicbrainz": [
+                    {
+                        "id": "123",
+                        "artist_credit": [],
+                        "disambiguation": "",
+                        "isrcs": [],
+                        "length": 0,
+                        "releases": [],
+                        "score": 0,
+                        "tags": [],
+                        "title": "",
+                        "video": None,
+                    }
+                ],
+            }
+        )
         with patch(
             "chart_hero.main.get_data_from_acousticbrainz"
         ) as mock_get_data_from_acousticbrainz:

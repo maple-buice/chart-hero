@@ -403,6 +403,9 @@ class audd_song_result:
     spotify: spotify_result
     musicbrainz: list[musicbrainz_result]
 
+    def to_dict(self):
+        return asdict(self)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "audd_song_result":
         return cls(
@@ -413,8 +416,12 @@ class audd_song_result:
             label=data["label"],
             timecode=data["timecode"],
             song_link=data["song_link"],
-            apple_music=apple_music_result.from_dict(data["apple_music"]),
-            spotify=spotify_result.from_dict(data["spotify"]),
+            apple_music=apple_music_result.from_dict(data["apple_music"])
+            if data.get("apple_music")
+            else None,
+            spotify=spotify_result.from_dict(data["spotify"])
+            if data.get("spotify")
+            else None,
             musicbrainz=[
                 musicbrainz_result.from_dict(item) for item in data["musicbrainz"]
             ],
@@ -433,5 +440,7 @@ class audd_song_response:
     def from_dict(cls, data: dict[str, Any]) -> "audd_song_response":
         return cls(
             status=data["status"],
-            result=audd_song_result.from_dict(data["result"]),
+            result=audd_song_result.from_dict(data["result"])
+            if data.get("result")
+            else None,
         )

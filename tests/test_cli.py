@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import torch
 from chart_hero.__main__ import main
+from chart_hero.inference.classes.audd import audd_song_result
 
 
 @patch("librosa.get_duration")
@@ -22,11 +23,33 @@ def test_main(
     mock_get_duration,
 ):
     """Test that the main function calls the new pipeline correctly."""
-    mock_identify_song.return_value = {
-        "title": "test_song",
-        "artist": "test_artist",
-        "musicbrainz": [{"id": "123"}],
-    }
+    mock_identify_song.return_value = audd_song_result.from_dict(
+        {
+            "artist": "test_artist",
+            "title": "test_song",
+            "album": "test_album",
+            "release_date": "2025-01-01",
+            "label": "test_label",
+            "timecode": "00:00",
+            "song_link": "https://example.com",
+            "apple_music": None,
+            "spotify": None,
+            "musicbrainz": [
+                {
+                    "id": "123",
+                    "artist_credit": [],
+                    "disambiguation": "",
+                    "isrcs": [],
+                    "length": 0,
+                    "releases": [],
+                    "score": 0,
+                    "tags": [],
+                    "title": "",
+                    "video": None,
+                }
+            ],
+        }
+    )
     mock_get_data_from_acousticbrainz.return_value = {"bpm": 120}
     mock_audio_to_tensors.return_value = [torch.randn(1, 1, 100, 128)]
     mock_charter.return_value.predict.return_value = "dummy_chart"

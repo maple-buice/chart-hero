@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 import requests
-from chart_hero.inference.classes.audd import audd_song_response, audd_song_result
+from chart_hero.inference.classes.audd import audd_song_response
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
     identify_song,
@@ -24,7 +24,26 @@ def test_identify_song_success(mock_post, tmp_path):
             "artist": "Test Artist",
             "title": "Test Song",
             "album": "Test Album",
-            "musicbrainz": [{"id": "test_mbid"}],
+            "release_date": "2025-01-01",
+            "label": "Test Label",
+            "timecode": "00:00",
+            "song_link": "https://example.com",
+            "apple_music": None,
+            "spotify": None,
+            "musicbrainz": [
+                {
+                    "id": "test_mbid",
+                    "artist_credit": [],
+                    "disambiguation": "",
+                    "isrcs": [],
+                    "length": 0,
+                    "releases": [],
+                    "score": 0,
+                    "tags": [],
+                    "title": "",
+                    "video": None,
+                }
+            ],
         },
     }
 
@@ -124,7 +143,20 @@ def test_get_data_from_acousticbrainz_success(mock_get):
                 "song_link": "https://example.com",
                 "apple_music": None,
                 "spotify": None,
-                "musicbrainz": [{"id": "test_mbid"}],
+                "musicbrainz": [
+                    {
+                        "id": "test_mbid",
+                        "artist_credit": [],
+                        "disambiguation": "",
+                        "isrcs": [],
+                        "length": 0,
+                        "releases": [],
+                        "score": 0,
+                        "tags": [],
+                        "title": "",
+                        "video": None,
+                    }
+                ],
             },
         }
     )

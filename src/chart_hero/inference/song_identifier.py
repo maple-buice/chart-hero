@@ -16,6 +16,9 @@ def identify_song(path: str) -> audd_song_result:
     response.raise_for_status()  # Raise an exception for bad status codes
     response_json = response.json()
 
+    if not response_json or not response_json.get("result"):
+        raise ValueError("No result found in AudD API response")
+
     audd_response = audd_song_response.from_dict(response_json)
     if not audd_response or not audd_response.result:
         raise ValueError("No result found in AudD API response")

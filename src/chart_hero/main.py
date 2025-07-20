@@ -97,7 +97,7 @@ def main():
         # Identify song
         audd_result = identify_song(f_path)
         with open(out_path / "audd_result.json", "w") as f:
-            json.dump(audd_result, f, indent=4)
+            json.dump(audd_result.to_dict(), f, indent=4)
 
         # Get acoustic data
         if audd_result and audd_result.musicbrainz:
@@ -131,9 +131,7 @@ def main():
     )
 
     # Save the chart
-    chart_generator.sheet.write(
-        "musicxml", fp=out_path / f"{title}.musicxml"
-    )
+    chart_generator.sheet.write("musicxml", fp=out_path / f"{title}.musicxml")
     print(f"Sheet music saved at {out_path}")
     if args.link is not None:
         os.remove(f_path)
