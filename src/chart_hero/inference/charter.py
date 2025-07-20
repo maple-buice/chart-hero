@@ -107,7 +107,7 @@ class ChartGenerator:
             self.synced_8_6_div,
         ) = self.master_sync(_16_div, _32_div, _8_triplet_div, _8_sixlet_div)
 
-        self.pitch_dict = self.get_pitch_dict()
+        self.pitch_dict: dict[float, list[int | str]] = self.get_pitch_dict()
         stream_time_map, stream_pitch, stream_note = self.build_stream()
         self.music21_data = self.get_music21_data(
             stream_time_map, stream_pitch, stream_note
@@ -174,9 +174,9 @@ class ChartGenerator:
         A function to clean up and merge all the necessary information in a format that can pass to the build_stream step to build sheet music
         """
         measure_log = 0
-        stream_time_map = []
+        stream_time_map: list[list[float]] = []
         stream_pitch: list[list[list[int | str]]] = []
-        stream_note = []
+        stream_note: list[list[float]] = []
         synced_8_div = np.around(self.synced_8_div, 8)
         for i in range(len(synced_8_div) // self.beats_in_measure):
             measure_iter = list(
@@ -189,8 +189,8 @@ class ChartGenerator:
 
         remaining_8 = len(synced_8_div) % self.beats_in_measure
         measure, note_dur = self.build_measure(synced_8_div[-remaining_8:])
-        measure.extend([-1] * (self.beats_in_measure - remaining_8))
-        note_dur.extend([8] * (self.beats_in_measure - remaining_8))
+        measure.extend([-1.0] * (self.beats_in_measure - remaining_8))
+        note_dur.extend([8.0] * (self.beats_in_measure - remaining_8))
 
         stream_time_map.append(measure)
         stream_note.append(note_dur)
@@ -198,7 +198,7 @@ class ChartGenerator:
         for measure in stream_time_map:
             pitch_set: list[list[int | str]] = []
             for note_val in measure:
-                if note_val in self.pitch_dict.keys():
+                if note_val in self.pitch_dict:
                     if len(self.pitch_dict[note_val]) == 0:
                         pitch_set.append(["rest"])
                     else:
@@ -297,7 +297,12 @@ class ChartGenerator:
             if len(sub_notes) > 0:
                 # if onsets are deteced between 2 consecuive eighth notes,
                 # the below algo will match each note (based on its position in the time domain) to the closest note division (16th, 32th, eighth triplets or eighth sixthlet note)
-                dist_dict: dict[str, list[float]] = {"_16": [], "_32": [], "_8_3": [], "_8_6": []}
+                dist_dict: dict[str, list[float]] = {
+                    "_16": [],
+                    "_32": [],
+                    "_8_3": [],
+                    "_8_6": [],
+                }
                 sub_notes_dict = {
                     "_16": np.round(
                         np.linspace(self.synced_8_div[i], self.synced_8_div[i + 1], 3),
@@ -397,7 +402,7 @@ class ChartGenerator:
         synced_8_3_div = np.around(self.synced_8_3_div, 8)
         synced_8_6_div = np.around(self.synced_8_6_div, 8)
         measure: list[list[float]] = []
-        note_dur: list[list[float]] = []
+        note_dur: list[float] = []
         for note_val in measure_iter:
             _div = False
             for div in [
@@ -410,17 +415,16 @@ class ChartGenerator:
                     pos = np.where(div[0] == note_val)
                     pos = pos[0][0]
                     measure.append(list(div[0][pos : pos + div[1]]))
-                    note_dur.append([div[2]] * div[1])
+                    note_dur.extend([div[2]] * div[1])
                     _div = True
             if not _div:
                 measure.append([note_val])
-                note_dur.append([0.5])
+                note_dur.append(0.5)
 
         flat_measure = [item for sublist in measure for item in sublist]
-        flat_note_dur = [item for sublist in note_dur for item in sublist]
-        return flat_measure, flat_note_dur
+        return flat_measure, note_dur
 
-    def get_pitch_dict(self) -> dict[float, list[int]]:
+    def get_pitch_dict(self) -> dict[float, list[int | str]]:
         """
         A function to reformat the prediction result in a format that can pass to the build_stream step to build all the required data for sheet music construction step
         """
@@ -436,7 +440,7 @@ class ChartGenerator:
             "peak_sample"
         )
         pitch_mapping = pitch_mapping.to_dict(orient="index")
-        pitch_dict: dict[float, list[int]] = {}
+        pitch_dict: dict[float, list[int | str]] = {}
         for p in pitch_mapping.keys():
             time = round(librosa.samples_to_time(p, sr=self.sample_rate), 8)
             pitch_dict[time] = []
