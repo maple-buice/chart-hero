@@ -14,19 +14,31 @@ For detailed information on model training, see `model_training/README.md`.
 
 ## Setup
 
-This project uses [Conda](https://docs.conda.io/en/latest/) to manage dependencies. To get started, create the conda environment using the provided `environment.yml` file:
+This project uses [Conda](https://docs.conda.io/en/latest/) to manage dependencies. To get started, create a new conda environment:
 
 ```bash
-conda env create -f environment.yml
+conda create -n chart-hero-arm64 python=3.11 -y
 ```
 
-This will create a new conda environment named `chart-hero`. To activate the environment, run:
+Activate the new environment:
 
 ```bash
-conda activate chart-hero
+conda activate chart-hero-arm64
 ```
 
-After creating the environment, install the `chart-hero` package in editable mode:
+Next, install the required dependencies. First, install PyTorch from the nightly channel:
+
+```bash
+conda install pytorch torchvision torchaudio -c pytorch-nightly -y
+```
+
+Then, install the rest of the dependencies from the `environment.yml` file:
+
+```bash
+conda env update -n chart-hero-arm64 -f environment.yml
+```
+
+Finally, install the `chart-hero` package in editable mode:
 
 ```bash
 pip install -e .
