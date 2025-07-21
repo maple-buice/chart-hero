@@ -63,3 +63,13 @@ export AUDD_API_TOKEN="your_api_token_here"
 ```
 
 **Testing the pre-commit hooks.**
+
+## Troubleshooting
+
+### ModuleNotFoundError: No module named 'typing_extensions'
+
+If you encounter this error, it may be due to a version conflict with `pytorch-lightning`. To resolve this, force a reinstallation of `pytorch-lightning` and `lightning-utilities`:
+
+```bash
+pip install --force-reinstall --no-deps pytorch-lightning lightning-utilities
+```
