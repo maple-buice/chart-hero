@@ -20,6 +20,14 @@ The training script includes a fallback mechanism that will automatically switch
 
 We are actively monitoring this issue and will update the project as soon as a fix is available.
 
+## :warning: MPS Accelerator Issue on Apple Silicon
+
+There is a known issue with `pytorch-lightning` on some Apple Silicon machines where the MPS accelerator fails to initialize, even when `torch` reports that it is available. This appears to be a bug in `pytorch-lightning`.
+
+The training script includes a fallback mechanism that will automatically switch to the CPU if the MPS accelerator is not available. This will allow you to run the training script, but it will be significantly slower than using the GPU.
+
+We are actively monitoring this issue and will update the project as soon as a fix is available.
+
 ## Setup
 
 This project requires an `arm64` build of Python 3.11 on Apple Silicon machines to use the MPS accelerator.
