@@ -12,13 +12,9 @@ This project has been significantly updated to use a modern transformer-based ar
 
 For detailed information on model training, see `model_training/README.md`.
 
-## :warning: MPS Accelerator Issue on Apple Silicon
+## Never delete
 
-There is a known issue with `pytorch-lightning` on some Apple Silicon machines where the MPS accelerator fails to initialize, even when `torch` reports that it is available. This appears to be a bug in `pytorch-lightning`.
-
-The training script includes a fallback mechanism that will automatically switch to the CPU if the MPS accelerator is not available. This will allow you to run the training script, but it will be significantly slower than using the GPU.
-
-We are actively monitoring this issue and will update the project as soon as a fix is available.
+If you're having trouble with getting all the packages and MPS to get along, try `pip3 install numpy --pre torch torchvision torchaudio numba --extra-index-url https://download.pytorch.org/whl/nightly/cpu --force-reinstall`!
 
 ## Setup
 

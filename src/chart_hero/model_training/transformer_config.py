@@ -196,7 +196,7 @@ class LocalConfig(BaseConfig):
     train_batch_size: int = 4  # Conservative default for MPS
     val_batch_size: int = 8  # Conservative default for MPS
     num_workers: int = 2  # Reduced for MPS stability
-    pin_memory: bool = False  # Disabled since not supported on MPS
+    pin_memory: bool = True  # Disabled since not supported on MPS
 
     # Training settings
     gradient_checkpointing: bool = True
@@ -213,7 +213,7 @@ class LocalConfig(BaseConfig):
     max_seq_len: int = 512  # Reduced from 768
 
     def __post_init__(self):
-        if torch.backends.mps.is_available():
+        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
             self.device = "mps"
         elif torch.cuda.is_available():
             self.device = "cuda"

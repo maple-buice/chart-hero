@@ -1,8 +1,7 @@
-import torch
-from torch.utils.data import DataLoader
-from chart_hero.model_training.transformer_data import NpyDrumDataset, custom_collate_fn
-from chart_hero.model_training.transformer_config import get_config
 import numpy as np
+from chart_hero.model_training.transformer_config import get_config
+from chart_hero.model_training.transformer_data import NpyDrumDataset, custom_collate_fn
+from torch.utils.data import DataLoader
 
 
 def test_data_pipeline_with_variable_lengths(tmp_path):
@@ -15,8 +14,12 @@ def test_data_pipeline_with_variable_lengths(tmp_path):
     # Create dummy data with variable lengths
     for i in range(10):
         time_dimension = 200 + i * 10  # Variable length
-        spectrogram = np.random.rand(1, config.n_mels, time_dimension).astype(np.float32)
-        labels = np.random.randint(0, 2, (time_dimension // config.patch_size[0], config.num_drum_classes)).astype(np.float32)
+        spectrogram = np.random.rand(1, config.n_mels, time_dimension).astype(
+            np.float32
+        )
+        labels = np.random.randint(
+            0, 2, (time_dimension // config.patch_size[0], config.num_drum_classes)
+        ).astype(np.float32)
 
         spec_file = tmp_path / f"spec_{i}.npy"
         label_file = tmp_path / f"label_{i}.npy"
