@@ -1,9 +1,11 @@
 {
   "editor.formatOnSave": true,
-  "editor.defaultFormatter": "ms-python.black-formatter",
   "[python]": {
     "editor.codeActionsOnSave": {
       "source.organizeImports": "explicit"
     }
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "vscode.json-language-features"
   }
 }
