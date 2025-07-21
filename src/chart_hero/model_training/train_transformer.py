@@ -81,6 +81,14 @@ def main():
         )
         logger.info("Data loaders created successfully.")
 
+        checkpoint_path = None
+        if args.resume or args.evaluate:
+            last_ckpt = Path(config.model_dir) / "last.ckpt"
+            if not last_ckpt.exists():
+                logger.error(f"Checkpoint not found in {config.model_dir}")
+                sys.exit(1)
+            checkpoint_path = str(last_ckpt)
+
         if args.evaluate:
             trainer.test(model, dataloaders=test_loader, ckpt_path=checkpoint_path)
         else:
