@@ -1,4 +1,3 @@
-import torch
 from torch.nn.utils.rnn import pad_sequence
 
 
@@ -8,10 +7,13 @@ def custom_collate_fn(batch):
     """
     spectrograms, labels = zip(*batch)
 
-    # Pad spectrograms
-    spectrograms = pad_sequence(spectrograms, batch_first=True, padding_value=0.0)
+    # Squeeze the channel dimension and transpose (Freq, Time) -> (Time, Freq)
+    spectrograms = [s.squeeze(0).transpose(0, 1) for s in spectrograms]
+    spectrograms_padded = pad_sequence(spectrograms, batch_first=True, padding_value=0.0)
+    # Transpose back (Time, Freq) -> (Freq, Time) and unsqueeze channel dimension
+    spectrograms_padded = spectrograms_padded.transpose(1, 2).unsqueeze(1)
 
     # Pad labels
-    labels = pad_sequence(labels, batch_first=True, padding_value=0.0)
+    labels_padded = pad_sequence(labels, batch_first=True, padding_value=0.0)
 
-    return spectrograms, labels
+    return spectrograms_padded, labels_padded
