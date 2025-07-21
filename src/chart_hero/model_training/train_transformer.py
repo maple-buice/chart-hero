@@ -25,14 +25,23 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    logger.info("Starting training script.")
     parser = setup_arg_parser()
     args = parser.parse_args()
+    logger.info(f"Arguments parsed: {args}")
+
     config, use_wandb = configure_run(args)
+    logger.info(
+        f"Configuration loaded for '{args.config}'. Using device: {config.device}"
+    )
+    logger.info(f"WandB logging is {'enabled' if use_wandb else 'disabled'}.")
 
     try:
+        logger.info("Creating data loaders...")
         train_loader, val_loader, test_loader = create_data_loaders(
             config=config, data_dir=config.data_dir
         )
+        logger.info("Data loaders created successfully.")
 
         checkpoint_path = None
         if args.resume or args.evaluate:
@@ -77,11 +86,11 @@ def main():
     except Exception as e:
         logger.exception(f"An error occurred: {e}")
         if use_wandb:
-            wandb.finish(exit_code=1)
+            wandb.finish(exit_code=1)  # type: ignore
         sys.exit(1)
     finally:
-        if use_wandb and wandb.run:
-            wandb.finish()
+        if use_wandb and wandb.run:  # type: ignore
+            wandb.finish()  # type: ignore
 
 
 if __name__ == "__main__":

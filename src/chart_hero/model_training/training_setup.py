@@ -107,6 +107,8 @@ def configure_paths(config, args):
 
     if not hasattr(config, "log_dir") or not config.log_dir:
         config.log_dir = Path("logs")
+    else:
+        config.log_dir = Path(config.log_dir)
     config.log_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -176,7 +178,7 @@ def configure_run(args):
     )
 
     if effective_use_wandb:
-        wandb.init(
+        wandb.init(  # type: ignore
             project=args.project_name,
             name=f"drum-transformer-{config.device}-{args.experiment_tag}",
             config=config.__dict__,

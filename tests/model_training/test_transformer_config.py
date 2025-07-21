@@ -58,3 +58,36 @@ def test_validate_config():
     config.hidden_size = 0
     with pytest.raises(AssertionError):
         validate_config(config)
+
+
+# Test cases for the LocalConfig device selection logic
+@patch("torch.backends.mps.is_available", return_value=False)
+@patch("torch.cuda.is_available", return_value=False)
+def test_local_config_device_cpu_only(mock_cuda, mock_mps):
+    """Verify LocalConfig defaults to 'cpu' when no accelerator is available."""
+    config = LocalConfig()
+    assert config.device == "cpu"
+
+
+@patch("torch.backends.mps.is_available", return_value=True)
+@patch("torch.cuda.is_available", return_value=False)
+def test_local_config_device_mps_selected(mock_cuda, mock_mps):
+    """Verify LocalConfig selects 'mps' when it is available."""
+    config = LocalConfig()
+    assert config.device == "mps"
+
+
+@patch("torch.backends.mps.is_available", return_value=False)
+@patch("torch.cuda.is_available", return_value=True)
+def test_local_config_device_cuda_selected(mock_cuda, mock_mps):
+    """Verify LocalConfig selects 'cuda' when it is available and MPS is not."""
+    config = LocalConfig()
+    assert config.device == "cuda"
+
+
+@patch("torch.backends.mps.is_available", return_value=True)
+@patch("torch.cuda.is_available", return_value=True)
+def test_local_config_device_mps_preferred_over_cuda(mock_cuda, mock_mps):
+    """Verify LocalConfig prefers 'mps' when both MPS and CUDA are available."""
+    config = LocalConfig()
+    assert config.device == "mps"

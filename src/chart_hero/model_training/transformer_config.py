@@ -183,13 +183,7 @@ class LocalConfig(BaseConfig):
     """Configuration optimized for M1-Max MacBook Pro (64GB RAM, 1TB storage)."""
 
     # Device settings
-    device: str = (
-        "mps"
-        if torch.backends.mps.is_available()
-        else "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
+    device: str = "cpu"
     mixed_precision: bool = False  # MPS has limited mixed precision support
     precision: str = (
         "32"  # MPS doesn't fully support mixed precision yet in PyTorch Lightning
@@ -217,6 +211,12 @@ class LocalConfig(BaseConfig):
     # Conservative settings for local development
     max_audio_length: float = 5.0  # Further reduced for memory efficiency
     max_seq_len: int = 512  # Reduced from 768
+
+    def __post_init__(self):
+        if torch.backends.mps.is_available():
+            self.device = "mps"
+        elif torch.cuda.is_available():
+            self.device = "cuda"
 
     @property
     def effective_batch_size(self) -> int:
