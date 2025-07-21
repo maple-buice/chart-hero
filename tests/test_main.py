@@ -15,7 +15,7 @@ def test_main_script(tmp_path, monkeypatch):
     dummy_audio_path = tmp_path / "test.wav"
     sample_rate = 44100
     dummy_audio = torch.randn(1, sample_rate * 5)  # 5 seconds of audio
-    torchaudio.save(str(dummy_audio_path), dummy_audio, sample_rate)
+    torchaudio.save(dummy_audio_path, dummy_audio, sample_rate)
 
     # Path to the dummy model
     dummy_model_path = "tests/assets/dummy_model.ckpt"

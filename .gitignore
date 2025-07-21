@@ -195,4 +195,3 @@ output/
 logs/
 models/
 wandb/
-.venv-test/

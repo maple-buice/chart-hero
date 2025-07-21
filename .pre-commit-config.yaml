@@ -21,8 +21,7 @@ repos:
     hooks:
     -   id: pytest
         name: pytest
-        entry: conda run -n chart-hero pytest
-        language: python
-        language_version: python3.11
+        entry: pytest
+        language: system
         types: [python]
         pass_filenames: false

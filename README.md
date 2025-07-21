@@ -12,38 +12,6 @@ This project has been significantly updated to use a modern transformer-based ar
 
 For detailed information on model training, see `model_training/README.md`.
 
-## Setup
-
-This project uses [Conda](https://docs.conda.io/en/latest/) to manage dependencies. To get started, create a new conda environment:
-
-```bash
-conda create -n chart-hero-arm64 python=3.11 -y
-```
-
-Activate the new environment:
-
-```bash
-conda activate chart-hero-arm64
-```
-
-Next, install the required dependencies. First, install PyTorch from the nightly channel:
-
-```bash
-conda install pytorch torchvision torchaudio -c pytorch-nightly -y
-```
-
-Then, install the rest of the dependencies from the `environment.yml` file:
-
-```bash
-conda env update -n chart-hero-arm64 -f environment.yml
-```
-
-Finally, install the `chart-hero` package in editable mode:
-
-```bash
-pip install -e .
-```
-
 ## Quick Start
 
 Refer to `model_training/README.md` for data preparation and training commands.
