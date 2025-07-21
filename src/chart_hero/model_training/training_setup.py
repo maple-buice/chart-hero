@@ -132,7 +132,7 @@ def apply_cli_overrides(config, args):
         config.is_debug_mode = True
 
 
-def setup_callbacks(config):
+def setup_callbacks(config, use_logger: bool = True):
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(config.model_dir),
         filename="drum-transformer-{epoch:02d}-{val_f1:.3f}",
@@ -144,8 +144,10 @@ def setup_callbacks(config):
     early_stop_callback = EarlyStopping(
         monitor=config.monitor, mode=config.mode, patience=10, min_delta=0.001
     )
-    lr_monitor = LearningRateMonitor(logging_interval="step")
-    return [checkpoint_callback, early_stop_callback, lr_monitor]
+    callbacks = [checkpoint_callback, early_stop_callback]
+    if use_logger:
+        callbacks.append(LearningRateMonitor(logging_interval="step"))
+    return callbacks
 
 
 def setup_logger(config, project_name, use_wandb, experiment_tag):

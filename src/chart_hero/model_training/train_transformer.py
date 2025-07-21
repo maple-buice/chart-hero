@@ -41,7 +41,7 @@ def main():
         wandb_logger = setup_logger(
             config, args.project_name, use_wandb, args.experiment_tag
         )
-        callbacks = setup_callbacks(config)
+        callbacks = setup_callbacks(config, use_logger=use_wandb)
 
         trainer_kwargs = {
             "logger": wandb_logger if use_wandb else False,
