@@ -17,6 +17,7 @@ from .augment_audio import (
     augment_spectrogram_frequency_masking,
     augment_spectrogram_time_masking,
 )
+from .data_utils import custom_collate_fn
 from .transformer_config import BaseConfig
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,7 @@ def create_data_loaders(
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
         drop_last=True,
+        collate_fn=custom_collate_fn,
         persistent_workers=getattr(config, "persistent_workers", False)
         and config.num_workers > 0,
         prefetch_factor=(
@@ -184,6 +186,7 @@ def create_data_loaders(
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
+        collate_fn=custom_collate_fn,
         persistent_workers=getattr(config, "persistent_workers", False)
         and config.num_workers > 0,
         prefetch_factor=(
@@ -197,6 +200,7 @@ def create_data_loaders(
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=config.pin_memory,
+        collate_fn=custom_collate_fn,
         persistent_workers=getattr(config, "persistent_workers", False)
         and config.num_workers > 0,
         prefetch_factor=(
