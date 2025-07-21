@@ -6,7 +6,6 @@ module for the drum transcription model.
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchmetrics
 
 from chart_hero.model_training.transformer_config import BaseConfig
@@ -56,13 +55,12 @@ class DrumTranscriptionModule(pl.LightningModule):
         outputs = self.model(spectrograms)
         logits = outputs["logits"]
 
-        pool_size = self.config.patch_size[0]
-        labels = F.max_pool1d(
-            labels.transpose(1, 2), kernel_size=pool_size, stride=pool_size
-        ).transpose(1, 2)
+        # Reshape labels to match logits
+        num_patches = logits.shape[1]
+        labels = labels[:, :num_patches, :]
 
-        logits = logits.view(-1, self.config.num_drum_classes)
-        labels = labels.view(-1, self.config.num_drum_classes)
+        logits = logits.reshape(-1, self.config.num_drum_classes)
+        labels = labels.reshape(-1, self.config.num_drum_classes)
 
         loss = self.criterion(logits, labels)
         preds = torch.sigmoid(logits) > 0.5
