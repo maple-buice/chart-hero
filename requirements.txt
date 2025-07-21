@@ -4,31 +4,34 @@ joblib
 audiomentations
 
 # Transformer architecture dependencies
-torch>=2.0.0
-torchaudio>=2.0.0
-pytorch-lightning>=2.0.0
-transformers>=4.30.0
-timm>=0.9.0
-wandb>=0.15.0
+--pre
+--extra-index-url https://download.pytorch.org/whl/nightly/cpu
+torch
+torchaudio
+pytorch-lightning
+transformers
+timm
+wandb
 
 # Audio processing
-librosa>=0.10.0
-scipy>=1.10.0
+librosa
+scipy
 
 # Data handling
-numpy>=1.24.0
-pandas>=2.0.0
-scikit-learn>=1.3.0
+numpy<2.0
+pandas
+scikit-learn
 
 # Utilities
-tqdm>=4.65.0
-matplotlib>=3.7.0
-seaborn>=0.12.0
-psutil>=5.9.0
+tqdm
+matplotlib
+seaborn
+psutil
+pedalboard
 
 # Development
-jupyter>=1.0.0
-ipywidgets>=8.0.0
+jupyter
+ipywidgets
 music21
 
 # Development Tools
@@ -36,6 +39,6 @@ black
 isort
 ruff
 mypy
-pyfakefs==5.9.1
-resampy==0.4.3
-six==1.16.0
+pyfakefs
+resampy
+six

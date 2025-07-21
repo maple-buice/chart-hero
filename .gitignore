@@ -195,3 +195,4 @@ output/
 logs/
 models/
 wandb/
+chart-hero-venv/

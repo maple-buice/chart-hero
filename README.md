@@ -12,6 +12,48 @@ This project has been significantly updated to use a modern transformer-based ar
 
 For detailed information on model training, see `model_training/README.md`.
 
+## Setup
+
+This project requires an `arm64` build of Python 3.11 on Apple Silicon machines to use the MPS accelerator.
+
+### 1. Install Python 3.11 with Homebrew
+
+If you don't have an `arm64` build of Python 3.11, you can install it with Homebrew:
+
+```bash
+brew install python@3.11
+```
+
+### 2. Create and activate a virtual environment
+
+Create a new virtual environment using your `arm64` Python installation:
+
+```bash
+/opt/homebrew/opt/python@3.11/bin/python3.11 -m venv chart-hero-venv
+```
+
+Activate the virtual environment:
+
+```bash
+source chart-hero-venv/bin/activate
+```
+
+### 3. Install dependencies
+
+Install the required dependencies from the `requirements.txt` file:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Install the `chart-hero` package
+
+Finally, install the `chart-hero` package in editable mode:
+
+```bash
+pip install -e .
+```
+
 ## Quick Start
 
 Refer to `model_training/README.md` for data preparation and training commands.
