@@ -42,4 +42,8 @@ mypy
 pyfakefs
 resampy
 six
+pytest
+pytest-cov
+yt_dlp
+mido
 setuptools<81
