@@ -42,3 +42,4 @@ mypy
 pyfakefs
 resampy
 six
+setuptools<81
