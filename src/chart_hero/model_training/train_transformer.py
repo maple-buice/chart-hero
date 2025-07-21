@@ -74,6 +74,23 @@ def main():
                 limit_train_batches=0.1 if args.quick_test else 1.0,
                 limit_val_batches=0.1 if args.quick_test else 1.0,
             )
+        except pl.utilities.exceptions.MisconfigurationException as e:
+            logger.warning(f"MPS accelerator failed to initialize: {e}")
+            logger.warning("Falling back to CPU.")
+            config.device = "cpu"
+            trainer = pl.Trainer(
+                logger=wandb_logger,
+                callbacks=callbacks,
+                max_epochs=config.num_epochs,
+                accelerator=config.device,
+                devices=1,
+                precision=config.precision,
+                gradient_clip_val=config.gradient_clip_val,
+                accumulate_grad_batches=config.accumulate_grad_batches,
+                enable_progress_bar=not args.no_progress_bar,
+                limit_train_batches=0.1 if args.quick_test else 1.0,
+                limit_val_batches=0.1 if args.quick_test else 1.0,
+            )
 
         logger.info("Creating data loaders...")
         train_loader, val_loader, test_loader = create_data_loaders(
