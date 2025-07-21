@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from typing import Any
 # Setup logging for the experimentation script
 log_file_path = (
     Path(__file__).parent.parent

@@ -1,7 +1,6 @@
 from pathlib import Path
 from unittest.mock import patch
 
-
 from chart_hero.utils.file_utils import (
     find_chart_hero_project_root,
     get_audio_set_dir,

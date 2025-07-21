@@ -69,7 +69,9 @@ Audio(data=y, rate=sr)
 # Note: by default, `beat_track` assumes that there is silence at the end of the
 # signal, and trims last beats to avoid false detections. Here, there is no silence
 # at the end, so we set `trim=False` to avoid this effect.
-static_tempo, beats_static = librosa.beat.beat_track(y=y, sr=sr, units="time", trim=False)
+static_tempo, beats_static = librosa.beat.beat_track(
+    y=y, sr=sr, units="time", trim=False
+)
 
 click_track = librosa.clicks(
     times=beats_static, sr=sr, click_freq=660, click_duration=0.25, length=len(y)

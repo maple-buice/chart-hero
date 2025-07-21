@@ -63,7 +63,9 @@ class ChartGenerator:
             drum_part = stream.Part()
             drum_part.id = "drums"
             drum_part.append(
-                meter.TimeSignature(f"{int(self.beats_in_measure/2)}/{self.note_value}")
+                meter.TimeSignature(
+                    f"{int(self.beats_in_measure / 2)}/{self.note_value}"
+                )
             )
             self.sheet.insert(0, drum_part)
             return
@@ -144,7 +146,7 @@ class ChartGenerator:
 
         # Add time signature
         drum_part.append(
-            meter.TimeSignature(f"{int(self.beats_in_measure/2)}/{self.note_value}")
+            meter.TimeSignature(f"{int(self.beats_in_measure / 2)}/{self.note_value}")
         )
 
         # Add notes to the part

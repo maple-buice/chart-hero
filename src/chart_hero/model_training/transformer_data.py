@@ -133,7 +133,11 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
 
 def create_data_loaders(
     config: BaseConfig, data_dir: str, batch_size: Optional[int] = None
-) -> Tuple[DataLoader[Tuple[torch.Tensor, torch.Tensor]], DataLoader[Tuple[torch.Tensor, torch.Tensor]], DataLoader[Tuple[torch.Tensor, torch.Tensor]]]:
+) -> Tuple[
+    DataLoader[Tuple[torch.Tensor, torch.Tensor]],
+    DataLoader[Tuple[torch.Tensor, torch.Tensor]],
+    DataLoader[Tuple[torch.Tensor, torch.Tensor]],
+]:
     """Create data loaders for train, validation, and test sets from .npy files."""
 
     if batch_size is None:

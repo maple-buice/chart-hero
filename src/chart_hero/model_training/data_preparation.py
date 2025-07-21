@@ -7,7 +7,7 @@ import librosa
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, random_split, TensorDataset
+from torch.utils.data import Dataset, TensorDataset, random_split
 from tqdm import tqdm
 
 from chart_hero.model_training.augment_audio import (
@@ -136,7 +136,9 @@ def main(
     val_size = int(0.1 * len(dataset))
     test_size = len(dataset) - train_size - val_size
     train_indices, val_indices, test_indices = random_split(
-        TensorDataset(torch.arange(len(dataset))), [train_size, val_size, test_size], generator=generator
+        TensorDataset(torch.arange(len(dataset))),
+        [train_size, val_size, test_size],
+        generator=generator,
     )
     split_map = {"train": train_indices, "val": val_indices, "test": test_indices}
     segment_length_frames = int(
