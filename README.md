@@ -90,11 +90,10 @@ pip install --force-reinstall --no-deps pytorch-lightning lightning-utilities
 
 ### Run reminders
 
-If having module finding issues, install as editable: `pip install -e .`
-
-Then, run training like
-
 ```
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
 python -m chart_hero.model_training.train_transformer \
   --config local_max_performance \
   --no-wandb \
