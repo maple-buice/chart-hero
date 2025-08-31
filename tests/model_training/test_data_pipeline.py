@@ -1,7 +1,8 @@
 import numpy as np
+from torch.utils.data import DataLoader
+
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import NpyDrumDataset, custom_collate_fn
-from torch.utils.data import DataLoader
 
 
 def test_data_pipeline_with_variable_lengths(tmp_path):

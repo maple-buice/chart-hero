@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import create_data_loaders
 
@@ -29,9 +30,10 @@ def test_data_preparation(mock_np_load):
     mock_np_load.side_effect = mock_load
 
     # Create a dummy directory structure
-    with patch("pathlib.Path.glob") as mock_glob, patch(
-        "pathlib.Path.exists"
-    ) as mock_exists:
+    with (
+        patch("pathlib.Path.glob") as mock_glob,
+        patch("pathlib.Path.exists") as mock_exists,
+    ):
         mock_glob.return_value = [
             Path("train_mel.npy"),
             Path("val_mel.npy"),

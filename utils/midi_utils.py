@@ -7,6 +7,7 @@ from pathlib import Path
 
 import mido
 import torch
+
 from chart_hero.model_training.transformer_config import (
     DRUM_HIT_MAP,
     DRUM_HIT_TO_INDEX,

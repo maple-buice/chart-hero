@@ -5,6 +5,7 @@ Tests for the training setup functions in training_setup.py.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from chart_hero.model_training.training_setup import (
     configure_paths,
     setup_callbacks,

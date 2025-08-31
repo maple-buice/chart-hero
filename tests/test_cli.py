@@ -2,8 +2,9 @@ import os
 from unittest.mock import patch
 
 import torch
-from chart_hero.__main__ import main
+
 from chart_hero.inference.classes.audd import audd_song_result
+from chart_hero.main import main
 
 
 @patch("librosa.get_duration")

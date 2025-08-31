@@ -2,10 +2,11 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from music21 import stream
+
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.model_training.train_transformer import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_config, get_drum_hits
-from music21 import stream
 
 
 @pytest.fixture

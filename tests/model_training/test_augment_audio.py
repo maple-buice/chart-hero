@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+
 from chart_hero.model_training.augment_audio import (
     add_lowpass_filter,
     add_pedalboard_effects,
