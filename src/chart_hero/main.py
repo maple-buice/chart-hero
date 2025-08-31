@@ -6,10 +6,7 @@ from pathlib import Path
 import librosa
 
 from chart_hero.inference.charter import Charter, ChartGenerator
-from chart_hero.inference.input_transform import (
-    audio_to_tensors,
-    get_yt_audio,
-)
+from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
     identify_song,

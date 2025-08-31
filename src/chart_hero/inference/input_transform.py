@@ -1,7 +1,6 @@
 import os
 
 import librosa
-import librosa.feature.rhythm
 import numpy as np
 import torch
 from yt_dlp import YoutubeDL

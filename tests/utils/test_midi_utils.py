@@ -5,6 +5,7 @@ Tests for the MidiProcessor in utils/midi_utils.py.
 import mido
 import pytest
 import torch
+
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.utils.midi_utils import MidiProcessor
 
@@ -43,4 +44,5 @@ def test_create_label_matrix(midi_processor, dummy_midi_file, config):
 
     assert isinstance(label_matrix, torch.Tensor)
     assert label_matrix.shape == (num_time_frames, config.num_drum_classes)
+    assert torch.sum(label_matrix) > 0  # Check that some notes were found
     assert torch.sum(label_matrix) > 0  # Check that some notes were found

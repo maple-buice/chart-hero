@@ -370,9 +370,9 @@ def validate_config(config: BaseConfig) -> None:
     assert config.hidden_size > 0, "Hidden size must be positive"
     assert config.num_layers > 0, "Number of layers must be positive"
     assert config.num_heads > 0, "Number of heads must be positive"
-    assert (
-        config.hidden_size % config.num_heads == 0
-    ), "Hidden size must be divisible by num_heads"
+    assert config.hidden_size % config.num_heads == 0, (
+        "Hidden size must be divisible by num_heads"
+    )
 
     # Validate training parameters
     assert config.learning_rate > 0, "Learning rate must be positive"

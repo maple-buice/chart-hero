@@ -9,7 +9,9 @@ def custom_collate_fn(batch):
 
     # Squeeze the channel dimension and transpose (Freq, Time) -> (Time, Freq)
     spectrograms = [s.squeeze(0).transpose(0, 1) for s in spectrograms]
-    spectrograms_padded = pad_sequence(spectrograms, batch_first=True, padding_value=0.0)
+    spectrograms_padded = pad_sequence(
+        spectrograms, batch_first=True, padding_value=0.0
+    )
     # Transpose back (Time, Freq) -> (Freq, Time) and unsqueeze channel dimension
     spectrograms_padded = spectrograms_padded.transpose(1, 2).unsqueeze(1)
 

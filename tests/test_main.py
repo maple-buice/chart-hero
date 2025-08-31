@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import torch
 import torchaudio
+
 from chart_hero.inference.classes.audd import audd_song_result
 from chart_hero.main import main
 
@@ -86,4 +87,5 @@ def test_main_script(tmp_path, monkeypatch):
 
                         # Check that the charter was called
                         mock_charter.assert_called_once()
+                        mock_chart_generator.assert_called_once()
                         mock_chart_generator.assert_called_once()

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import create_data_loaders
 

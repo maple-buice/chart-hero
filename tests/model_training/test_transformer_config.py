@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+
 from chart_hero.model_training.transformer_config import (
     CloudConfig,
     LocalConfig,

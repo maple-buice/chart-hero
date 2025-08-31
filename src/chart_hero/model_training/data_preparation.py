@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, TensorDataset, random_split
 from tqdm import tqdm
+from tqdm.utils import Comparable
 
 from chart_hero.model_training.augment_audio import (
     augment_dynamic_eq,

@@ -1,4 +1,5 @@
 import torch
+
 from chart_hero.model_training.train_transformer import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_config
 

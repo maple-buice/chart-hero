@@ -1,8 +1,9 @@
 import os
 
 import demucs.separate
-from basic_pitch import ICASSP_2022_MODEL_PATH
-from basic_pitch.inference import predict_and_save
+
+# from basic_pitch import ICASSP_2022_MODEL_PATH
+# from basic_pitch.inference import predict_and_save
 
 
 def absoluteFilePaths(directory):
@@ -63,20 +64,20 @@ if not os.path.exists(basicPitchOutputDir):
 #     print("MIDI already generated, moving on to next song")
 # else:
 # os.makedirs(basicPitchSongOutputDir)
-predict_and_save(
-    [
-        demucsSplitSongOutputDir + "/drums.mp3"
-    ],  # absoluteFilePaths(demucsSplitSongOutputDir),
-    basicPitchSongOutputDir,
-    True,
-    False,
-    False,
-    True,
-    ICASSP_2022_MODEL_PATH,
-    0.25,
-    0.15,
-    50,
-    None,
-    None,
-    False,
-)
+# predict_and_save(
+#     [
+#         demucsSplitSongOutputDir + "/drums.mp3"
+#     ],  # absoluteFilePaths(demucsSplitSongOutputDir),
+#     basicPitchSongOutputDir,
+#     True,
+#     False,
+#     False,
+#     True,
+#     ICASSP_2022_MODEL_PATH,
+#     0.25,
+#     0.15,
+#     50,
+#     None,
+#     None,
+#     False,
+# )
