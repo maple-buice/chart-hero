@@ -17,7 +17,7 @@ training-data label generation.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import mido
 import torch
@@ -29,7 +29,7 @@ from chart_hero.model_training.transformer_config import (
 
 
 class RbMidiProcessor:
-    def __init__(self, config):
+    def __init__(self, config: Any) -> None:
         self.config = config
 
     def create_label_matrix(

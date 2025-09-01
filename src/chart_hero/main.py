@@ -5,17 +5,19 @@ from pathlib import Path
 from typing import Optional
 
 import librosa
+import numpy as np
 
+from chart_hero.inference.artwork import generate_art
+from chart_hero.inference.chart_writer import SongMeta, write_chart
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
+from chart_hero.inference.packager import package_clonehero_song
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
     identify_song,
 )
+from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
-from chart_hero.inference.chart_writer import SongMeta, write_chart
-from chart_hero.inference.artwork import generate_art
-from chart_hero.inference.packager import package_clonehero_song
 
 
 def _load_env_local(path: Path) -> None:
@@ -43,12 +45,12 @@ def estimate_bpm(path: str, sr: int) -> Optional[float]:
         if tempo is None or len(tempo) == 0:
             return None
         # Robust statistic: median of local tempos
-        return float(librosa.util.median(tempo))
+        return float(np.median(tempo))
     except Exception:
         return None
 
 
-def main():
+def main() -> None:
     """
     Main function to run the drum transcription and charting process.
     """
@@ -232,7 +234,18 @@ def main():
 
         # Determine CH root relative to project
         ch_root = Path("CloneHero")
-        pred_rows = chart_generator.df.to_dict(orient="records")
+    # Coerce DataFrame rows into strictly-typed PredictionRow entries
+    pred_rows: list[PredictionRow] = []
+    for raw in chart_generator.df.to_dict(orient="records"):
+        row: PredictionRow = {}
+        for k, v in raw.items():
+            # keys are column names as strings; values should be ints
+            try:
+                row[str(k)] = int(v)  # type: ignore[arg-type]
+            except Exception:
+                # peak_sample may be float-like; coerce safely
+                row[str(k)] = int(float(v))  # type: ignore[arg-type]
+        pred_rows.append(row)
         ch_dir = package_clonehero_song(
             clonehero_root=ch_root,
             title=title,

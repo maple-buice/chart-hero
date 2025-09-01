@@ -2,11 +2,13 @@ import logging
 import shutil
 import sys
 from pathlib import Path
+from typing import Dict
 
 import librosa
 import numpy as np
 import pandas as pd
 import torch
+from numpy.typing import NDArray
 from torch.utils.data import Dataset, TensorDataset, random_split
 from tqdm import tqdm
 
@@ -21,7 +23,9 @@ from chart_hero.utils.midi_utils import MidiProcessor
 logger = logging.getLogger(__name__)
 
 
-def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
+def create_transient_enhanced_spectrogram(
+    y: NDArray[np.floating], sr: int, n_fft: int, hop_length: int, n_mels: int
+) -> NDArray[np.floating]:
     mel_spec = librosa.feature.melspectrogram(
         y=y, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels
     )
@@ -36,22 +40,23 @@ def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
 
 
 class EGMDRawDataset(Dataset[tuple[torch.Tensor | None, torch.Tensor | None]]):
-    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config):
+    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config) -> None:
         self.data_map = data_map
         self.dataset_dir = Path(dataset_dir)
         self.config = config
         self.midi_processor = MidiProcessor(config)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data_map)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         row = self.data_map.iloc[idx]
         audio_filename = self.dataset_dir / row["audio_filename"]
         midi_filename = self.dataset_dir / row["midi_filename"]
 
         try:
-            audio_np, sr = librosa.load(audio_filename, sr=self.config.sample_rate)
+            audio_np, sr_f = librosa.load(audio_filename, sr=self.config.sample_rate)
+            sr: int = int(sr_f)
             spec_np = create_transient_enhanced_spectrogram(
                 y=audio_np,
                 sr=sr,
@@ -79,8 +84,9 @@ def _save_segments(
     segment_length: int,
     output_dir: Path,
     base_filename: str,
-):
-    spec_np = spectrogram.squeeze(0).numpy()
+) -> tuple[int, int]:
+    spec_np = spectrogram.squeeze(0).detach().cpu().numpy()
+    label_np = label_matrix.detach().cpu().numpy()
     num_frames = spec_np.shape[1]
     min_spec_val = np.min(spec_np)
 
@@ -89,7 +95,7 @@ def _save_segments(
     for i in range(0, num_frames, segment_length):
         end_frame = i + segment_length
         spec_segment = spec_np[:, i:end_frame]
-        label_segment = label_matrix[i:end_frame, :]
+        label_segment = label_np[i:end_frame, :]
 
         if spec_segment.shape[1] < segment_length:
             pad_width = segment_length - spec_segment.shape[1]
@@ -126,7 +132,7 @@ def main(
     clear_output: bool = False,
     no_progress: bool = False,
     validate_labels: bool = False,
-):
+) -> None:
     output_path = Path(output_dir)
     if clear_output and output_path.exists():
         shutil.rmtree(output_path)
@@ -155,7 +161,7 @@ def main(
     )
     progress_disabled = no_progress or not sys.stdout.isatty()
 
-    summary = {}
+    summary: Dict[str, Dict[str, int]] = {}
     for split, indices in split_map.items():
         split_dir = output_path / split
         split_dir.mkdir(exist_ok=True)
@@ -188,7 +194,8 @@ def main(
                 )
                 if not audio_path.exists():
                     continue
-                audio_np, sr = librosa.load(audio_path, sr=config.sample_rate)
+                audio_np, sr_f = librosa.load(audio_path, sr=config.sample_rate)
+                sr = int(sr_f)
                 augmentations = {
                     "pitch": augment_pitch_jitter(audio_np, sr),
                     "stretch": augment_time_stretch(audio_np),

@@ -403,7 +403,7 @@ class audd_song_result:
     spotify: Optional[spotify_result]
     musicbrainz: list[musicbrainz_result]
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
@@ -433,7 +433,7 @@ class audd_song_response:
     status: str
     result: Optional[audd_song_result]
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod

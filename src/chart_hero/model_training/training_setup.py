@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pytorch_lightning.callbacks import (
+    Callback,
     EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
@@ -26,7 +27,7 @@ from chart_hero.model_training.transformer_config import (
 logger = logging.getLogger(__name__)
 
 
-def setup_arg_parser():
+def setup_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train transformer model for drum transcription."
     )
@@ -93,7 +94,7 @@ def setup_arg_parser():
     return parser
 
 
-def configure_paths(config, args):
+def configure_paths(config, args) -> None:
     if args.data_dir:
         config.data_dir = str(Path(args.data_dir).resolve())
     if args.audio_dir:
@@ -112,7 +113,7 @@ def configure_paths(config, args):
     config.log_dir.mkdir(parents=True, exist_ok=True)
 
 
-def apply_cli_overrides(config, args):
+def apply_cli_overrides(config, args) -> None:
     configure_paths(config, args)
     if args.batch_size is not None:
         config.train_batch_size = args.batch_size
@@ -132,7 +133,7 @@ def apply_cli_overrides(config, args):
         config.is_debug_mode = True
 
 
-def setup_callbacks(config, use_logger: bool = True):
+def setup_callbacks(config, use_logger: bool = True) -> list[Callback]:
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(config.model_dir),
         filename="drum-transformer-{epoch:02d}-{val_f1:.3f}",
@@ -150,7 +151,9 @@ def setup_callbacks(config, use_logger: bool = True):
     return callbacks
 
 
-def setup_logger(config, project_name, use_wandb, experiment_tag):
+def setup_logger(
+    config, project_name: str, use_wandb: bool, experiment_tag: str
+) -> WandbLogger | None:
     if not use_wandb:
         return None
     return WandbLogger(
@@ -161,7 +164,10 @@ def setup_logger(config, project_name, use_wandb, experiment_tag):
     )
 
 
-def configure_run(args):
+from chart_hero.model_training.transformer_config import BaseConfig
+
+
+def configure_run(args) -> tuple[BaseConfig, bool]:
     if not args.experiment_tag and (args.resume or args.evaluate):
         logger.error("--experiment-tag is required for --resume or --evaluate.")
         sys.exit(1)
@@ -180,7 +186,7 @@ def configure_run(args):
     )
 
     if effective_use_wandb:
-        wandb.init(  # type: ignore
+        wandb.init(
             project=args.project_name,
             name=f"drum-transformer-{config.device}-{args.experiment_tag}",
             config=config.__dict__,

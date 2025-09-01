@@ -1,4 +1,5 @@
 import os
+from typing import Any, Dict, cast
 
 import requests
 
@@ -27,11 +28,10 @@ def identify_song(path: str) -> audd_song_result:
     return audd_response.result
 
 
-def get_data_from_acousticbrainz(song: audd_song_result):
+def get_data_from_acousticbrainz(song: audd_song_result) -> Dict[str, Any]:
     print(song.musicbrainz[0].id)
     result = requests.get(
         "https://acousticbrainz.org/api/v1/low-level?recording_ids="
         + song.musicbrainz[0].id
     )
-
-    return result.json()
+    return cast(Dict[str, Any], result.json())

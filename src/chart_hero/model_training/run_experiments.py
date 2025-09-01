@@ -38,7 +38,7 @@ CHART_HERO_BASE_DIR = Path(__file__).parent.parent
 
 def run_experiment(
     params: dict[str, Any], use_wandb: bool, quick_test: bool, monitor_gpu: bool
-):
+) -> dict[str, Any]:
     """
     Runs a single training experiment with the given parameters.
     """
@@ -138,7 +138,7 @@ def run_experiment(
         }
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run hyperparameter tuning experiments for drum transcription."
     )

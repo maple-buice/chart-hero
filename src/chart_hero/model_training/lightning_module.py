@@ -3,18 +3,21 @@ This module contains the DrumTranscriptionModule, the core PyTorch Lightning
 module for the drum transcription model.
 """
 
+from typing import Dict, List, Optional, Tuple
+
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
-from typing import List, Tuple
 
 from chart_hero.model_training.transformer_config import BaseConfig
 from chart_hero.model_training.transformer_model import create_model
 
 
 class DrumTranscriptionModule(pl.LightningModule):
+    pos_weight: torch.Tensor
+    criterion: Optional[nn.BCEWithLogitsLoss]
     """PyTorch Lightning module for drum transcription training."""
 
     def __init__(
@@ -22,7 +25,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         config: BaseConfig,
         max_time_patches: int | None = None,
         pos_weight: torch.Tensor | None = None,
-    ):
+    ) -> None:
         super().__init__()
         self.config = config
         self.save_hyperparameters(config.__dict__)
@@ -34,6 +37,8 @@ class DrumTranscriptionModule(pl.LightningModule):
         if pos_weight is None:
             pos_weight = torch.ones(config.num_drum_classes, dtype=torch.float32) * 2.0
         self.register_buffer("pos_weight", pos_weight)
+        # Help the type checker: pos_weight is a Tensor buffer
+        self.pos_weight = pos_weight
         if getattr(config, "use_focal_loss", False):
             self.criterion = None  # use custom focal in step
         else:
@@ -61,10 +66,12 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.validation_step_outputs: list[dict[str, torch.Tensor]] = []
         self.test_step_outputs: list[dict[str, torch.Tensor]] = []
 
-    def forward(self, spectrograms):
+    def forward(self, spectrograms: torch.Tensor) -> Dict[str, torch.Tensor]:
         return self.model(spectrograms)
 
-    def _common_step(self, batch):
+    def _common_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         spectrograms, labels = batch
         outputs = self.model(spectrograms)
         logits = outputs["logits"]  # [B, T_patches, C]
@@ -111,6 +118,7 @@ class DrumTranscriptionModule(pl.LightningModule):
             focal = focal * (labels * (pos_w - 1) + 1)
             loss = focal.mean()
         else:
+            assert self.criterion is not None
             loss = self.criterion(logits, labels)
 
         # Thresholds (global or per-class)
@@ -129,7 +137,9 @@ class DrumTranscriptionModule(pl.LightningModule):
         preds = raw_p > thr
         return loss, preds, labels
 
-    def training_step(self, batch, batch_idx):
+    def training_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
         loss, preds, labels = self._common_step(batch)
         self.train_f1(preds.int(), labels.int())
         self.train_acc(preds.int(), labels.int())
@@ -138,7 +148,9 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
         loss, preds, labels = self._common_step(batch)
         self.val_f1(preds.int(), labels.int())
         self.val_acc(preds.int(), labels.int())
@@ -148,7 +160,9 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.validation_step_outputs.append({"preds": preds, "labels": labels})
         return loss
 
-    def test_step(self, batch, batch_idx):
+    def test_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+    ) -> torch.Tensor:
         loss, preds, labels = self._common_step(batch)
         self.test_f1(preds.int(), labels.int())
         self.test_acc(preds.int(), labels.int())
@@ -158,7 +172,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.test_step_outputs.append({"preds": preds, "labels": labels})
         return loss
 
-    def on_validation_epoch_end(self):
+    def on_validation_epoch_end(self) -> None:
         if self.validation_step_outputs:
             all_preds = torch.cat([x["preds"] for x in self.validation_step_outputs])
             all_labels = torch.cat([x["labels"] for x in self.validation_step_outputs])
@@ -176,7 +190,7 @@ class DrumTranscriptionModule(pl.LightningModule):
                 self.log("val_event_f1", ev_f1, prog_bar=True)
         self.validation_step_outputs.clear()
 
-    def on_test_epoch_end(self):
+    def on_test_epoch_end(self) -> None:
         if self.test_step_outputs:
             all_preds = torch.cat([x["preds"] for x in self.test_step_outputs])
             all_labels = torch.cat([x["labels"] for x in self.test_step_outputs])

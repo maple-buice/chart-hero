@@ -43,6 +43,7 @@ no_implicit_reexport = true
 implicit_optional = false
 namespace_packages = true
 explicit_package_bases = true
+exclude = "^src/chart_hero/utils/scratch/"
 
 [[tool.mypy.overrides]]
 module = [
@@ -50,5 +51,7 @@ module = [
   "music21.*",
   "soundfile.*",
   "yt_dlp.*",
+  "mido.*",
+  "torchaudio.*",
 ]
 ignore_missing_imports = true

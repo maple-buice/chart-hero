@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, cast
 
 import jsonschema
 
@@ -15,24 +15,24 @@ def _schemas_dir() -> Path:
     return _repo_root() / "schemas"
 
 
-def load_schema(name: str) -> dict:
+def load_schema(name: str) -> Dict[str, Any]:
+    # Simple JSON loader for schema files
+    import json
+
     p = _schemas_dir() / name
-    return (
-        jsonschema.validators.load_schema(str(p))
-        if hasattr(jsonschema.validators, "load_schema")
-        else jsonschema.validators.validate.__globals__["json"](p.read_text())
-    )  # type: ignore
+    with open(p, "r", encoding="utf-8") as f:
+        return cast(Dict[str, Any], json.load(f))
 
 
-def read_schema(name: str) -> dict:
+def read_schema(name: str) -> Dict[str, Any]:
     # Simple loader (json module) without relying on jsonschema internals
     import json
 
     with open(_schemas_dir() / name, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return cast(Dict[str, Any], json.load(f))
 
 
-def validate_with_schema(instance: dict, schema_name: str) -> None:
+def validate_with_schema(instance: Dict[str, Any], schema_name: str) -> None:
     schema = read_schema(schema_name)
     jsonschema.validate(instance=instance, schema=schema)
 

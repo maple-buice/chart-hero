@@ -4,8 +4,16 @@ from pathlib import Path
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-import requests
+
+try:
+    from PIL.Image import Resampling as _Resampling
+
+    RESAMPLE_BICUBIC = _Resampling.BICUBIC
+except Exception:  # Pillow typing fallback
+    RESAMPLE_BICUBIC = Image.BICUBIC  # type: ignore[attr-defined]
 import io
+
+import requests
 
 
 def _download_image(url: str, timeout: float = 10.0) -> Optional[Image.Image]:
@@ -59,11 +67,11 @@ def generate_art(
 
     try:
         if base_img:
-            square = _center_crop_square(base_img).resize((512, 512), Image.BICUBIC)
+            square = _center_crop_square(base_img).resize((512, 512), RESAMPLE_BICUBIC)
             square.save(album_path)
 
             bg = base_img.copy()
-            bg = bg.resize((1920, 1080), Image.BICUBIC).filter(
+            bg = bg.resize((1920, 1080), RESAMPLE_BICUBIC).filter(
                 ImageFilter.GaussianBlur(radius=16)
             )
             # Dim
@@ -91,7 +99,7 @@ def generate_art(
             )
         square.save(album_path)
 
-        bg = square.resize((1920, 1080), Image.BICUBIC).filter(
+        bg = square.resize((1920, 1080), RESAMPLE_BICUBIC).filter(
             ImageFilter.GaussianBlur(radius=12)
         )
         bg.save(bg_path, quality=90)

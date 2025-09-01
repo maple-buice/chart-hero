@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main(args):
+def main(args: argparse.Namespace) -> None:
     torch.manual_seed(42)
 
     config = get_config("local")
@@ -58,12 +58,11 @@ def main(args):
     # Save the data
     os.makedirs(args.output_dir, exist_ok=True)
 
-    def save_data(loader, name):
+    def save_data(loader, name: str) -> None:
         split_dir = os.path.join(args.output_dir, name)
         os.makedirs(split_dir, exist_ok=True)
-        for i, (spectrogram, label_matrix) in enumerate(
-            tqdm(loader, desc=f"Saving {name} data")
-        ):
+        for i, batch in enumerate(tqdm(loader, desc=f"Saving {name} data")):
+            spectrogram, label_matrix = batch  # type: ignore[assignment]
             if spectrogram is None or label_matrix is None:
                 continue
             # Squeeze the batch dimension before saving

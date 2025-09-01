@@ -4,7 +4,7 @@ creating label matrices for drum transcription.
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any
 
 import mido
 import torch
@@ -19,7 +19,7 @@ from chart_hero.model_training.transformer_config import (
 class MidiProcessor:
     """A class to process MIDI files and create frame-by-frame label matrices."""
 
-    def __init__(self, config):
+    def __init__(self, config: Any) -> None:
         self.config = config
 
     def create_label_matrix(

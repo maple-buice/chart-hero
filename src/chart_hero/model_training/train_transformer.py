@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 
 import pytorch_lightning as pl
+import torch
 
 import wandb
-import torch
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.training_setup import (
     configure_run,
@@ -28,7 +28,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def main():
+def main() -> None:
     logger.info("Starting training script.")
     parser = setup_arg_parser()
     args = parser.parse_args()
@@ -133,7 +133,7 @@ def main():
 
         try:
             trainer = pl.Trainer(**trainer_kwargs)
-        except pl.utilities.exceptions.MisconfigurationException as e:
+        except Exception as e:
             logger.warning(f"MPS accelerator failed to initialize: {e}")
             logger.warning("Falling back to CPU.")
             config.device = "cpu"
@@ -169,11 +169,11 @@ def main():
     except Exception as e:
         logger.exception(f"An error occurred: {e}")
         if use_wandb:
-            wandb.finish(exit_code=1)  # type: ignore
+            wandb.finish(exit_code=1)
         sys.exit(1)
     finally:
-        if use_wandb and wandb.run:  # type: ignore
-            wandb.finish()  # type: ignore
+        if use_wandb and wandb.run:
+            wandb.finish()
 
 
 if __name__ == "__main__":

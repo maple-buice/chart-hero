@@ -1,12 +1,21 @@
 import os
+from typing import cast
 
 import librosa
 import numpy as np
-import torch
+from numpy.typing import NDArray
 from yt_dlp import YoutubeDL
 
+from .types import Segment, TransformerConfig
 
-def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
+
+def create_transient_enhanced_spectrogram(
+    y: NDArray[np.floating],
+    sr: int,
+    n_fft: int,
+    hop_length: int,
+    n_mels: int,
+) -> NDArray[np.floating]:
     """
     Creates a mel spectrogram where transients are enhanced.
     This function MUST be identical to the one in data_preparation.py
@@ -31,16 +40,16 @@ def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
 
     # Gate the spectrogram
     transient_enhanced_spec = log_mel_spec * onset_env
+    return cast(NDArray[np.floating], transient_enhanced_spec)
 
-    return transient_enhanced_spec
 
-
-def audio_to_tensors(audio_path: str, config) -> list[dict]:
+def audio_to_tensors(audio_path: str, config: TransformerConfig) -> list[Segment]:
     """
     Transforms an audio file into a list of tensor segments for the model.
     """
     try:
-        y, sr = librosa.load(audio_path, sr=config.sample_rate)
+        y, sr_f = librosa.load(audio_path, sr=config.sample_rate)
+        sr: int = int(sr_f)
     except Exception as e:
         print(f"Error loading audio file: {e}")
         return []
@@ -59,7 +68,7 @@ def audio_to_tensors(audio_path: str, config) -> list[dict]:
         config.max_audio_length * config.sample_rate / config.hop_length
     )
 
-    segments: list[dict] = []
+    segments: list[Segment] = []
     num_frames = full_spec.shape[1]
     for i in range(0, num_frames, segment_length_frames):
         end_frame = i + segment_length_frames

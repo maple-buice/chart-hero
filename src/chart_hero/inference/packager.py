@@ -8,6 +8,7 @@ import librosa
 import soundfile as sf
 
 from .chart_writer import SongMeta, write_chart
+from .types import PredictionRow
 
 
 def sanitize_name(name: str) -> str:
@@ -33,7 +34,7 @@ def package_clonehero_song(
     bpm: float,
     resolution: int,
     sr_model: int,
-    prediction_rows: list[dict],
+    prediction_rows: list[PredictionRow],
     source_audio: Path,
     album_path: Optional[Path] = None,
     background_path: Optional[Path] = None,

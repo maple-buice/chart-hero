@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple
 
 import torch
 
@@ -236,7 +236,7 @@ class LocalConfig(BaseConfig):
     max_audio_length: float = 5.0  # Further reduced for memory efficiency
     max_seq_len: int = 512  # Reduced from 768
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if torch.backends.mps.is_available() and torch.backends.mps.is_built():
             self.device = "mps"
         elif torch.cuda.is_available():

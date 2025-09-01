@@ -6,6 +6,8 @@ from typing import Iterable
 
 import librosa
 
+from .types import PredictionRow
+
 
 @dataclass
 class SongMeta:
@@ -27,9 +29,9 @@ def write_chart(
     bpm: float,
     resolution: int,
     sr: int,
-    prediction_rows: Iterable[dict],
+    prediction_rows: Iterable["PredictionRow"],
     music_stream: str | None = None,
-):
+) -> None:
     """
     Write a minimal Clone Hero-compatible .chart for ExpertDrums using Moonscraper-compatible encoding.
 
@@ -70,12 +72,13 @@ def write_chart(
     # [ExpertDrums]
     track_lines = ["[ExpertDrums]", "{"]
 
-    def add_N(tick: int, code: int, length: int = 0):
+    def add_N(tick: int, code: int, length: int = 0) -> None:
         track_lines.append(f"  {tick} = N {code} {length}")
 
     # mapping for classes -> (base lane, cymbal_flag_or_None)
     # Encodings informed by Moonscraper Chart Editor (BSD-3-Clause), see THIRD_PARTY_NOTICES.md
-    CLASS_TO_NOTES = {
+    # Map string class labels to base lane and optional cymbal flag
+    CLASS_TO_NOTES: dict[str, list[tuple[int, int | None]]] = {
         "0": [(0, None)],  # kick
         "1": [(1, None)],  # snare
         "2": [(2, None)],  # hi tom (Y pad)
@@ -96,7 +99,8 @@ def write_chart(
         # collect notes for this tick
         emitted_bases: set[int] = set()
         for cls, mapping in CLASS_TO_NOTES.items():
-            if row.get(cls, 0) in (1, True, "1"):
+            val = int(row.get(cls, 0))
+            if val == 1:
                 for base, cym in mapping:
                     if base not in emitted_bases:
                         add_N(tick, base, 0)

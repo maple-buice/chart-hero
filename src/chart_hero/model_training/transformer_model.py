@@ -226,7 +226,7 @@ class DrumTranscriptionTransformer(nn.Module):
         # Classification head
         self.classifier = nn.Linear(config.hidden_size, config.num_drum_classes)
 
-    def _init_weights(self, module):
+    def _init_weights(self, module) -> None:
         if isinstance(module, (nn.Linear, nn.Conv2d)):
             nn.init.trunc_normal_(module.weight, std=0.02)
             if module.bias is not None:

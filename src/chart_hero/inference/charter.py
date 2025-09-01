@@ -1,22 +1,28 @@
+import os
+from typing import Any
+
 import librosa
 import numpy as np
 import pandas as pd
-from music21 import chord, meter, note, stream
-
 import torch
-from chart_hero.model_training.train_transformer import DrumTranscriptionModule
+from music21 import chord, meter, note, stream
+from numpy.typing import NDArray
+
+from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_drum_hits
+
+from .types import PredictionRow, Segment, TransformerConfig
 
 
 class Charter:
-    def __init__(self, config, model_path):
+    def __init__(self, config: TransformerConfig, model_path: str | os.PathLike[str]):
         self.config = config
         self.model = DrumTranscriptionModule.load_from_checkpoint(
-            model_path, config=config
+            str(model_path), config=config
         )
         self.model.eval()
 
-    def predict(self, segments: list) -> pd.DataFrame:
+    def predict(self, segments: list[Segment]) -> pd.DataFrame:
         """
         Run model inference over spectrogram segments and return a DataFrame of
         event-level predictions suitable for chart writing.
@@ -42,13 +48,13 @@ class Charter:
         patch = int(self.config.patch_size[0])
         hop = int(self.config.hop_length)
         classes = get_drum_hits()
-        rows: list[dict] = []
+        rows: list[PredictionRow] = []
 
         with torch.no_grad():
             # Batch reasonably to avoid OOM
             batch_size = 4
             # Normalize input: accept legacy tensor lists too
-            norm_segments: list[dict] = []
+            norm_segments: list[Segment] = []
             seg_len_frames = int(
                 self.config.max_audio_length
                 * self.config.sample_rate
@@ -57,11 +63,8 @@ class Charter:
             for idx, seg in enumerate(segments):
                 if isinstance(seg, dict) and "spec" in seg:
                     spec = seg["spec"]
-                    arr = (
-                        torch.from_numpy(spec).float()
-                        if not isinstance(spec, torch.Tensor)
-                        else spec.float()
-                    )
+                    # Segment spec is a numpy array; convert to float tensor
+                    arr = torch.from_numpy(spec).float()
                     arr = arr.detach().cpu()
                     if arr.dim() == 2:
                         # (n_mels, frames) or (frames, n_mels)
@@ -98,19 +101,19 @@ class Charter:
                     )
                 else:
                     # assume tensor-like segment e.g., [1,1,time,freq] or [1,1,n_mels,frames]
-                    t = (
+                    ten = (
                         seg.detach().cpu().float()
                         if isinstance(seg, torch.Tensor)
                         else torch.tensor(seg).float()
                     )
-                    t = t.squeeze()
-                    if t.dim() != 2:
+                    ten = ten.squeeze()
+                    if ten.dim() != 2:
                         continue
                     # Align to (n_mels, frames)
-                    if t.shape[0] == self.config.n_mels:
-                        spec_np = t.numpy()
+                    if ten.shape[0] == self.config.n_mels:
+                        spec_np = ten.numpy()
                     else:
-                        spec_np = t.t().numpy()
+                        spec_np = ten.t().numpy()
                     norm_segments.append(
                         {
                             "spec": spec_np,
@@ -167,7 +170,17 @@ class Charter:
                         # Map to frame center within this patch
                         frame_idx = seg["start_frame"] + t * patch + patch // 2
                         peak_sample = int(frame_idx * hop)
-                        row = {"peak_sample": peak_sample}
+                        row: PredictionRow = {
+                            "peak_sample": peak_sample,
+                            "0": 0,
+                            "1": 0,
+                            "2": 0,
+                            "3": 0,
+                            "4": 0,
+                            "66": 0,
+                            "67": 0,
+                            "68": 0,
+                        }
                         for ci, lab in enumerate(classes):
                             row[lab] = int(cls_mask[ci].item())
                         rows.append(row)
@@ -192,15 +205,16 @@ class ChartGenerator:
 
     def __init__(
         self,
-        prediction_df,
-        song_duration,
-        bpm,
-        sample_rate,
-        beats_in_measure=4,
-        note_value=4,
-        note_offset=None,
-        song_title=None,
-    ):
+        prediction_df: pd.DataFrame,
+        song_duration: float,
+        bpm: float | None,
+        sample_rate: int,
+        beats_in_measure: int = 4,
+        note_value: int = 4,
+        note_offset: int | None = None,
+        song_title: str | None = None,
+    ) -> None:
+        self.sheet: Any
         self.offset = False
         self.beats_in_measure = beats_in_measure * 2
         self.note_value = note_value
@@ -210,15 +224,17 @@ class ChartGenerator:
         self.sample_rate = sample_rate
         self.onsets = prediction_df.peak_sample
         if self.onsets.empty:
+            from typing import Any, cast
+
             self.sheet = stream.Score()
-            drum_part = stream.Part()
+            drum_part = cast(Any, stream).Part()
             drum_part.id = "drums"
             drum_part.append(
-                meter.TimeSignature(
+                cast(Any, meter).TimeSignature(
                     f"{int(self.beats_in_measure / 2)}/{self.note_value}"
-                )
+                )  # type: ignore[attr-defined]
             )
-            self.sheet.insert(0, drum_part)
+            cast(Any, self.sheet).insert(0, drum_part)
             return
         self.note_line = self.onsets.apply(
             lambda x: librosa.samples_to_time(x, sr=sample_rate)
@@ -240,14 +256,16 @@ class ChartGenerator:
                         )
                     )
                 )
-            note_offset = np.argmax(total_8_note)
+            note_offset = int(np.argmax(total_8_note))
         else:
             pass
 
-        if note_offset > 0:
+        if (note_offset or 0) > 0:
             self.offset = True
 
-        _8_div = self.get_eighth_note_time_grid(song_duration, note_offset=note_offset)
+        _8_div = self.get_eighth_note_time_grid(
+            song_duration, note_offset=int(note_offset or 0)
+        )
         self.synced_8_div = self.sync_8(_8_div)
 
         _16_div, _32_div, _8_triplet_div, _8_sixlet_div = self.get_note_division()
@@ -267,7 +285,12 @@ class ChartGenerator:
         )
         self.sheet = self.sheet_construction(self.music21_data, song_title=song_title)
 
-    def get_music21_data(self, stream_time_map, stream_pitch, stream_note):
+    def get_music21_data(
+        self,
+        stream_time_map: list[list[float]],
+        stream_pitch: list[list[list[int | str]]],
+        stream_note: list[list[float]],
+    ) -> dict[int, dict[str, list[object]]]:
         """
         A function to clean up and merge all the necessary information in a format that can pass to the sheet_construction step to build sheet music
         """
@@ -276,7 +299,11 @@ class ChartGenerator:
             music21_data[i] = {"pitch": stream_pitch[i], "note_type": stream_note[i]}
         return music21_data
 
-    def sheet_construction(self, music21_data, song_title=None):
+    def sheet_construction(
+        self,
+        music21_data: dict[int, dict[str, list[object]]],
+        song_title: str | None = None,
+    ) -> stream.Score:
         """
         A function to build sheet music using Music21 library
         """
@@ -292,37 +319,43 @@ class ChartGenerator:
             sheet.metadata = metadata.Metadata(title=song_title)
 
         # Create a drum part
-        drum_part = stream.Part()
+        from typing import Any, cast
+
+        drum_part = cast(Any, stream).Part()
         drum_part.id = "drums"
 
         # Add time signature
         drum_part.append(
-            meter.TimeSignature(f"{int(self.beats_in_measure / 2)}/{self.note_value}")
+            cast(Any, meter).TimeSignature(
+                f"{int(self.beats_in_measure / 2)}/{self.note_value}"
+            )  # type: ignore[attr-defined]
         )
 
         # Add notes to the part
         for measure_num in sorted(music21_data.keys()):
-            measure = stream.Measure(number=measure_num)
+            measure = cast(Any, stream).Measure(number=measure_num)
             for i, pitch_list in enumerate(music21_data[measure_num]["pitch"]):
                 note_type = music21_data[measure_num]["note_type"][i]
 
                 n: note.GeneralNote
                 if "rest" in pitch_list:
-                    n = note.Rest()
+                    n = cast(Any, note).Rest()
                 else:
                     # Create a chord for multiple drum hits at the same time
-                    n = chord.Chord(pitch_list)
+                    n = cast(Any, chord).Chord(pitch_list)
 
                 n.duration.quarterLength = note_type
                 measure.append(n)
             drum_part.append(measure)
 
         # Add drum part to the sheet music
-        sheet.insert(0, drum_part)
+        cast(Any, sheet).insert(0, drum_part)
 
         return sheet
 
-    def build_stream(self):
+    def build_stream(
+        self,
+    ) -> tuple[list[list[float]], list[list[list[int | str]]], list[list[float]]]:
         """
         A function to clean up and merge all the necessary information in a format that can pass to the build_stream step to build sheet music
         """
@@ -341,7 +374,9 @@ class ChartGenerator:
             measure_log = measure_log + self.beats_in_measure
 
         remaining_8 = len(synced_8_div) % self.beats_in_measure
-        measure, note_dur = self.build_measure(synced_8_div[-remaining_8:])
+        measure, note_dur = self.build_measure(
+            list(synced_8_div[-remaining_8:].tolist())
+        )
         measure.extend([-1.0] * (self.beats_in_measure - remaining_8))
         note_dur.extend([8.0] * (self.beats_in_measure - remaining_8))
 
@@ -361,7 +396,7 @@ class ChartGenerator:
             stream_pitch.append(pitch_set)
         return stream_time_map, stream_pitch, stream_note
 
-    def get_note_duration(self):
+    def get_note_duration(self) -> None:
         """
         A function to calculate different note duration
         """
@@ -370,7 +405,9 @@ class ChartGenerator:
         self._32_duration = 60 / self.bpm / 8
         self._8_triplet_duration = self._8_duration / 3
 
-    def get_eighth_note_time_grid(self, song_duration, note_offset=0):
+    def get_eighth_note_time_grid(
+        self, song_duration: float, note_offset: int = 0
+    ) -> NDArray[np.float64]:
         """
         A function to calculate the eighth note time grid
         """
@@ -379,7 +416,7 @@ class ChartGenerator:
         )
         return np.arange(first_note, song_duration, self._8_duration)
 
-    def sync_8(self, _8_div):
+    def sync_8(self, _8_div: NDArray[np.float64]) -> NDArray[np.float64]:
         """
         A function to map the eighth note time grid to the onsets
         """
@@ -404,7 +441,14 @@ class ChartGenerator:
                 synced_8_div.insert(0, synced_8_div[0] - self._8_duration)
         return np.array(synced_8_div)
 
-    def get_note_division(self):
+    def get_note_division(
+        self,
+    ) -> tuple[
+        NDArray[np.float64],
+        NDArray[np.float64],
+        NDArray[np.float64],
+        NDArray[np.float64],
+    ]:
         """
         A function to calculate the note dividion of various note type and created a numpy array to map on the drum track
         """
@@ -425,7 +469,19 @@ class ChartGenerator:
 
         return _16_div, _32_div, _8_triplet_div, _8_sixlet_div
 
-    def master_sync(self, _16_div, _32_div, _8_triplet_div, _8_sixlet_div):
+    def master_sync(
+        self,
+        _16_div: NDArray[np.float64],
+        _32_div: NDArray[np.float64],
+        _8_triplet_div: NDArray[np.float64],
+        _8_sixlet_div: NDArray[np.float64],
+    ) -> tuple[
+        NDArray[np.float64],
+        NDArray[np.float64],
+        NDArray[np.float64],
+        NDArray[np.float64],
+        NDArray[np.float64],
+    ]:
         """
         A note quantization function to map 16th, 32th, eighth triplets or eighth sixthlet note to each onset when applicable
         """
@@ -434,10 +490,10 @@ class ChartGenerator:
         synced_eighth_r = np.round(self.synced_8_div, 8)
 
         # declare a few variables to store the result
-        synced_16_div = []
-        synced_32_div = []
-        synced_8_3_div = []
-        synced_8_6_div = []
+        synced_16_div: list[float] = []
+        synced_32_div: list[float] = []
+        synced_8_3_div: list[float] = []
+        synced_8_6_div: list[float] = []
 
         # iterate though all synced 8 notes
         for i in range(len(synced_eighth_r) - 1):
@@ -546,7 +602,9 @@ class ChartGenerator:
             np.array(synced_8_6_div),
         )
 
-    def build_measure(self, measure_iter):
+    def build_measure(
+        self, measure_iter: list[float]
+    ) -> tuple[list[float], list[float]]:
         """
         A function to clean up note quantization result information in a format that can pass to the build_stream step to build all the required data for sheet music construction step
         """
@@ -589,15 +647,15 @@ class ChartGenerator:
             if hit_class not in class_to_midi:
                 class_to_midi[hit_class] = midi
 
-        pitch_mapping = self.df[["peak_sample"] + get_drum_hits()].set_index(
+        pitch_mapping_df = self.df[["peak_sample"] + get_drum_hits()].set_index(
             "peak_sample"
         )
-        pitch_mapping = pitch_mapping.to_dict(orient="index")
+        mapping_dict = pitch_mapping_df.to_dict(orient="index")
         pitch_dict: dict[float, list[int | str]] = {}
-        for p in pitch_mapping.keys():
+        for p in mapping_dict.keys():
             time = round(librosa.samples_to_time(p, sr=self.sample_rate), 8)
             pitch_dict[time] = []
-            for hit_class, is_hit in pitch_mapping[p].items():
+            for hit_class, is_hit in mapping_dict[p].items():
                 if is_hit == 1:
                     pitch_dict[time].append(class_to_midi[hit_class])
         return pitch_dict

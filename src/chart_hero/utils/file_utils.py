@@ -89,7 +89,7 @@ def find_files_by_name_parts(directory: Path, name_parts: list[str]) -> list[Pat
     return files
 
 
-def parallel_rmtree(path: str | Path, num_workers: int | None = None):
+def parallel_rmtree(path: str | Path, num_workers: int | None = None) -> None:
     """
     Deletes a directory tree in parallel with a progress bar.
 
