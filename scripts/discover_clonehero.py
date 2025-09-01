@@ -5,12 +5,21 @@ import re
 from collections import Counter, defaultdict
 
 ROOT = os.path.join("CloneHero", "Songs")
-ALLOWED_DRUM_NOTE_BASE = {0, 1, 2, 3, 4}  # kick, R, Y, B, G
-ALLOWED_DRUM_CYMBAL_FLAGS = {66, 67, 68}  # Y, B, G cymbal markers
-ALLOWED_DRUM_TOM_FLAGS = {35, 36, 37}  # force Y/B/G tom
+ALLOWED_DRUM_NOTE_BASE = {
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+}  # Kick, R, Y, B, Orange, Green (Moonscraper supports Orange & Green separately)
+PRO_DRUMS_OFFSET = 64  # + lane -> cymbal toggle (eg 64+2=66 for yellow cymbal)
+INSTRUMENT_PLUS_OFFSET = 32  # + lane -> DoubleKick/instrument-plus
+DRUMS_ACCENT_OFFSET = 33  # + lane -> Accent
+DRUMS_GHOST_OFFSET = 39  # + lane -> Ghost
 ALLOWED_DRUM_SPECIALS = {2, 64}  # 2=OD/SP phrase, 64=fill window
-ALLOWED_DRUM_META_NOTES = set(range(32, 47))  # extended markers seen in customs (32–46)
-ALLOWED_DRUM_SPECIALS_EXT = {65, 66}  # extended specials seen in customs
+DRUM_ROLL_STANDARD = 65  # S 65 drum roll (standard)
+DRUM_ROLL_SPECIAL = 66  # S 66 drum roll (special)
 
 section_re = re.compile(r"^\[(?P<section>[^\]]+)\]\s*$")
 
@@ -184,12 +193,12 @@ def parse_chart(path: str):
 def validate_drum_tracks(chart_obj):
     issues = []
     cymbal_count = 0
-    tomflag_count = 0
+    accent_count = 0
+    ghost_count = 0
     sp_count = 0
     fill_count = 0
     base_note_count = 0
-    meta_note_count = 0
-    ext_special_count = 0
+    doublekick_count = 0
     unexpected_notes = Counter()
     unexpected_specs = Counter()
 
@@ -200,12 +209,16 @@ def validate_drum_tracks(chart_obj):
                 code = ev["code"]
                 if code in ALLOWED_DRUM_NOTE_BASE:
                     base_note_count += 1
-                elif code in ALLOWED_DRUM_CYMBAL_FLAGS:
+                elif code in {PRO_DRUMS_OFFSET + i for i in ALLOWED_DRUM_NOTE_BASE}:
                     cymbal_count += 1
-                elif code in ALLOWED_DRUM_TOM_FLAGS:
-                    tomflag_count += 1
-                elif code in ALLOWED_DRUM_META_NOTES:
-                    meta_note_count += 1
+                elif code in {DRUMS_ACCENT_OFFSET + i for i in ALLOWED_DRUM_NOTE_BASE}:
+                    accent_count += 1
+                elif code in {DRUMS_GHOST_OFFSET + i for i in ALLOWED_DRUM_NOTE_BASE}:
+                    ghost_count += 1
+                elif code in {
+                    INSTRUMENT_PLUS_OFFSET + i for i in ALLOWED_DRUM_NOTE_BASE
+                }:
+                    doublekick_count += 1
                 else:
                     unexpected_notes[code] += 1
             elif ev["kind"] == "S":
@@ -214,8 +227,9 @@ def validate_drum_tracks(chart_obj):
                     sp_count += 1
                 elif code == 64:
                     fill_count += 1
-                elif code in ALLOWED_DRUM_SPECIALS_EXT:
-                    ext_special_count += 1
+                elif code in {DRUM_ROLL_STANDARD, DRUM_ROLL_SPECIAL}:
+                    # drum roll sections; tracked separately if needed
+                    pass
                 else:
                     unexpected_specs[code] += 1
 
@@ -230,12 +244,12 @@ def validate_drum_tracks(chart_obj):
     # Compose result
     result = {
         "cymbal_flags": cymbal_count,
-        "tom_flags": tomflag_count,
+        "accent_flags": accent_count,
+        "ghost_flags": ghost_count,
         "sp_phrases": sp_count,
         "fill_windows": fill_count,
         "base_notes": base_note_count,
-        "meta_notes": meta_note_count,
-        "ext_specials": ext_special_count,
+        "doublekick_flags": doublekick_count,
         "unexpected_note_codes": dict(unexpected_notes),
         "unexpected_special_codes": dict(unexpected_specs),
         "issues": issues,
@@ -276,12 +290,12 @@ def main():
                 totals.update(
                     {
                         "cymbal_flags": val["cymbal_flags"],
-                        "tom_flags": val["tom_flags"],
+                        "accent_flags": val["accent_flags"],
+                        "ghost_flags": val["ghost_flags"],
                         "sp_phrases": val["sp_phrases"],
                         "fill_windows": val["fill_windows"],
                         "base_notes": val["base_notes"],
-                        "meta_notes": val["meta_notes"],
-                        "ext_specials": val["ext_specials"],
+                        "doublekick_flags": val["doublekick_flags"],
                     }
                 )
                 unknown_note_codes.update(val["unexpected_note_codes"])
@@ -317,12 +331,12 @@ def main():
 
     print("\n=== Drum encoding summary ===")
     print(f"Base notes: {totals['base_notes']}")
-    print(f"Cymbal flags (66/67/68): {totals['cymbal_flags']}")
-    print(f"Tom-force flags (35/36/37): {totals['tom_flags']}")
+    print(f"Cymbal flags (64+lane): {totals['cymbal_flags']}")
+    print(f"Accent flags (33+lane): {totals['accent_flags']}")
+    print(f"Ghost flags (39+lane): {totals['ghost_flags']}")
     print(f"Star Power phrases (S 2): {totals['sp_phrases']}")
     print(f"Fill windows (S 64): {totals['fill_windows']}")
-    print(f"Meta notes (32–46): {totals['meta_notes']}")
-    print(f"Extended specials (65,66): {totals['ext_specials']}")
+    print(f"DoubleKick/InstrumentPlus (32+lane): {totals['doublekick_flags']}")
     if unknown_note_codes:
         print("Unknown note codes in drum tracks:")
         for code, cnt in unknown_note_codes.most_common():

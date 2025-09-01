@@ -23,7 +23,17 @@
         "PreviewEnd": {"type": "integer"},
         "Genre": {"type": "string"},
         "MediaType": {"type": "string"},
-        "MusicStream": {"type": "string"}
+        "MusicStream": {"type": "string"},
+        "GuitarStream": {"type": "string"},
+        "BassStream": {"type": "string"},
+        "RhythmStream": {"type": "string"},
+        "DrumStream": {"type": "string"},
+        "Drum2Stream": {"type": "string"},
+        "Drum3Stream": {"type": "string"},
+        "Drum4Stream": {"type": "string"},
+        "VocalStream": {"type": "string"},
+        "KeysStream": {"type": "string"},
+        "CrowdStream": {"type": "string"}
       },
       "additionalProperties": true
     },
