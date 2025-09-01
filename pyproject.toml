@@ -28,3 +28,27 @@ prepare-egmd-data = "chart_hero.prepare_egmd_data:main"
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "I"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+mypy_path = ["src"]
+strict = true
+pretty = true
+warn_unreachable = true
+warn_return_any = true
+show_error_codes = true
+allow_redefinition = false
+no_implicit_reexport = true
+implicit_optional = false
+namespace_packages = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = [
+  "librosa.*",
+  "music21.*",
+  "soundfile.*",
+  "yt_dlp.*",
+]
+ignore_missing_imports = true
