@@ -130,6 +130,7 @@ class BaseConfig:
     accumulate_grad_batches: int = 1
     gradient_checkpointing: bool = False
     deterministic_training: bool = True
+    prediction_threshold: float = 0.5
 
     # Data
     train_batch_size: int = 32
@@ -160,6 +161,19 @@ class BaseConfig:
     spec_aug_max_time_mask_percentage: float = 0.05
     spec_aug_num_freq_masks: int = 2
     spec_aug_max_freq_mask_percentage: float = 0.15
+
+    # Additional augmentations
+    enable_time_shift_augmentation: bool = False
+    time_shift_prob: float = 0.2
+    time_shift_max_percentage: float = 0.1  # fraction of time frames
+
+    # Input normalization
+    normalize_spectrograms: bool = True  # per-sample z-score
+
+    # Class imbalance handling
+    pos_weight_strategy: str = "auto"  # one of: 'auto', 'constant'
+    class_pos_weight: tuple[float, ...] | None = None
+    pos_weight_max_files: int | None = None
 
     # Timbre Augmentation
     enable_timbre_augmentation: bool = True

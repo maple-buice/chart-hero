@@ -11,6 +11,7 @@ from pathlib import Path
 import pytorch_lightning as pl
 
 import wandb
+import torch
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.training_setup import (
     configure_run,
@@ -18,7 +19,10 @@ from chart_hero.model_training.training_setup import (
     setup_callbacks,
     setup_logger,
 )
-from chart_hero.model_training.transformer_data import create_data_loaders
+from chart_hero.model_training.transformer_data import (
+    compute_class_pos_weights,
+    create_data_loaders,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,7 +41,77 @@ def main():
     logger.info(f"WandB logging is {'enabled' if use_wandb else 'disabled'}.")
 
     try:
-        model = DrumTranscriptionModule(config)
+        # Compute/load class pos_weight if requested and not a quick test
+        pos_weight = None
+        if (
+            not args.quick_test
+            and getattr(config, "pos_weight_strategy", "auto") == "auto"
+        ):
+            train_split = Path(config.data_dir) / "train"
+            cache_path = Path(config.model_dir) / "pos_weight.pt"
+
+            def _load_cache() -> torch.Tensor | None:
+                if not cache_path.exists():
+                    return None
+                try:
+                    payload = torch.load(cache_path, map_location="cpu")
+                    if not isinstance(payload, dict):
+                        return None
+                    if payload.get("data_dir") != str(Path(config.data_dir).resolve()):
+                        return None
+                    if not train_split.exists():
+                        return None
+                    # Validate basic consistency with current dataset
+                    current_files = list(train_split.glob("*_label.npy"))
+                    if len(current_files) != payload.get("num_files"):
+                        return None
+                    pw = payload.get("pos_weight")
+                    if (
+                        isinstance(pw, torch.Tensor)
+                        and pw.numel() == config.num_drum_classes
+                    ):
+                        logger.info("Loaded class pos_weight from cache")
+                        return pw.float()
+                except Exception as e:
+                    logger.warning(f"Failed to load pos_weight cache: {e}")
+                return None
+
+            def _save_cache(pw: torch.Tensor) -> None:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    num_files = 0
+                    if train_split.exists():
+                        num_files = len(list(train_split.glob("*_label.npy")))
+                    torch.save(
+                        {
+                            "data_dir": str(Path(config.data_dir).resolve()),
+                            "num_files": num_files,
+                            "pos_weight": pw.detach().cpu(),
+                        },
+                        cache_path,
+                    )
+                    logger.info(f"Saved class pos_weight cache to {cache_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save pos_weight cache: {e}")
+
+            pos_weight = _load_cache()
+            if pos_weight is None:
+                if train_split.exists():
+                    pos_weight = compute_class_pos_weights(
+                        data_dir=config.data_dir,
+                        num_classes=config.num_drum_classes,
+                        split="train",
+                    )
+                    # Optional sampling cap (estimate on subset for huge datasets)
+                    # If needed, implement sampling inside compute_class_pos_weights.
+                    logger.info(f"Computed class pos_weight: {pos_weight.tolist()}")
+                    _save_cache(pos_weight)
+                else:
+                    logger.info(
+                        f"Skipping class pos_weight computation (missing split: {train_split})"
+                    )
+
+        model = DrumTranscriptionModule(config, pos_weight=pos_weight)
         wandb_logger = setup_logger(
             config, args.project_name, use_wandb, args.experiment_tag
         )

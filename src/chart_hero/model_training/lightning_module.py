@@ -6,6 +6,7 @@ module for the drum transcription model.
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchmetrics
 
 from chart_hero.model_training.transformer_config import BaseConfig
@@ -15,15 +16,24 @@ from chart_hero.model_training.transformer_model import create_model
 class DrumTranscriptionModule(pl.LightningModule):
     """PyTorch Lightning module for drum transcription training."""
 
-    def __init__(self, config: BaseConfig, max_time_patches: int | None = None):
+    def __init__(
+        self,
+        config: BaseConfig,
+        max_time_patches: int | None = None,
+        pos_weight: torch.Tensor | None = None,
+    ):
         super().__init__()
         self.config = config
         self.save_hyperparameters(config.__dict__)
 
         self.model = create_model(config, max_time_patches=max_time_patches)
 
-        pos_weights = torch.ones(config.num_drum_classes) * 2.0
-        self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
+        if pos_weight is None and getattr(config, "class_pos_weight", None) is not None:
+            pos_weight = torch.tensor(config.class_pos_weight, dtype=torch.float32)
+        if pos_weight is None:
+            pos_weight = torch.ones(config.num_drum_classes, dtype=torch.float32) * 2.0
+        self.register_buffer("pos_weight", pos_weight)
+        self.criterion = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
 
         self.train_f1 = torchmetrics.F1Score(
             task="multilabel", num_labels=config.num_drum_classes
@@ -53,17 +63,27 @@ class DrumTranscriptionModule(pl.LightningModule):
     def _common_step(self, batch):
         spectrograms, labels = batch
         outputs = self.model(spectrograms)
-        logits = outputs["logits"]
+        logits = outputs["logits"]  # [B, T_patches, C]
 
-        # Reshape labels to match logits
-        num_patches = logits.shape[1]
-        labels = labels[:, :num_patches, :]
+        # Pool labels to patch-level to align with logits (robust to non-contiguous tensors)
+        # Labels expected shape: [B, T_frames_or_patches, C]
+        bsz, t_patches, num_classes = logits.shape
+        labels = labels.float()
+        # Use adaptive max pool along time to exactly t_patches steps
+        labels = F.adaptive_max_pool1d(labels.permute(0, 2, 1), output_size=t_patches)
+        labels = labels.permute(0, 2, 1)
 
         logits = logits.reshape(-1, self.config.num_drum_classes)
         labels = labels.reshape(-1, self.config.num_drum_classes)
 
+        # Optional label smoothing for BCE
+        eps = getattr(self.config, "label_smoothing", 0.0) or 0.0
+        if eps > 0.0:
+            labels = labels * (1.0 - eps) + 0.5 * eps
+
         loss = self.criterion(logits, labels)
-        preds = torch.sigmoid(logits) > 0.5
+        threshold = getattr(self.config, "prediction_threshold", 0.5)
+        preds = torch.sigmoid(logits) > threshold
         return loss, preds, labels
 
     def training_step(self, batch, batch_idx):

@@ -108,6 +108,17 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         spectrogram = torch.from_numpy(np.load(spec_file)).float()
         label_matrix = torch.from_numpy(np.load(label_file)).float()
 
+        # Ensure tensor is (1, freq, time)
+        if spectrogram.dim() == 2:
+            spectrogram = spectrogram.unsqueeze(0)
+
+        # Normalize per-sample to stabilize training (z-score across freq x time)
+        if getattr(self.config, "normalize_spectrograms", False):
+            # shape (1, F, T)
+            mean = spectrogram.mean(dim=(1, 2), keepdim=True)
+            std = spectrogram.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            spectrogram = (spectrogram - mean) / std
+
         # Apply SpecAugment only during training
         if self.mode == "train" and self.config.enable_spec_augmentation:
             spec_np = spectrogram.clone().squeeze(0).numpy()
@@ -123,9 +134,19 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             )
             spectrogram = torch.from_numpy(spec_np).unsqueeze(0)
 
-        # Ensure tensor is (1, freq, time)
-        if spectrogram.dim() == 2:
-            spectrogram = spectrogram.unsqueeze(0)
+        # Optional time-shift augmentation (circular) on training only
+        if self.mode == "train" and getattr(
+            self.config, "enable_time_shift_augmentation", False
+        ):
+            if torch.rand(1).item() < getattr(self.config, "time_shift_prob", 0.0):
+                max_pct = getattr(self.config, "time_shift_max_percentage", 0.1)
+                T = spectrogram.shape[-1]
+                max_shift = max(1, int(max_pct * T))
+                shift = int(
+                    torch.randint(low=-max_shift, high=max_shift + 1, size=(1,)).item()
+                )
+                if shift != 0:
+                    spectrogram = torch.roll(spectrogram, shifts=shift, dims=-1)
 
         # The model's PatchEmbedding expects (Batch, Channels, Freq, Time),
         # so we do NOT transpose here. The loaded npy is already (Freq, Time).
@@ -209,3 +230,32 @@ def create_data_loaders(
     )
 
     return train_loader, val_loader, test_loader
+
+
+def compute_class_pos_weights(
+    data_dir: str, num_classes: int, split: str = "train"
+) -> torch.Tensor:
+    """Compute BCEWithLogits pos_weight per class from label .npy files.
+
+    pos_weight = (N - P) / (P + eps) computed per class over all frames.
+    """
+    path = Path(data_dir) / split
+    pos = torch.zeros(num_classes, dtype=torch.float64)
+    total = torch.zeros(num_classes, dtype=torch.float64)
+    eps = 1e-6
+    if not path.exists():
+        return torch.ones(num_classes, dtype=torch.float32)
+
+    for label_file in path.glob("*_label.npy"):
+        arr = np.load(label_file)
+        if arr.ndim != 2 or arr.shape[1] != num_classes:
+            continue
+        # Sum positives and total frames per class
+        pos += torch.from_numpy(arr).sum(dim=0).to(torch.float64)
+        total += arr.shape[0]
+
+    neg = (total - pos).clamp_min(0.0)
+    pw = (neg / (pos + eps)).to(torch.float32)
+    # Bound pos_weight to reasonable range to avoid extreme gradients
+    pw = pw.clamp(min=0.5, max=50.0)
+    return pw
