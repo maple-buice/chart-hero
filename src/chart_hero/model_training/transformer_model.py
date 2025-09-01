@@ -75,8 +75,18 @@ class PositionalEncoding1D(nn.Module):
         """
         batch_size, num_patches, embed_dim = x.shape
 
-        # Add positional encoding
-        x = x + self.time_embed[:, :num_patches, :]
+        # Add positional encoding (interpolate if sequence exceeds learned length)
+        if num_patches <= self.max_time_patches:
+            pe = self.time_embed[:, :num_patches, :]
+        else:
+            # Interpolate along time dimension to match num_patches
+            # time_embed: (1, L, D) -> (1, D, L)
+            peT = self.time_embed.transpose(1, 2)
+            peT = torch.nn.functional.interpolate(
+                peT, size=num_patches, mode="linear", align_corners=False
+            )
+            pe = peT.transpose(1, 2)
+        x = x + pe
 
         # Add CLS token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)

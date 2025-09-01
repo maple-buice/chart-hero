@@ -20,21 +20,23 @@ def dummy_audio_file(tmp_path):
 
 def test_audio_to_tensors(dummy_audio_file):
     """
-    Test that audio_to_tensors returns a list of tensors of the correct shape.
+    Test that audio_to_tensors returns a list of segment dicts with spectrograms and offsets.
     """
     config = get_config("local")
-    tensors = audio_to_tensors(str(dummy_audio_file), config)
+    segments = audio_to_tensors(str(dummy_audio_file), config)
 
-    assert isinstance(tensors, list)
-    assert len(tensors) > 0
+    assert isinstance(segments, list)
+    assert len(segments) > 0
 
-    # Check the shape of the first tensor
-    tensor = tensors[0]
-    assert tensor.dim() == 3  # (1, freq, time)
+    # Check the first segment fields
+    seg = segments[0]
+    assert isinstance(seg, dict)
+    assert "spec" in seg and "start_frame" in seg and "end_frame" in seg
+    spec = seg["spec"]
 
+    # Expect shape (n_mels, frames)
+    assert spec.shape[0] == config.n_mels
     expected_time_frames = int(
         config.max_audio_length * config.sample_rate / config.hop_length
     )
-
-    assert tensor.shape[1] == config.n_mels
-    assert tensor.shape[2] == expected_time_frames
+    assert spec.shape[1] == expected_time_frames

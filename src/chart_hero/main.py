@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 import librosa
 
@@ -13,6 +14,38 @@ from chart_hero.inference.song_identifier import (
 )
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.inference.chart_writer import SongMeta, write_chart
+from chart_hero.inference.artwork import generate_art
+from chart_hero.inference.packager import package_clonehero_song
+
+
+def _load_env_local(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line or line.strip().startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+
+def estimate_bpm(path: str, sr: int) -> Optional[float]:
+    try:
+        y, s = librosa.load(path, sr=sr)
+        # Use librosa.beat.tempo which returns array of tempi; pick the first
+        tempo = librosa.beat.tempo(y=y, sr=s, hop_length=512, aggregate=None)
+        if tempo is None or len(tempo) == 0:
+            return None
+        # Robust statistic: median of local tempos
+        return float(librosa.util.median(tempo))
+    except Exception:
+        return None
 
 
 def main():
@@ -77,44 +110,92 @@ def main():
         action="store_true",
         help="Export a Clone Hero-ready folder with notes.chart and song.ini.",
     )
+    parser.add_argument(
+        "--to-clonehero",
+        action="store_true",
+        help="Write directly into CloneHero/Songs/Chart Hero",
+    )
+    parser.add_argument(
+        "--no-art",
+        action="store_true",
+        help="Skip artwork generation",
+    )
+    parser.add_argument(
+        "--keep-temp",
+        action="store_true",
+        help="Keep temporary downloaded audio",
+    )
+    parser.add_argument(
+        "--no-convert",
+        action="store_true",
+        help="Do not convert audio to OGG (not recommended)",
+    )
+    parser.add_argument(
+        "--bpm",
+        type=float,
+        default=None,
+        help="Override BPM (skips estimation/API)",
+    )
 
     args = parser.parse_args()
 
+    # Load .env.local to get tokens if present
+    _load_env_local(Path(".env.local"))
+
+    yt_info = None
     if args.link is not None:
         print(f"Downloading audio track from {args.link}")
-        f_path, title = get_yt_audio(args.link)
-        if f_path is None:
+        yt_info = get_yt_audio(args.link)
+        if yt_info is None:
             print("Could not download audio from link.")
             return
+        f_path = yt_info.path
+        title = yt_info.title or Path(f_path).stem
+        artist = None
+        thumb = yt_info.thumbnail_url
     else:
         f_path = args.path
-        title = Path(f_path).stem
+        p = Path(f_path)
+        title = p.stem
+        artist = None
+        thumb = None
 
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    if args.no_api:
-        audd_result = None
-        bpm = 120
-    else:
-        # Identify song
-        audd_result = identify_song(f_path)
-        with open(out_path / "audd_result.json", "w") as f:
-            json.dump(audd_result.to_dict(), f, indent=4)
+    # Prefer local BPM estimation unless overridden
+    bpm: Optional[float] = args.bpm
+    if bpm is None:
+        bpm = estimate_bpm(f_path, sr=22050)
 
-        # Get acoustic data
-        if audd_result and audd_result.musicbrainz:
-            acousticbrainz_result = get_data_from_acousticbrainz(audd_result)
-            with open(out_path / "acousticbrainz_result.json", "w") as f:
-                json.dump(acousticbrainz_result, f, indent=4)
-            bpm = acousticbrainz_result.get("bpm")
-        else:
-            bpm = None
+    audd_result = None
+    # Use AudD primarily to enrich metadata on local files when available
+    if not args.no_api and os.environ.get("AUDD_API_TOKEN"):
+        try:
+            audd_result = identify_song(f_path)
+            with open(out_path / "audd_result.json", "w") as f:
+                json.dump(audd_result.to_dict(), f, indent=4)
+            if audd_result and not artist:
+                artist = audd_result.artist
+                # Prefer MusicBrainz title if available
+                if audd_result.title:
+                    title = audd_result.title
+            # Optionally fetch acousticbrainz but do not override BPM unless none
+            if audd_result and audd_result.musicbrainz and bpm is None:
+                acousticbrainz_result = get_data_from_acousticbrainz(audd_result)
+                with open(out_path / "acousticbrainz_result.json", "w") as f:
+                    json.dump(acousticbrainz_result, f, indent=4)
+                bpm = acousticbrainz_result.get("bpm")
+        except Exception as e:
+            print(f"AudD lookup failed: {e}")
+    # Fallback BPM
+    if bpm is None:
+        bpm = 120.0
 
     # Process the audio file to get the spectrogram tensors
     config = get_config("local")
-    spectrogram_tensors = audio_to_tensors(f_path, config)
-    if not spectrogram_tensors:
+    spectrogram_segments = audio_to_tensors(f_path, config)
+    if not spectrogram_segments:
         print("Could not process audio file.")
         return
 
@@ -122,7 +203,7 @@ def main():
     charter = Charter(config, args.model_path)
 
     # Predict the drum chart
-    prediction_df = charter.predict(spectrogram_tensors)
+    prediction_df = charter.predict(spectrogram_segments)
 
     # Create the chart
     chart_generator = ChartGenerator(
@@ -137,31 +218,41 @@ def main():
     chart_generator.sheet.write("musicxml", fp=out_path / f"{title}.musicxml")
     print(f"Sheet music saved at {out_path}")
 
-    if args.export_clonehero:
-        ch_dir = out_path / f"{title} [chart-hero]"
-        meta = SongMeta(
-            name=title,
-            artist=(audd_result.title if hasattr(audd_result, "title") else None)
-            or None,
-            charter="chart-hero",
-        )
-        # If BPM was None, fall back to 120
-        eff_bpm = bpm or 120
-        # Use model predictions to chart
-        # Build simple row dicts
+    if args.export_clonehero or args.to_clonehero:
+        # Generate album/background art unless skipped
+        album_path = None
+        bg_path = None
+        if not args.no_art:
+            try:
+                album_path, bg_path = generate_art(
+                    out_path, title=title, artist=artist, thumbnail_url=thumb
+                )
+            except Exception:
+                pass
+
+        # Determine CH root relative to project
+        ch_root = Path("CloneHero")
         pred_rows = chart_generator.df.to_dict(orient="records")
-        write_chart(
-            ch_dir,
-            meta,
-            bpm=eff_bpm,
+        ch_dir = package_clonehero_song(
+            clonehero_root=ch_root,
+            title=title,
+            artist=artist,
+            bpm=float(bpm),
             resolution=args.resolution,
-            sr=config.sample_rate,
+            sr_model=config.sample_rate,
             prediction_rows=pred_rows,
-            music_stream=None,
+            source_audio=Path(f_path),
+            album_path=album_path,
+            background_path=bg_path,
+            convert_audio=not args.no_convert,
         )
         print(f"Clone Hero chart exported to {ch_dir}")
-    if args.link is not None:
-        os.remove(f_path)
+
+    if args.link is not None and not args.keep_temp:
+        try:
+            os.remove(f_path)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

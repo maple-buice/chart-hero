@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from music21 import chord, meter, note, stream
 
+import torch
 from chart_hero.model_training.train_transformer import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_drum_hits
 
@@ -15,24 +16,173 @@ class Charter:
         )
         self.model.eval()
 
-    def predict(self, spectrogram_tensors):
-        # This method needs to be fully implemented to handle the model's output
-        # and create a DataFrame suitable for the ChartGenerator.
-        # For now, it will return a dummy DataFrame.
+    def predict(self, segments: list) -> pd.DataFrame:
+        """
+        Run model inference over spectrogram segments and return a DataFrame of
+        event-level predictions suitable for chart writing.
 
-        # Placeholder for onset detection from spectrograms
-        onsets = np.arange(1, len(spectrogram_tensors) + 1) * self.config.sample_rate
+        segments: list of dicts from audio_to_tensors with keys:
+          - 'spec': np.ndarray (n_mels, frames)
+          - 'start_frame': int
+          - 'end_frame': int
+          - 'total_frames': int
+        """
+        if not segments:
+            return pd.DataFrame(columns=["peak_sample"] + get_drum_hits())
 
-        # Placeholder for processing model logits
-        drum_hits = get_drum_hits()
-        data = {
-            "peak_sample": onsets,
-            **{
-                hit: np.random.randint(0, 2, len(spectrogram_tensors))
-                for hit in drum_hits
-            },
-        }
-        return pd.DataFrame(data)
+        device = torch.device(
+            self.config.device
+            if torch.cuda.is_available()
+            or getattr(torch.backends, "mps", None)
+            and torch.backends.mps.is_available()
+            else "cpu"
+        )
+        self.model.to(device)
+
+        patch = int(self.config.patch_size[0])
+        hop = int(self.config.hop_length)
+        classes = get_drum_hits()
+        rows: list[dict] = []
+
+        with torch.no_grad():
+            # Batch reasonably to avoid OOM
+            batch_size = 4
+            # Normalize input: accept legacy tensor lists too
+            norm_segments: list[dict] = []
+            seg_len_frames = int(
+                self.config.max_audio_length
+                * self.config.sample_rate
+                / self.config.hop_length
+            )
+            for idx, seg in enumerate(segments):
+                if isinstance(seg, dict) and "spec" in seg:
+                    spec = seg["spec"]
+                    arr = (
+                        torch.from_numpy(spec).float()
+                        if not isinstance(spec, torch.Tensor)
+                        else spec.float()
+                    )
+                    arr = arr.detach().cpu()
+                    if arr.dim() == 2:
+                        # (n_mels, frames) or (frames, n_mels)
+                        n0, n1 = arr.shape
+                        if n0 == self.config.n_mels:
+                            spec_np = arr.numpy()
+                        else:
+                            spec_np = arr.t().numpy()
+                    else:
+                        # Reduce to (n_mels, frames)
+                        a = arr.squeeze()
+                        if a.dim() != 2:
+                            continue
+                        n0, n1 = a.shape
+                        if n0 == self.config.n_mels:
+                            spec_np = a.numpy()
+                        else:
+                            spec_np = a.t().numpy()
+                    norm_segments.append(
+                        {
+                            "spec": spec_np,
+                            "start_frame": int(
+                                seg.get("start_frame", idx * seg_len_frames)
+                            ),
+                            "end_frame": int(
+                                seg.get(
+                                    "end_frame", idx * seg_len_frames + spec_np.shape[1]
+                                )
+                            ),
+                            "total_frames": int(
+                                seg.get("total_frames", spec_np.shape[1])
+                            ),
+                        }
+                    )
+                else:
+                    # assume tensor-like segment e.g., [1,1,time,freq] or [1,1,n_mels,frames]
+                    t = (
+                        seg.detach().cpu().float()
+                        if isinstance(seg, torch.Tensor)
+                        else torch.tensor(seg).float()
+                    )
+                    t = t.squeeze()
+                    if t.dim() != 2:
+                        continue
+                    # Align to (n_mels, frames)
+                    if t.shape[0] == self.config.n_mels:
+                        spec_np = t.numpy()
+                    else:
+                        spec_np = t.t().numpy()
+                    norm_segments.append(
+                        {
+                            "spec": spec_np,
+                            "start_frame": idx * seg_len_frames,
+                            "end_frame": idx * seg_len_frames + spec_np.shape[1],
+                            "total_frames": spec_np.shape[1],
+                        }
+                    )
+
+            for i in range(0, len(norm_segments), batch_size):
+                batch = norm_segments[i : i + batch_size]
+                # Build tensor: [B, 1, n_mels, frames]
+                specs = [torch.from_numpy(b["spec"]).float() for b in batch]
+                # pad to max frames in batch to allow stacking
+                max_f = max(s.shape[1] for s in specs)
+                padded = []
+                for s in specs:
+                    if s.shape[1] < max_f:
+                        pad_w = max_f - s.shape[1]
+                        fill = float(s.min().item()) if s.numel() > 0 else 0.0
+                        ps = torch.full(
+                            (s.shape[0], max_f), fill_value=fill, dtype=s.dtype
+                        )
+                        ps[:, : s.shape[1]] = s
+                        s = ps
+                    padded.append(s.unsqueeze(0).unsqueeze(0))  # -> [1,1,n_mels,frames]
+                x = torch.cat(padded, dim=0).to(device)
+                out = self.model(x)
+                logits = out["logits"].cpu()  # [B, T_patches, C]
+                probs = torch.sigmoid(logits)
+
+                # Thresholds
+                thr = self.config.prediction_threshold
+                thr_vec = None
+                if getattr(self.config, "class_thresholds", None):
+                    ct = self.config.class_thresholds
+                    if isinstance(ct, (list, tuple)) and len(ct) == len(classes):
+                        thr_vec = torch.tensor(ct).view(1, 1, -1)
+
+                for b_idx, seg in enumerate(batch):
+                    seg_probs = probs[b_idx]  # [T_patches, C]
+                    if thr_vec is not None:
+                        active = (seg_probs >= thr_vec).to(torch.bool)
+                    else:
+                        active = (seg_probs >= thr).to(torch.bool)
+                    if active.numel() == 0:
+                        continue
+                    # Map each patch t to a representative frame
+                    T_p = seg_probs.shape[0]
+                    for t in range(T_p):
+                        cls_mask = active[t]  # [C]
+                        if not cls_mask.any():
+                            continue
+                        # Map to frame center within this patch
+                        frame_idx = seg["start_frame"] + t * patch + patch // 2
+                        peak_sample = int(frame_idx * hop)
+                        row = {"peak_sample": peak_sample}
+                        for ci, lab in enumerate(classes):
+                            row[lab] = int(cls_mask[ci].item())
+                        rows.append(row)
+
+        if not rows:
+            return pd.DataFrame(columns=["peak_sample"] + classes)
+
+        df = pd.DataFrame(rows)
+        # Combine duplicate ticks by OR-ing the class indicators
+        df = (
+            df.groupby("peak_sample", as_index=False)
+            .agg({**{c: "max" for c in classes}})
+            .sort_values("peak_sample")
+        )
+        return df
 
 
 class ChartGenerator:

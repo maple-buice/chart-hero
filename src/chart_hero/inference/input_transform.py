@@ -35,7 +35,7 @@ def create_transient_enhanced_spectrogram(y, sr, n_fft, hop_length, n_mels):
     return transient_enhanced_spec
 
 
-def audio_to_tensors(audio_path: str, config) -> list[torch.Tensor]:
+def audio_to_tensors(audio_path: str, config) -> list[dict]:
     """
     Transforms an audio file into a list of tensor segments for the model.
     """
@@ -59,7 +59,7 @@ def audio_to_tensors(audio_path: str, config) -> list[torch.Tensor]:
         config.max_audio_length * config.sample_rate / config.hop_length
     )
 
-    tensors = []
+    segments: list[dict] = []
     num_frames = full_spec.shape[1]
     for i in range(0, num_frames, segment_length_frames):
         end_frame = i + segment_length_frames
@@ -73,9 +73,17 @@ def audio_to_tensors(audio_path: str, config) -> list[torch.Tensor]:
         else:
             spec_segment = full_spec[:, i:end_frame]
 
-        tensors.append(torch.from_numpy(spec_segment).float().unsqueeze(0))
+        # Keep numpy for now; Charter.predict will convert to torch and batch
+        segments.append(
+            {
+                "spec": spec_segment,  # shape: (n_mels, frames)
+                "start_frame": i,
+                "end_frame": min(end_frame, num_frames),
+                "total_frames": num_frames,
+            }
+        )
 
-    return tensors
+    return segments
 
 
 class yt_audio:
@@ -91,7 +99,7 @@ class yt_audio:
         self.thumbnail_url = thumbnail_url
 
 
-def get_yt_audio(link) -> tuple[str | None, str | None]:
+def get_yt_audio(link: str) -> yt_audio | None:
     download_path = "music/YouTube/"
     os.makedirs(download_path, exist_ok=True)
     ydl_opts = {
@@ -108,8 +116,11 @@ def get_yt_audio(link) -> tuple[str | None, str | None]:
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(link, download=True)
-            return os.path.join(download_path, "song.m4a"), info.get(
-                "title", "Unknown Title"
+            return yt_audio(
+                path=os.path.join(download_path, "song.m4a"),
+                title=info.get("title", "Unknown Title"),
+                description=info.get("description", ""),
+                thumbnail_url=info.get("thumbnail", None),
             )
     except Exception:
-        return None, None
+        return None
