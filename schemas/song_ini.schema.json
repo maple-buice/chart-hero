@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/song_ini.schema.json",
+  "title": "Clone Hero song.ini",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string" },
+    "artist": { "type": "string" },
+    "album": { "type": "string" },
+    "genre": { "type": "string" },
+    "year": { "oneOf": [ {"type": "integer"}, {"type": "string"} ] },
+    "song_length": { "type": "integer", "minimum": 0, "description": "Milliseconds" },
+    "charter": { "type": "string" },
+    "preview_start_time": { "type": "integer", "minimum": 0 },
+    "preview_end_time": { "type": "integer", "minimum": 0 },
+    "delay": { "type": "integer" },
+    "icon": { "type": "string" },
+    "album_track": { "oneOf": [ {"type": "integer"}, {"type": "string"} ] },
+    "playlist_track": { "type": "integer" },
+    "track": { "oneOf": [ {"type": "integer"}, {"type": "string"} ] },
+    "loading_phrase": { "type": "string" },
+    "video": { "type": "string" },
+    "background": { "type": "string" },
+    "banner": { "type": "string" },
+    "pro_drums": { "type": ["boolean", "string"], "description": "Booleans may appear as True/False or strings in INI" },
+    "kit_type": { "type": "integer" },
+    "multiplier_note": { "type": "integer" },
+    "hopo_frequency": { "type": "integer" },
+    "frets": { "type": "integer" },
+    "banner_link_a": { "type": "string" },
+    "link_name_a": { "type": "string" }
+  },
+  "patternProperties": {
+    "^diff_": { "type": "integer" },
+    "^diff_.*_real(_22)?$": { "type": "integer" },
+    "^diff_.*ghl$": { "type": "integer" }
+  },
+  "required": ["name", "artist"],
+  "additionalProperties": true
+}

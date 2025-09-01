@@ -195,3 +195,5 @@ output/
 logs/
 models/
 wandb/
+
+CloneHero/

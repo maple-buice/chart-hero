@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/chart.schema.json",
+  "title": "Clone Hero .chart/.txt parsed representation",
+  "type": "object",
+  "description": "JSON representation of .chart/.txt. Drum encoding: base notes 0-4 (K,R,Y,B,G); cymbal flags 66/67/68 (pair with 2/3/4); tom-force 35/36/37; specials S 2 (OD/SP), S 64 (fill); extended customs commonly use note codes 32–46 and specials 65/66 as meta markers.",
+  "properties": {
+    "format": { "type": "string", "enum": ["chart", "txt"] },
+    "path": { "type": "string" },
+    "song": {
+      "type": "object",
+      "properties": {
+        "Name": {"type": "string"},
+        "Artist": {"type": "string"},
+        "Charter": {"type": "string"},
+        "Album": {"type": "string"},
+        "Year": {"type": ["string", "integer"]},
+        "Offset": {"type": "integer"},
+        "Resolution": {"type": "integer"},
+        "Player2": {"type": "string"},
+        "Difficulty": {"type": "integer"},
+        "PreviewStart": {"type": "integer"},
+        "PreviewEnd": {"type": "integer"},
+        "Genre": {"type": "string"},
+        "MediaType": {"type": "string"},
+        "MusicStream": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "sync_track": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tick": {"type": "integer", "minimum": 0},
+          "type": {"type": "string", "enum": ["B", "TS"]},
+          "value": {"type": "integer", "minimum": 0}
+        },
+        "required": ["tick", "type", "value"],
+        "additionalProperties": false
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tick": {"type": "integer", "minimum": 0},
+          "type": {"type": "string", "const": "E"},
+          "text": {"type": "string"}
+        },
+        "required": ["tick", "type", "text"],
+        "additionalProperties": false
+      }
+    },
+    "tracks": {
+      "type": "object",
+      "description": "Mapping from section name (e.g., ExpertDrums) to arrays of notes/specials",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "tick": {"type": "integer", "minimum": 0},
+            "kind": {"type": "string", "enum": ["N", "S"]},
+            "code": {"type": "integer"},
+            "length": {"type": "integer", "minimum": 0}
+          },
+          "required": ["tick", "kind", "code", "length"],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "required": ["format", "path"],
+  "additionalProperties": false
+}
