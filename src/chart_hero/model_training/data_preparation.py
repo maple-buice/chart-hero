@@ -84,6 +84,8 @@ def _save_segments(
     num_frames = spec_np.shape[1]
     min_spec_val = np.min(spec_np)
 
+    total = 0
+    zero_label = 0
     for i in range(0, num_frames, segment_length):
         end_frame = i + segment_length
         spec_segment = spec_np[:, i:end_frame]
@@ -109,6 +111,12 @@ def _save_segments(
         np.save(spec_filename, spec_segment)
         np.save(label_filename, label_segment)
 
+        total += 1
+        if np.sum(label_segment) <= 0:
+            zero_label += 1
+
+    return total, zero_label
+
 
 def main(
     dataset_dir: str,
@@ -117,6 +125,7 @@ def main(
     limit: int | None = None,
     clear_output: bool = False,
     no_progress: bool = False,
+    validate_labels: bool = False,
 ):
     output_path = Path(output_dir)
     if clear_output and output_path.exists():
@@ -146,11 +155,14 @@ def main(
     )
     progress_disabled = no_progress or not sys.stdout.isatty()
 
+    summary = {}
     for split, indices in split_map.items():
         split_dir = output_path / split
         split_dir.mkdir(exist_ok=True)
         # random_split returns torch.utils.data.Subset; iterate integer indices
         subset_indices = getattr(indices, "indices", list(range(len(indices))))
+        split_total_segments = 0
+        split_zero_segments = 0
         for idx in tqdm(
             subset_indices, desc=f"Processing {split} set", disable=progress_disabled
         ):
@@ -159,13 +171,15 @@ def main(
                 continue
 
             base_filename = f"{split}_{int(idx)}_original"
-            _save_segments(
+            t, z = _save_segments(
                 original_spectrogram,
                 label_matrix,
                 segment_length_frames,
                 split_dir,
                 base_filename,
             )
+            split_total_segments += t
+            split_zero_segments += z
 
             if split == "train" and config.enable_timbre_augmentation:
                 audio_path = (
@@ -184,13 +198,32 @@ def main(
                     spec = create_transient_enhanced_spectrogram(
                         aug_audio, sr, config.n_fft, config.hop_length, config.n_mels
                     )
-                    _save_segments(
+                    t_a, z_a = _save_segments(
                         torch.from_numpy(spec).float().unsqueeze(0),
                         label_matrix,
                         segment_length_frames,
                         split_dir,
                         f"{split}_{int(idx)}_{aug_name}",
                     )
+                    split_total_segments += t_a
+                    split_zero_segments += z_a
+
+        summary[split] = {
+            "segments": split_total_segments,
+            "zero_label_segments": split_zero_segments,
+        }
+        if validate_labels and split_total_segments > 0:
+            ratio = split_zero_segments / max(1, split_total_segments)
+            logger.info(
+                f"[{split}] segments={split_total_segments} zero_label_segments={split_zero_segments} ({ratio:.2%})"
+            )
+
+    if validate_labels:
+        total_segments = sum(v["segments"] for v in summary.values())
+        total_zero = sum(v["zero_label_segments"] for v in summary.values())
+        logger.info(
+            f"[summary] segments={total_segments} zero_label_segments={total_zero} ({(total_zero / max(1, total_segments)):.2%})"
+        )
 
 
 if __name__ == "__main__":
@@ -214,4 +247,5 @@ if __name__ == "__main__":
         args.limit,
         args.clear_output,
         args.no_progress,
+        args.validate_labels,
     )
