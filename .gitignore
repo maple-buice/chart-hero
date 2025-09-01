@@ -197,3 +197,5 @@ models/
 wandb/
 
 CloneHero/
+
+.env*
