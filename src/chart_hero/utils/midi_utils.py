@@ -4,6 +4,7 @@ creating label matrices for drum transcription.
 """
 
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 import mido
 import torch
@@ -25,53 +26,51 @@ class MidiProcessor:
         self, midi_path: Path, num_time_frames: int
     ) -> torch.Tensor | None:
         """
-        Creates a frame-by-frame multi-label matrix from a MIDI file.
-
-        Args:
-            midi_path: Path to the MIDI file.
-            num_time_frames: The number of time frames in the corresponding
-                             spectrogram, used to determine the matrix width.
-
-        Returns:
-            A torch.Tensor of shape (num_time_frames, num_drum_classes).
+        Build frame-level labels from a General MIDI-style drum performance.
+        Intended for "real" MIDIs in training datasets (e.g., E-GMD), not Rock Band chart MIDIs.
+        Applies DRUM_HIT_MAP to the last MIDI track; uses single tempo from track 0.
         """
         try:
-            midi_file = mido.MidiFile(midi_path)
+            mf = mido.MidiFile(midi_path)
         except Exception as e:
             print(f"Warning: Could not read MIDI file {midi_path}: {e}")
             return None
 
-        ticks_per_beat = midi_file.ticks_per_beat or 480
-        tempo = self._get_midi_tempo(midi_file)
+        tpq = mf.ticks_per_beat or 480
+        tempo = self._get_midi_tempo(mf)
+        track = mf.tracks[-1]
 
-        label_matrix = torch.zeros(
-            (num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32
-        )
-
+        label = torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
         time_log = 0
-        for msg in midi_file.tracks[-1]:
+        for msg in track:
             time_log += msg.time
-            time_sec = mido.tick2second(time_log, ticks_per_beat, tempo)
-            frame_index = int(
-                time_sec * self.config.sample_rate / self.config.hop_length
-            )
-
-            if frame_index >= num_time_frames:
-                continue
-
             if msg.type == "note_on" and msg.velocity > 0:
-                target_hit = DRUM_HIT_MAP.get(msg.note)
-                if target_hit:
-                    target_index = DRUM_HIT_TO_INDEX.get(target_hit)
-                    if target_index is not None:
-                        label_matrix[frame_index, target_index] = 1
+                cls_key = DRUM_HIT_MAP.get(msg.note)
+                if cls_key is None:
+                    continue
+                time_sec = mido.tick2second(time_log, tpq, tempo)
+                frame = int(time_sec * self.config.sample_rate / self.config.hop_length)
+                self._mark(label, frame, cls_key, num_time_frames)
 
-        return label_matrix
+        return label
 
-    def _get_midi_tempo(self, midi_file: mido.MidiFile) -> int:
-        """Extracts tempo from a MIDI file, defaulting to 120 BPM."""
-        for msg in midi_file.tracks[0]:
-            if msg.type == "set_tempo":
-                return msg.tempo
-        # If no tempo is found, default to 500,000 microseconds per beat, which is 120 BPM.
+    # --- Helpers ---
+    # RB-style helpers removed; this utility is for GM-style training MIDI only.
+
+    def _mark(
+        self, label: torch.Tensor, frame: int, cls_key: str, max_frames: int
+    ) -> None:
+        if 0 <= frame < max_frames:
+            idx = DRUM_HIT_TO_INDEX.get(cls_key)
+            if idx is not None:
+                label[frame, idx] = 1.0
+
+    def _get_midi_tempo(self, mf: mido.MidiFile) -> int:
+        """Extract a single tempo (track 0) for legacy GM fallback; default 120 BPM."""
+        try:
+            for msg in mf.tracks[0]:
+                if msg.is_meta and msg.type == "set_tempo":
+                    return int(msg.tempo)
+        except Exception:
+            pass
         return 500000
