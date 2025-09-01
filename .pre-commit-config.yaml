@@ -13,11 +13,11 @@ repos:
     # Run the formatter.
     - id: ruff-format
       types_or: [ python, pyi ]
-# -   repo: https://github.com/pre-commit/mirrors-mypy
-#     rev: v1.17.1
-#     hooks:
-#     -   id: mypy
-#         args: [--ignore-missing-imports]
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.17.1
+    hooks:
+    -   id: mypy
+        args: [--ignore-missing-imports]
 -   repo: local
     hooks:
     -   id: pytest
