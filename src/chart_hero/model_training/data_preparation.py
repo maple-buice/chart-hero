@@ -9,7 +9,6 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, TensorDataset, random_split
 from tqdm import tqdm
-from tqdm.utils import Comparable
 
 from chart_hero.model_training.augment_audio import (
     augment_dynamic_eq,
@@ -150,14 +149,16 @@ def main(
     for split, indices in split_map.items():
         split_dir = output_path / split
         split_dir.mkdir(exist_ok=True)
-        for i in tqdm(
-            indices, desc=f"Processing {split} set", disable=progress_disabled
+        # random_split returns torch.utils.data.Subset; iterate integer indices
+        subset_indices = getattr(indices, "indices", list(range(len(indices))))
+        for idx in tqdm(
+            subset_indices, desc=f"Processing {split} set", disable=progress_disabled
         ):
-            original_spectrogram, label_matrix = dataset[i]
+            original_spectrogram, label_matrix = dataset[int(idx)]
             if original_spectrogram is None:
                 continue
 
-            base_filename = f"{split}_{i}_original"
+            base_filename = f"{split}_{int(idx)}_original"
             _save_segments(
                 original_spectrogram,
                 label_matrix,
@@ -168,7 +169,8 @@ def main(
 
             if split == "train" and config.enable_timbre_augmentation:
                 audio_path = (
-                    dataset.dataset_dir / dataset.data_map.iloc[i]["audio_filename"]
+                    dataset.dataset_dir
+                    / dataset.data_map.iloc[int(idx)]["audio_filename"]
                 )
                 if not audio_path.exists():
                     continue
@@ -187,7 +189,7 @@ def main(
                         label_matrix,
                         segment_length_frames,
                         split_dir,
-                        f"{split}_{i}_{aug_name}",
+                        f"{split}_{int(idx)}_{aug_name}",
                     )
 
 
