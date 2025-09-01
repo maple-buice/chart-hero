@@ -2,7 +2,7 @@ import logging
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, cast
 
 import librosa
 import numpy as np
@@ -17,7 +17,7 @@ from chart_hero.model_training.augment_audio import (
     augment_pitch_jitter,
     augment_time_stretch,
 )
-from chart_hero.model_training.transformer_config import get_config
+from chart_hero.model_training.transformer_config import BaseConfig, get_config
 from chart_hero.utils.midi_utils import MidiProcessor
 
 logger = logging.getLogger(__name__)
@@ -36,11 +36,13 @@ def create_transient_enhanced_spectrogram(
     onset_env = onset_env[:min_len]
     if np.max(onset_env) > 0:
         onset_env = onset_env / np.max(onset_env)
-    return log_mel_spec * onset_env
+    return cast(
+        NDArray[np.floating], (log_mel_spec * onset_env).astype(log_mel_spec.dtype)
+    )
 
 
 class EGMDRawDataset(Dataset[tuple[torch.Tensor | None, torch.Tensor | None]]):
-    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config) -> None:
+    def __init__(self, data_map: pd.DataFrame, dataset_dir: str, config: Any) -> None:
         self.data_map = data_map
         self.dataset_dir = Path(dataset_dir)
         self.config = config
@@ -127,7 +129,7 @@ def _save_segments(
 def main(
     dataset_dir: str,
     output_dir: str,
-    config,
+    config: BaseConfig,
     limit: int | None = None,
     clear_output: bool = False,
     no_progress: bool = False,
@@ -173,7 +175,7 @@ def main(
             subset_indices, desc=f"Processing {split} set", disable=progress_disabled
         ):
             original_spectrogram, label_matrix = dataset[int(idx)]
-            if original_spectrogram is None:
+            if original_spectrogram is None or label_matrix is None:
                 continue
 
             base_filename = f"{split}_{int(idx)}_original"

@@ -22,7 +22,7 @@ class Charter:
         )
         self.model.eval()
 
-    def predict(self, segments: list[Segment]) -> pd.DataFrame:
+    def predict(self, segments: list[Segment | torch.Tensor]) -> pd.DataFrame:
         """
         Run model inference over spectrogram segments and return a DataFrame of
         event-level predictions suitable for chart writing.
@@ -61,28 +61,38 @@ class Charter:
                 / self.config.hop_length
             )
             for idx, seg in enumerate(segments):
-                if isinstance(seg, dict) and "spec" in seg:
-                    spec = seg["spec"]
-                    # Segment spec is a numpy array; convert to float tensor
-                    arr = torch.from_numpy(spec).float()
-                    arr = arr.detach().cpu()
-                    if arr.dim() == 2:
-                        # (n_mels, frames) or (frames, n_mels)
-                        n0, n1 = arr.shape
-                        if n0 == self.config.n_mels:
-                            spec_np = arr.numpy()
-                        else:
-                            spec_np = arr.t().numpy()
+                if isinstance(seg, torch.Tensor):
+                    ten = seg.detach().cpu().float().squeeze()
+                    if ten.dim() != 2:
+                        continue
+                    if ten.shape[0] == self.config.n_mels:
+                        spec_np = ten.numpy()
                     else:
-                        # Reduce to (n_mels, frames)
+                        spec_np = ten.t().numpy()
+                    norm_segments.append(
+                        {
+                            "spec": spec_np,
+                            "start_frame": idx * seg_len_frames,
+                            "end_frame": idx * seg_len_frames + spec_np.shape[1],
+                            "total_frames": spec_np.shape[1],
+                        }
+                    )
+                else:
+                    spec = seg["spec"]
+                    arr = torch.from_numpy(spec).float().detach().cpu()
+                    if arr.dim() == 2:
+                        n0, _ = arr.shape
+                        spec_np = (
+                            arr.numpy() if n0 == self.config.n_mels else arr.t().numpy()
+                        )
+                    else:
                         a = arr.squeeze()
                         if a.dim() != 2:
                             continue
-                        n0, n1 = a.shape
-                        if n0 == self.config.n_mels:
-                            spec_np = a.numpy()
-                        else:
-                            spec_np = a.t().numpy()
+                        n0, _ = a.shape
+                        spec_np = (
+                            a.numpy() if n0 == self.config.n_mels else a.t().numpy()
+                        )
                     norm_segments.append(
                         {
                             "spec": spec_np,
@@ -97,29 +107,6 @@ class Charter:
                             "total_frames": int(
                                 seg.get("total_frames", spec_np.shape[1])
                             ),
-                        }
-                    )
-                else:
-                    # assume tensor-like segment e.g., [1,1,time,freq] or [1,1,n_mels,frames]
-                    ten = (
-                        seg.detach().cpu().float()
-                        if isinstance(seg, torch.Tensor)
-                        else torch.tensor(seg).float()
-                    )
-                    ten = ten.squeeze()
-                    if ten.dim() != 2:
-                        continue
-                    # Align to (n_mels, frames)
-                    if ten.shape[0] == self.config.n_mels:
-                        spec_np = ten.numpy()
-                    else:
-                        spec_np = ten.t().numpy()
-                    norm_segments.append(
-                        {
-                            "spec": spec_np,
-                            "start_frame": idx * seg_len_frames,
-                            "end_frame": idx * seg_len_frames + spec_np.shape[1],
-                            "total_frames": spec_np.shape[1],
                         }
                     )
 
@@ -232,7 +219,7 @@ class ChartGenerator:
             drum_part.append(
                 cast(Any, meter).TimeSignature(
                     f"{int(self.beats_in_measure / 2)}/{self.note_value}"
-                )  # type: ignore[attr-defined]
+                )
             )
             cast(Any, self.sheet).insert(0, drum_part)
             return
@@ -283,14 +270,19 @@ class ChartGenerator:
         self.music21_data = self.get_music21_data(
             stream_time_map, stream_pitch, stream_note
         )
-        self.sheet = self.sheet_construction(self.music21_data, song_title=song_title)
+        from typing import cast
+
+        self.sheet = self.sheet_construction(
+            cast(dict[int, dict[str, list[object]]], self.music21_data),
+            song_title=song_title,
+        )
 
     def get_music21_data(
         self,
         stream_time_map: list[list[float]],
         stream_pitch: list[list[list[int | str]]],
         stream_note: list[list[float]],
-    ) -> dict[int, dict[str, list[object]]]:
+    ) -> dict[int, dict[str, object]]:
         """
         A function to clean up and merge all the necessary information in a format that can pass to the sheet_construction step to build sheet music
         """
@@ -328,14 +320,20 @@ class ChartGenerator:
         drum_part.append(
             cast(Any, meter).TimeSignature(
                 f"{int(self.beats_in_measure / 2)}/{self.note_value}"
-            )  # type: ignore[attr-defined]
+            )
         )
 
         # Add notes to the part
         for measure_num in sorted(music21_data.keys()):
             measure = cast(Any, stream).Measure(number=measure_num)
-            for i, pitch_list in enumerate(music21_data[measure_num]["pitch"]):
-                note_type = music21_data[measure_num]["note_type"][i]
+            pitch_lists_obj = music21_data[measure_num]["pitch"]
+            note_types_obj = music21_data[measure_num]["note_type"]
+            from typing import cast as _cast
+
+            pitch_lists_t = _cast(list[list[int | str]], pitch_lists_obj)
+            note_types_t = _cast(list[float], note_types_obj)
+            for i, pitch_list in enumerate(pitch_lists_t):
+                note_type = note_types_t[i]
 
                 n: note.GeneralNote
                 if "rest" in pitch_list:
@@ -650,10 +648,14 @@ class ChartGenerator:
         pitch_mapping_df = self.df[["peak_sample"] + get_drum_hits()].set_index(
             "peak_sample"
         )
-        mapping_dict = pitch_mapping_df.to_dict(orient="index")
+        from typing import cast as _cast
+
+        mapping_dict = _cast(
+            dict[int, dict[str, int]], pitch_mapping_df.to_dict(orient="index")
+        )
         pitch_dict: dict[float, list[int | str]] = {}
         for p in mapping_dict.keys():
-            time = round(librosa.samples_to_time(p, sr=self.sample_rate), 8)
+            time = float(round(librosa.samples_to_time(int(p), sr=self.sample_rate), 8))
             pitch_dict[time] = []
             for hit_class, is_hit in mapping_dict[p].items():
                 if is_hit == 1:

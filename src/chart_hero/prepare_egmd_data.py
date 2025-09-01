@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import sys
+from typing import Iterable, Tuple
 
 import numpy as np
 import pandas as pd
@@ -58,11 +59,13 @@ def main(args: argparse.Namespace) -> None:
     # Save the data
     os.makedirs(args.output_dir, exist_ok=True)
 
-    def save_data(loader, name: str) -> None:
+    def save_data(
+        loader: Iterable[Tuple[torch.Tensor | None, torch.Tensor | None]], name: str
+    ) -> None:
         split_dir = os.path.join(args.output_dir, name)
         os.makedirs(split_dir, exist_ok=True)
         for i, batch in enumerate(tqdm(loader, desc=f"Saving {name} data")):
-            spectrogram, label_matrix = batch  # type: ignore[assignment]
+            spectrogram, label_matrix = batch
             if spectrogram is None or label_matrix is None:
                 continue
             # Squeeze the batch dimension before saving

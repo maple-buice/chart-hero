@@ -8,7 +8,6 @@ import librosa
 import numpy as np
 
 from chart_hero.inference.artwork import generate_art
-from chart_hero.inference.chart_writer import SongMeta, write_chart
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
 from chart_hero.inference.packager import package_clonehero_song
@@ -239,12 +238,18 @@ def main() -> None:
     for raw in chart_generator.df.to_dict(orient="records"):
         row: PredictionRow = {}
         for k, v in raw.items():
-            # keys are column names as strings; values should be ints
-            try:
-                row[str(k)] = int(v)  # type: ignore[arg-type]
-            except Exception:
-                # peak_sample may be float-like; coerce safely
-                row[str(k)] = int(float(v))  # type: ignore[arg-type]
+            key = str(k)
+            val_int: int
+            if isinstance(v, bool):
+                val_int = int(v)
+            elif isinstance(v, (int,)):
+                val_int = int(v)
+            else:
+                try:
+                    val_int = int(float(v))  # type: ignore[call-arg]
+                except Exception:
+                    continue
+            row[key] = val_int
         pred_rows.append(row)
         ch_dir = package_clonehero_song(
             clonehero_root=ch_root,

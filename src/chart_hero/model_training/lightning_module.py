@@ -3,13 +3,14 @@ This module contains the DrumTranscriptionModule, the core PyTorch Lightning
 module for the drum transcription model.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from chart_hero.model_training.transformer_config import BaseConfig
 from chart_hero.model_training.transformer_model import create_model
@@ -67,7 +68,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.test_step_outputs: list[dict[str, torch.Tensor]] = []
 
     def forward(self, spectrograms: torch.Tensor) -> Dict[str, torch.Tensor]:
-        return self.model(spectrograms)
+        return cast(Dict[str, torch.Tensor], self.model(spectrograms))
 
     def _common_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
@@ -268,7 +269,9 @@ class DrumTranscriptionModule(pl.LightningModule):
         )
         return prec, rec, f1
 
-    def configure_optimizers(self):
+    def configure_optimizers(
+        self,
+    ) -> tuple[list[torch.optim.Optimizer], list[CosineAnnealingLR]]:
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.config.learning_rate,

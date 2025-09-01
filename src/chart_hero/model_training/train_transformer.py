@@ -7,6 +7,7 @@ setup, data loading, and the core Lightning module.
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytorch_lightning as pl
 import torch
@@ -117,7 +118,7 @@ def main() -> None:
         )
         callbacks = setup_callbacks(config, use_logger=use_wandb)
 
-        trainer_kwargs = {
+        trainer_kwargs: dict[str, Any] = {
             "logger": wandb_logger if use_wandb else False,
             "callbacks": callbacks,
             "max_epochs": config.num_epochs,

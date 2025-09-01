@@ -94,26 +94,30 @@ def setup_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_paths(config, args) -> None:
+def configure_paths(config: "BaseConfig", args: argparse.Namespace) -> None:
     if args.data_dir:
         config.data_dir = str(Path(args.data_dir).resolve())
     if args.audio_dir:
         config.audio_dir = str(Path(args.audio_dir).resolve())
 
     if not hasattr(config, "model_dir") or not config.model_dir:
-        config.model_dir = Path("models") / args.experiment_tag
+        model_path = Path("models") / args.experiment_tag
+        config.model_dir = str(model_path)
     else:
-        config.model_dir = Path(config.model_dir) / args.experiment_tag
-    config.model_dir.mkdir(parents=True, exist_ok=True)
+        model_path = Path(config.model_dir) / args.experiment_tag
+        config.model_dir = str(model_path)
+    model_path.mkdir(parents=True, exist_ok=True)
 
     if not hasattr(config, "log_dir") or not config.log_dir:
-        config.log_dir = Path("logs")
+        log_path = Path("logs")
+        config.log_dir = str(log_path)
     else:
-        config.log_dir = Path(config.log_dir)
-    config.log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = Path(config.log_dir)
+        config.log_dir = str(log_path)
+    log_path.mkdir(parents=True, exist_ok=True)
 
 
-def apply_cli_overrides(config, args) -> None:
+def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
     configure_paths(config, args)
     if args.batch_size is not None:
         config.train_batch_size = args.batch_size
@@ -127,13 +131,10 @@ def apply_cli_overrides(config, args) -> None:
     if args.accumulate_grad_batches is not None:
         config.accumulate_grad_batches = args.accumulate_grad_batches
     if args.quick_test:
-        config.is_quick_test = True
         config.num_epochs = 1
-    if args.debug:
-        config.is_debug_mode = True
 
 
-def setup_callbacks(config, use_logger: bool = True) -> list[Callback]:
+def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callback]:
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(config.model_dir),
         filename="drum-transformer-{epoch:02d}-{val_f1:.3f}",
@@ -152,7 +153,7 @@ def setup_callbacks(config, use_logger: bool = True) -> list[Callback]:
 
 
 def setup_logger(
-    config, project_name: str, use_wandb: bool, experiment_tag: str
+    config: "BaseConfig", project_name: str, use_wandb: bool, experiment_tag: str
 ) -> WandbLogger | None:
     if not use_wandb:
         return None
@@ -167,7 +168,7 @@ def setup_logger(
 from chart_hero.model_training.transformer_config import BaseConfig
 
 
-def configure_run(args) -> tuple[BaseConfig, bool]:
+def configure_run(args: argparse.Namespace) -> tuple[BaseConfig, bool]:
     if not args.experiment_tag and (args.resume or args.evaluate):
         logger.error("--experiment-tag is required for --resume or --evaluate.")
         sys.exit(1)
