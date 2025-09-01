@@ -11,8 +11,9 @@ def identify_song(path: str) -> audd_song_result:
         raise ValueError("AUDD_API_TOKEN environment variable not set")
 
     data = {"api_token": api_token, "return": "musicbrainz,spotify,apple_music"}
-    files = {"file": open(path, "rb")}
-    response = requests.post("https://api.audd.io/", data=data, files=files)
+    with open(path, "rb") as f:
+        files = {"file": f}
+        response = requests.post("https://api.audd.io/", data=data, files=files)
     response.raise_for_status()  # Raise an exception for bad status codes
     response_json = response.json()
 

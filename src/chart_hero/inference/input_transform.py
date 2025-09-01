@@ -93,6 +93,7 @@ class yt_audio:
 
 def get_yt_audio(link) -> tuple[str | None, str | None]:
     download_path = "music/YouTube/"
+    os.makedirs(download_path, exist_ok=True)
     ydl_opts = {
         "format": "m4a/bestaudio/best",
         "outtmpl": download_path + "song.%(ext)s",
@@ -104,8 +105,11 @@ def get_yt_audio(link) -> tuple[str | None, str | None]:
         ],
     }
 
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(link, download=True)
-        return os.path.join(download_path, "song.m4a"), info.get(
-            "title", "Unknown Title"
-        )
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(link, download=True)
+            return os.path.join(download_path, "song.m4a"), info.get(
+                "title", "Unknown Title"
+            )
+    except Exception:
+        return None, None

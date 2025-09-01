@@ -54,7 +54,8 @@ class ChartGenerator:
         self.offset = False
         self.beats_in_measure = beats_in_measure * 2
         self.note_value = note_value
-        self.bpm = bpm
+        # Fallback to a reasonable default BPM if none provided
+        self.bpm = bpm or 120
         self.df = prediction_df
         self.sample_rate = sample_rate
         self.onsets = prediction_df.peak_sample
