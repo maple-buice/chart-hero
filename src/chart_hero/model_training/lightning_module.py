@@ -94,13 +94,20 @@ class DrumTranscriptionModule(pl.LightningModule):
         labels = F.adaptive_max_pool1d(labels.permute(0, 2, 1), output_size=t_patches)
         labels = labels.permute(0, 2, 1)
 
+        # Prepare separate tensors for loss vs metrics
+        # - metrics should use hard binary labels (no smoothing)
+        # - loss may use smoothed labels when enabled
+        labels_for_metrics = labels
         logits = logits.reshape(-1, self.config.num_drum_classes)
-        labels = labels.reshape(-1, self.config.num_drum_classes)
+        labels_for_metrics = labels_for_metrics.reshape(
+            -1, self.config.num_drum_classes
+        )
 
-        # Optional label smoothing for BCE
+        labels_for_loss = labels_for_metrics
+        # Optional label smoothing for BCE (loss only)
         eps = getattr(self.config, "label_smoothing", 0.0) or 0.0
         if eps > 0.0:
-            labels = labels * (1.0 - eps) + 0.5 * eps
+            labels_for_loss = labels_for_loss * (1.0 - eps) + 0.5 * eps
 
         if getattr(self.config, "use_focal_loss", False):
             # Focal BCE for multilabel
@@ -109,7 +116,6 @@ class DrumTranscriptionModule(pl.LightningModule):
             gamma = getattr(self.config, "focal_gamma", 2.0)
             # BCE per element
             bce = F.binary_cross_entropy(p, labels, reduction="none")
-            pt = (1 - bce).clamp_min(1e-6)
             focal = (
                 alpha * (1 - p) ** gamma * labels
                 + (1 - alpha) * p**gamma * (1 - labels)
@@ -120,7 +126,7 @@ class DrumTranscriptionModule(pl.LightningModule):
             loss = focal.mean()
         else:
             assert self.criterion is not None
-            loss = self.criterion(logits, labels)
+            loss = self.criterion(logits, labels_for_loss)
 
         # Thresholds (global or per-class)
         raw_p = torch.sigmoid(logits)
@@ -136,7 +142,8 @@ class DrumTranscriptionModule(pl.LightningModule):
                 raw_p, getattr(self.config, "prediction_threshold", 0.5)
             )
         preds = raw_p > thr
-        return loss, preds, labels
+        # Return hard labels for metrics (no smoothing)
+        return loss, preds, labels_for_metrics
 
     def training_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
@@ -248,7 +255,6 @@ class DrumTranscriptionModule(pl.LightningModule):
         """Compute event-level precision/recall/F1 over all classes by concatenating events."""
         BxT, C = preds.shape
         # reshape to (B,T,C)
-        B = -1  # unknown; treat as flat sequence
         tp_total = 0
         fp_total = 0
         fn_total = 0
