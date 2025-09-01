@@ -12,6 +12,7 @@ from chart_hero.inference.song_identifier import (
     identify_song,
 )
 from chart_hero.model_training.transformer_config import get_config
+from chart_hero.inference.chart_writer import SongMeta, write_chart
 
 
 def main():
@@ -51,7 +52,7 @@ def main():
         "-r",
         "--resolution",
         type=int,
-        default=16,
+        default=192,
         help="Note resolution for the drum chart.",
     )
     parser.add_argument(
@@ -70,6 +71,11 @@ def main():
         "--no-api",
         action="store_true",
         help="Run without making API calls to AudD.",
+    )
+    parser.add_argument(
+        "--export-clonehero",
+        action="store_true",
+        help="Export a Clone Hero-ready folder with notes.chart and song.ini.",
     )
 
     args = parser.parse_args()
@@ -130,6 +136,30 @@ def main():
     # Save the chart
     chart_generator.sheet.write("musicxml", fp=out_path / f"{title}.musicxml")
     print(f"Sheet music saved at {out_path}")
+
+    if args.export_clonehero:
+        ch_dir = out_path / f"{title} [chart-hero]"
+        meta = SongMeta(
+            name=title,
+            artist=(audd_result.title if hasattr(audd_result, "title") else None)
+            or None,
+            charter="chart-hero",
+        )
+        # If BPM was None, fall back to 120
+        eff_bpm = bpm or 120
+        # Use model predictions to chart
+        # Build simple row dicts
+        pred_rows = chart_generator.df.to_dict(orient="records")
+        write_chart(
+            ch_dir,
+            meta,
+            bpm=eff_bpm,
+            resolution=args.resolution,
+            sr=config.sample_rate,
+            prediction_rows=pred_rows,
+            music_stream=None,
+        )
+        print(f"Clone Hero chart exported to {ch_dir}")
     if args.link is not None:
         os.remove(f_path)
 

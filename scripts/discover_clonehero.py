@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import os
 import re
@@ -257,7 +258,47 @@ def validate_drum_tracks(chart_obj):
     return result
 
 
+def load_json_schema(schema_path: str):
+    try:
+        with open(schema_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"ERR loading schema {schema_path}: {e}")
+        return None
+
+
+def jsonschema_validate(instance, schema):
+    try:
+        import jsonschema  # type: ignore
+
+        jsonschema.validate(instance=instance, schema=schema)
+        return True, None
+    except ModuleNotFoundError:
+        # Fallback: simple required-check only
+        missing = [k for k in schema.get("required", []) if k not in instance]
+        if missing:
+            return False, f"missing required keys: {missing}"
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Discover and validate Clone Hero charts"
+    )
+    parser.add_argument(
+        "--export-json",
+        action="store_true",
+        help="Export parsed chart JSON next to chart files",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate parsed charts and INIs against schemas",
+    )
+    args = parser.parse_args()
+
     chart_counts = Counter()
     drum_diffs = Counter()
     section_examples = defaultdict(list)
@@ -298,6 +339,22 @@ def main():
                         "doublekick_flags": val["doublekick_flags"],
                     }
                 )
+                if args.export_json:
+                    out_path = os.path.splitext(p)[0] + ".chart.json"
+                    try:
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            json.dump(chart_obj, f, indent=2)
+                    except Exception as e:
+                        print(f"ERR writing {out_path}: {e}")
+
+                if args.validate:
+                    chart_schema = load_json_schema(
+                        os.path.join("schemas", "chart.schema.json")
+                    )
+                    if chart_schema:
+                        ok, err = jsonschema_validate(chart_obj, chart_schema)
+                        if not ok:
+                            print(f"Schema validation failed for {p}: {err}")
                 unknown_note_codes.update(val["unexpected_note_codes"])
                 unknown_spec_codes.update(val["unexpected_special_codes"])
                 if val["issues"]:
@@ -310,6 +367,33 @@ def main():
             ini_path = os.path.join(dirpath, "song.ini")
             keys = scan_song_ini_keys(ini_path)
             ini_key_counts.update(keys)
+            if args.validate:
+                ini_data = {}
+                try:
+                    in_song = False
+                    with open(ini_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for raw in f:
+                            line = raw.strip()
+                            if not line or line.startswith(("#", ";")):
+                                continue
+                            if line.startswith("[") and line.endswith("]"):
+                                in_song = line.lower() == "[song]"
+                                continue
+                            if not in_song:
+                                continue
+                            if "=" in line:
+                                k, v = line.split("=", 1)
+                                ini_data[k.strip()] = v.strip()
+                except Exception as e:
+                    print(f"ERR reading ini {ini_path}: {e}")
+
+                schema = load_json_schema(
+                    os.path.join("schemas", "song_ini.schema.json")
+                )
+                if schema:
+                    ok, err = jsonschema_validate(ini_data, schema)
+                    if not ok:
+                        print(f"song.ini schema check failed for {ini_path}: {err}")
 
     print("=== Chart section counts (top 30) ===")
     for sec, c in chart_counts.most_common(30):
