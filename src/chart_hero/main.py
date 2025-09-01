@@ -246,7 +246,7 @@ def main() -> None:
                 val_int = int(v)
             else:
                 try:
-                    val_int = int(float(v))  # type: ignore[call-arg]
+                    val_int = int(float(v))
                 except Exception:
                     continue
             row[key] = val_int

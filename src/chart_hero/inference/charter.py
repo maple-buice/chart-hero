@@ -22,12 +22,14 @@ class Charter:
         )
         self.model.eval()
 
-    def predict(self, segments: list[Segment | torch.Tensor]) -> pd.DataFrame:
+    from typing import Sequence
+
+    def predict(self, segments: Sequence[Segment | torch.Tensor]) -> pd.DataFrame:
         """
         Run model inference over spectrogram segments and return a DataFrame of
         event-level predictions suitable for chart writing.
 
-        segments: list of dicts from audio_to_tensors with keys:
+        segments: sequence of dicts from audio_to_tensors with keys:
           - 'spec': np.ndarray (n_mels, frames)
           - 'start_frame': int
           - 'end_frame': int
