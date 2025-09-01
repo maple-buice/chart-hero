@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, List
 
 import torch
 
@@ -131,6 +131,7 @@ class BaseConfig:
     gradient_checkpointing: bool = False
     deterministic_training: bool = True
     prediction_threshold: float = 0.5
+    class_thresholds: list[float] | None = None  # optional per-class thresholds
 
     # Data
     train_batch_size: int = 32
@@ -174,6 +175,15 @@ class BaseConfig:
     pos_weight_strategy: str = "auto"  # one of: 'auto', 'constant'
     class_pos_weight: tuple[float, ...] | None = None
     pos_weight_max_files: int | None = None
+
+    # Advanced loss/label settings
+    use_focal_loss: bool = False
+    focal_alpha: float = 0.25
+    focal_gamma: float = 2.0
+    # Tolerance: dilate labels across time frames before pooling to patches
+    label_dilation_frames: int = 0
+    # Event-level metric tolerance (in patch steps)
+    event_tolerance_patches: int = 1
 
     # Timbre Augmentation
     enable_timbre_augmentation: bool = True
