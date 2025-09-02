@@ -185,6 +185,9 @@ class BaseConfig:
     # Event-level metric tolerance (in patch steps)
     event_tolerance_patches: int = 1
 
+    # Scheduler
+    lr_scheduler: str = "lambda_warmup_cosine"  # or "cosine_epoch"
+
     # Timbre Augmentation
     enable_timbre_augmentation: bool = True
     pitch_jitter_prob: float = 0.5

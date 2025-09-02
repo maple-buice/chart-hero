@@ -3,6 +3,9 @@ This module contains the DrumTranscriptionModule, the core PyTorch Lightning
 module for the drum transcription model.
 """
 
+import json
+import math
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, cast
 
 import pytorch_lightning as pl
@@ -10,7 +13,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
-from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from chart_hero.model_training.transformer_config import BaseConfig
 from chart_hero.model_training.transformer_model import create_model
@@ -32,6 +34,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.save_hyperparameters(config.__dict__)
 
         self.model = create_model(config, max_time_patches=max_time_patches)
+        self.calibrated_thresholds: Optional[list[float]] = None
 
         if pos_weight is None and getattr(config, "class_pos_weight", None) is not None:
             pos_weight = torch.tensor(config.class_pos_weight, dtype=torch.float32)
@@ -43,7 +46,10 @@ class DrumTranscriptionModule(pl.LightningModule):
         if getattr(config, "use_focal_loss", False):
             self.criterion = None  # use custom focal in step
         else:
-            self.criterion = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
+            # reduction='none' so we can mask padded timesteps later
+            self.criterion = nn.BCEWithLogitsLoss(
+                pos_weight=self.pos_weight, reduction="none"
+            )
 
         self.train_f1 = torchmetrics.F1Score(
             task="multilabel", num_labels=config.num_drum_classes
@@ -71,9 +77,15 @@ class DrumTranscriptionModule(pl.LightningModule):
         return cast(Dict[str, torch.Tensor], self.model(spectrograms))
 
     def _common_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        spectrograms, labels = batch
+        self,
+        batch: Tuple[torch.Tensor, torch.Tensor]
+        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if len(batch) == 3:
+            spectrograms, labels, lengths = batch
+        else:
+            spectrograms, labels = batch  # type: ignore[misc]
+            lengths = None
         outputs = self.model(spectrograms)
         logits = outputs["logits"]  # [B, T_patches, C]
 
@@ -94,6 +106,22 @@ class DrumTranscriptionModule(pl.LightningModule):
         labels = F.adaptive_max_pool1d(labels.permute(0, 2, 1), output_size=t_patches)
         labels = labels.permute(0, 2, 1)
 
+        # Build a patch-level mask from original lengths (exclude padded time)
+        patch_mask: Optional[torch.Tensor] = None
+        if lengths is not None:
+            B = labels.shape[0]
+            T_max = spectrograms.shape[-1]
+            device = labels.device
+            frame_mask = torch.zeros(B, T_max, dtype=torch.float32, device=device)
+            for i in range(B):
+                L = int(lengths[i].item())
+                L = max(0, min(L, T_max))
+                if L > 0:
+                    frame_mask[i, :L] = 1.0
+            patch_mask = F.adaptive_max_pool1d(
+                frame_mask.unsqueeze(1), output_size=t_patches
+            ).squeeze(1)
+
         # Prepare separate tensors for loss vs metrics
         # - metrics should use hard binary labels (no smoothing)
         # - loss may use smoothed labels when enabled
@@ -109,27 +137,38 @@ class DrumTranscriptionModule(pl.LightningModule):
         if eps > 0.0:
             labels_for_loss = labels_for_loss * (1.0 - eps) + 0.5 * eps
 
+        # Raw probabilities for thresholding/calibration
+        raw_p = torch.sigmoid(logits)
+
         if getattr(self.config, "use_focal_loss", False):
             # Focal BCE for multilabel
-            p = torch.sigmoid(logits)
+            p = raw_p
             alpha = getattr(self.config, "focal_alpha", 0.25)
             gamma = getattr(self.config, "focal_gamma", 2.0)
             # BCE per element
-            bce = F.binary_cross_entropy(p, labels, reduction="none")
+            bce = F.binary_cross_entropy(p, labels_for_loss, reduction="none")
             focal = (
-                alpha * (1 - p) ** gamma * labels
-                + (1 - alpha) * p**gamma * (1 - labels)
+                alpha * (1 - p) ** gamma * labels_for_loss
+                + (1 - alpha) * p**gamma * (1 - labels_for_loss)
             ) * bce
             # Class weighting via pos_weight approximated by scaling positives
             pos_w = self.pos_weight.to(focal.device)
-            focal = focal * (labels * (pos_w - 1) + 1)
-            loss = focal.mean()
+            focal = focal * (labels_for_loss * (pos_w - 1) + 1)
+            if patch_mask is not None:
+                mask_flat = patch_mask.reshape(-1).unsqueeze(1).expand_as(focal) > 0
+                loss = focal[mask_flat].mean() if mask_flat.any() else focal.mean()
+            else:
+                loss = focal.mean()
         else:
             assert self.criterion is not None
-            loss = self.criterion(logits, labels_for_loss)
+            per_el = self.criterion(logits, labels_for_loss)  # [N, C]
+            if patch_mask is not None:
+                mask_flat = patch_mask.reshape(-1).unsqueeze(1).expand_as(per_el) > 0
+                loss = per_el[mask_flat].mean() if mask_flat.any() else per_el.mean()
+            else:
+                loss = per_el.mean()
 
         # Thresholds (global or per-class)
-        raw_p = torch.sigmoid(logits)
         cls_thresh = getattr(self.config, "class_thresholds", None)
         if cls_thresh and len(cls_thresh) == self.config.num_drum_classes:
             thr = (
@@ -142,13 +181,23 @@ class DrumTranscriptionModule(pl.LightningModule):
                 raw_p, getattr(self.config, "prediction_threshold", 0.5)
             )
         preds = raw_p > thr
-        # Return hard labels for metrics (no smoothing)
-        return loss, preds, labels_for_metrics
+        # If we have a patch_mask, filter out padded rows for metrics/calibration
+        if patch_mask is not None:
+            valid = patch_mask.reshape(-1) > 0
+            if valid.any():
+                preds = preds[valid]
+                labels_for_metrics = labels_for_metrics[valid]
+                raw_p = raw_p[valid]
+        # Return hard labels for metrics (no smoothing) and raw probabilities
+        return loss, preds, labels_for_metrics, raw_p
 
     def training_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+        self,
+        batch: Tuple[torch.Tensor, torch.Tensor]
+        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch_idx: int,
     ) -> torch.Tensor:
-        loss, preds, labels = self._common_step(batch)
+        loss, preds, labels, _ = self._common_step(batch)
         self.train_f1(preds.int(), labels.int())
         self.train_acc(preds.int(), labels.int())
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -157,21 +206,29 @@ class DrumTranscriptionModule(pl.LightningModule):
         return loss
 
     def validation_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+        self,
+        batch: Tuple[torch.Tensor, torch.Tensor]
+        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch_idx: int,
     ) -> torch.Tensor:
-        loss, preds, labels = self._common_step(batch)
+        loss, preds, labels, probs = self._common_step(batch)
         self.val_f1(preds.int(), labels.int())
         self.val_acc(preds.int(), labels.int())
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
-        self.validation_step_outputs.append({"preds": preds, "labels": labels})
+        self.validation_step_outputs.append(
+            {"preds": preds, "labels": labels, "probs": probs}
+        )
         return loss
 
     def test_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+        self,
+        batch: Tuple[torch.Tensor, torch.Tensor]
+        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch_idx: int,
     ) -> torch.Tensor:
-        loss, preds, labels = self._common_step(batch)
+        loss, preds, labels, _ = self._common_step(batch)
         self.test_f1(preds.int(), labels.int())
         self.test_acc(preds.int(), labels.int())
         self.log("test_loss", loss, on_step=False, on_epoch=True)
@@ -184,6 +241,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         if self.validation_step_outputs:
             all_preds = torch.cat([x["preds"] for x in self.validation_step_outputs])
             all_labels = torch.cat([x["labels"] for x in self.validation_step_outputs])
+            all_probs = torch.cat([x["probs"] for x in self.validation_step_outputs])
             if self.trainer.logger:
                 for i in range(self.config.num_drum_classes):
                     class_f1 = torchmetrics.functional.f1_score(
@@ -196,7 +254,71 @@ class DrumTranscriptionModule(pl.LightningModule):
                 self.log("val_event_precision", ev_p)
                 self.log("val_event_recall", ev_r)
                 self.log("val_event_f1", ev_f1, prog_bar=True)
+                # Threshold calibration per class via simple grid search
+                thrs = torch.linspace(0.05, 0.95, steps=19, device=all_probs.device)
+                best_thrs: list[float] = []
+                for i in range(self.config.num_drum_classes):
+                    probs_i = all_probs[:, i]
+                    labels_i = all_labels[:, i]
+                    best_f1 = torch.tensor(0.0, device=probs_i.device)
+                    best_thr = torch.tensor(
+                        getattr(self.config, "prediction_threshold", 0.5),
+                        device=probs_i.device,
+                    )
+                    for t in thrs:
+                        preds_i = probs_i >= t
+                        f1_i = torchmetrics.functional.f1_score(
+                            preds_i, labels_i, task="binary"
+                        )
+                        if f1_i > best_f1:
+                            best_f1 = f1_i
+                            best_thr = t
+                    self.log(f"val_best_thr_class_{i}", best_thr)
+                    self.log(f"val_best_f1_class_{i}", best_f1)
+                    best_thrs.append(float(best_thr.item()))
+
+                # Store thresholds for saving/applying
+                self.calibrated_thresholds = best_thrs
+
+                # Macro multilabel F1 using calibrated per-class thresholds
+                thr_vec = (
+                    torch.tensor(best_thrs, device=all_probs.device)
+                    .unsqueeze(0)
+                    .expand_as(all_probs)
+                )
+                preds_cal = (all_probs >= thr_vec).int()
+                cal_f1 = torchmetrics.functional.f1_score(
+                    preds_cal,
+                    all_labels.int(),
+                    task="multilabel",
+                    num_labels=self.config.num_drum_classes,
+                )
+                self.log("val_f1_calibrated", cal_f1, prog_bar=True)
         self.validation_step_outputs.clear()
+        # Apply calibrated thresholds to config for immediate downstream use
+        if hasattr(self, "calibrated_thresholds") and self.calibrated_thresholds:
+            self.config.class_thresholds = self.calibrated_thresholds
+
+    def on_fit_end(self) -> None:
+        # Persist calibrated thresholds to disk for reuse
+        try:
+            if (
+                self.calibrated_thresholds
+                and len(self.calibrated_thresholds) == self.config.num_drum_classes
+            ):
+                out_path = Path(self.config.model_dir) / "class_thresholds.json"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                with out_path.open("w") as f:
+                    json.dump(
+                        {
+                            "class_thresholds": self.calibrated_thresholds,
+                            "num_classes": self.config.num_drum_classes,
+                        },
+                        f,
+                    )
+                self.print(f"Saved calibrated thresholds to {out_path}")
+        except Exception as e:
+            self.print(f"Warning: failed to save calibrated thresholds: {e}")
 
     def on_test_epoch_end(self) -> None:
         if self.test_step_outputs:
@@ -277,15 +399,50 @@ class DrumTranscriptionModule(pl.LightningModule):
 
     def configure_optimizers(
         self,
-    ) -> tuple[list[torch.optim.Optimizer], list[CosineAnnealingLR]]:
+    ) -> tuple[
+        list[torch.optim.Optimizer],
+        list[dict] | list[torch.optim.lr_scheduler._LRScheduler],
+    ]:
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
-        if self.trainer.max_epochs is None:
-            raise ValueError("trainer.max_epochs must be set")
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=self.trainer.max_epochs
-        )
-        return [optimizer], [scheduler]
+        sched_type = getattr(self.config, "lr_scheduler", "lambda_warmup_cosine")
+        if sched_type == "cosine_epoch":
+            if self.trainer.max_epochs is None:
+                raise ValueError("trainer.max_epochs must be set")
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=self.trainer.max_epochs
+            )
+            return [optimizer], [scheduler]
+        else:
+            # Per-step linear warmup then cosine decay
+            warmup_steps = int(getattr(self.config, "warmup_steps", 0) or 0)
+            total_steps = getattr(self.trainer, "estimated_stepping_batches", None)
+            if total_steps is None:
+                if self.trainer.max_epochs is None:
+                    raise ValueError("trainer.max_epochs must be set")
+                total_steps = self.trainer.max_epochs * 1000
+
+            def lr_lambda(step: int) -> float:
+                if total_steps <= 0:
+                    return 1.0
+                if step < warmup_steps and warmup_steps > 0:
+                    return max(1e-8, float(step) / float(max(1, warmup_steps)))
+                # Cosine from 1.0 to 0.0 over remaining steps
+                progress = (step - warmup_steps) / float(
+                    max(1, total_steps - warmup_steps)
+                )
+                progress = min(max(progress, 0.0), 1.0)
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer, lr_lambda=lr_lambda
+            )
+            scheduler_conf = {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            }
+            return [optimizer], [scheduler_conf]

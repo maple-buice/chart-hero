@@ -4,20 +4,22 @@ Handles patch-based spectrogram processing and efficient data loading.
 """
 
 import logging
+import math
+import os
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from .augment_audio import (
     augment_spectrogram_frequency_masking,
     augment_spectrogram_time_masking,
 )
-from .data_utils import custom_collate_fn
+from .data_utils import collate_with_lengths, custom_collate_fn
 from .transformer_config import BaseConfig
 
 logger = logging.getLogger(__name__)
@@ -104,9 +106,11 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         spec_file, label_file = self.data_files[idx]
 
-        # Load data and ensure correct types
-        spectrogram = torch.from_numpy(np.load(spec_file)).float()
-        label_matrix = torch.from_numpy(np.load(label_file)).float()
+        # Load data via numpy memmap for lower I/O overhead
+        spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
+        label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
+        spectrogram = torch.from_numpy(spectrogram_np).float()
+        label_matrix = torch.from_numpy(label_np).float()
 
         # Ensure tensor is (1, freq, time)
         if spectrogram.dim() == 2:
@@ -146,15 +150,65 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                     torch.randint(low=-max_shift, high=max_shift + 1, size=(1,)).item()
                 )
                 if shift != 0:
+                    # Roll spectrogram along time dimension
                     spectrogram = torch.roll(spectrogram, shifts=shift, dims=-1)
+                    # Roll labels along time dimension to keep alignment (labels: [T, C])
+                    label_matrix = torch.roll(label_matrix, shifts=shift, dims=0)
 
         # The model's PatchEmbedding expects (Batch, Channels, Freq, Time),
         # so we do NOT transpose here. The loaded npy is already (Freq, Time).
         return spectrogram, label_matrix
 
 
+class BucketBatchSampler(Sampler[List[int]]):
+    """Group samples of similar lengths to minimize padding overhead.
+
+    Sorts within medium-sized buckets to preserve randomness while reducing
+    variance in sequence lengths per batch.
+    """
+
+    def __init__(
+        self,
+        lengths: List[int],
+        batch_size: int,
+        shuffle: bool = True,
+        bucket_size_mult: int = 50,
+        drop_last: bool = False,
+    ) -> None:
+        self.lengths = lengths
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.bucket_size = max(batch_size * bucket_size_mult, batch_size)
+        self.drop_last = drop_last
+
+    def __iter__(self) -> Iterator[List[int]]:
+        import numpy as _np
+
+        n = len(self.lengths)
+        indices = _np.arange(n)
+        if self.shuffle:
+            _np.random.shuffle(indices)
+        # Form buckets
+        for start in range(0, n, self.bucket_size):
+            bucket = indices[start : start + self.bucket_size]
+            # Sort bucket by length (descending) to reduce padding
+            bucket_sorted = bucket[_np.argsort([self.lengths[i] for i in bucket])[::-1]]
+            # Yield batches
+            for i in range(0, len(bucket_sorted), self.batch_size):
+                batch = bucket_sorted[i : i + self.batch_size]
+                if self.drop_last and len(batch) < self.batch_size:
+                    continue
+                yield [int(x) for x in batch]
+
+    def __len__(self) -> int:
+        return math.ceil(len(self.lengths) / self.batch_size)
+
+
 def create_data_loaders(
-    config: BaseConfig, data_dir: str, batch_size: Optional[int] = None
+    config: BaseConfig,
+    data_dir: str,
+    batch_size: Optional[int] = None,
+    with_lengths: bool = False,
 ) -> Tuple[
     DataLoader[Tuple[torch.Tensor, torch.Tensor]],
     DataLoader[Tuple[torch.Tensor, torch.Tensor]],
@@ -185,48 +239,72 @@ def create_data_loaders(
     val_dataset = NpyDrumDataset(data_files["val"], config, mode="val")
     test_dataset = NpyDrumDataset(data_files["test"], config, mode="test")
 
+    # Heuristic: precompute sequence lengths (T) from label file shapes for bucketing
+    def _file_lengths(pairs: List[Tuple[str, str]]) -> List[int]:
+        lengths: List[int] = []
+        for _, lbl in pairs:
+            try:
+                arr = np.load(lbl, allow_pickle=False, mmap_mode="r")
+                lengths.append(int(arr.shape[0]))
+            except Exception:
+                lengths.append(0)
+        return lengths
+
+    train_lengths = _file_lengths(data_files["train"]) if data_files["train"] else []
+    val_lengths = _file_lengths(data_files["val"]) if data_files["val"] else []
+    test_lengths = _file_lengths(data_files["test"]) if data_files["test"] else []
+
+    # Auto-tune workers/prefetch for better CPU utilization
+    cpu_count = os.cpu_count() or 4
+    tuned_num_workers = config.num_workers
+    if tuned_num_workers <= 2 and cpu_count >= 4:
+        tuned_num_workers = min(8, max(2, cpu_count - 1))
+    tuned_prefetch = getattr(config, "prefetch_factor", 2)
+    if tuned_num_workers > 0:
+        tuned_prefetch = max(2, min(8, tuned_prefetch if tuned_prefetch else 2))
+
     # Create data loaders
+    train_sampler = BucketBatchSampler(
+        train_lengths, batch_size=batch_size, shuffle=True, drop_last=True
+    )
+    collate_fn = collate_with_lengths if with_lengths else custom_collate_fn
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
+        batch_sampler=train_sampler,
+        num_workers=tuned_num_workers,
         pin_memory=config.pin_memory,
-        drop_last=True,
-        collate_fn=custom_collate_fn,
+        collate_fn=collate_fn,
         persistent_workers=getattr(config, "persistent_workers", False)
-        and config.num_workers > 0,
-        prefetch_factor=(
-            getattr(config, "prefetch_factor", 2) if config.num_workers > 0 else None
-        ),
+        and tuned_num_workers > 0,
+        prefetch_factor=(tuned_prefetch if tuned_num_workers > 0 else None),
     )
 
+    val_sampler = BucketBatchSampler(
+        val_lengths, batch_size=config.val_batch_size, shuffle=False, drop_last=False
+    )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config.val_batch_size,
-        shuffle=False,
-        num_workers=config.num_workers,
+        batch_sampler=val_sampler,
+        num_workers=tuned_num_workers,
         pin_memory=config.pin_memory,
-        collate_fn=custom_collate_fn,
+        collate_fn=collate_fn,
         persistent_workers=getattr(config, "persistent_workers", False)
-        and config.num_workers > 0,
-        prefetch_factor=(
-            getattr(config, "prefetch_factor", 2) if config.num_workers > 0 else None
-        ),
+        and tuned_num_workers > 0,
+        prefetch_factor=(tuned_prefetch if tuned_num_workers > 0 else None),
     )
 
+    test_sampler = BucketBatchSampler(
+        test_lengths, batch_size=config.val_batch_size, shuffle=False, drop_last=False
+    )
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config.val_batch_size,
-        shuffle=False,
-        num_workers=config.num_workers,
+        batch_sampler=test_sampler,
+        num_workers=tuned_num_workers,
         pin_memory=config.pin_memory,
-        collate_fn=custom_collate_fn,
+        collate_fn=collate_fn,
         persistent_workers=getattr(config, "persistent_workers", False)
-        and config.num_workers > 0,
-        prefetch_factor=(
-            getattr(config, "prefetch_factor", 2) if config.num_workers > 0 else None
-        ),
+        and tuned_num_workers > 0,
+        prefetch_factor=(tuned_prefetch if tuned_num_workers > 0 else None),
     )
 
     return train_loader, val_loader, test_loader

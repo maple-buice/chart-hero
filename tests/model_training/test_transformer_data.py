@@ -52,17 +52,10 @@ def test_data_loading(dummy_processed_dataset):
     for i, (spectrogram, labels) in enumerate(train_loader):
         assert spectrogram is not None
         assert labels is not None
-        # Check for correct dimensions
-        assert spectrogram.shape == (
-            config.train_batch_size,
-            1,
-            config.n_mels,
-            config.max_seq_len,
-        )
-        assert labels.shape == (
-            config.train_batch_size,
-            config.max_seq_len,
-            config.num_drum_classes,
-        )
+        # Check for correct dimensions; last batch may be smaller
+        assert spectrogram.shape[0] <= config.train_batch_size
+        assert spectrogram.shape[1:] == (1, config.n_mels, config.max_seq_len)
+        assert labels.shape[0] <= config.train_batch_size
+        assert labels.shape[1:] == (config.max_seq_len, config.num_drum_classes)
         if i >= 2:
             break

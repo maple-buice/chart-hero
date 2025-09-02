@@ -113,6 +113,30 @@ def main() -> None:
                     )
 
         model = DrumTranscriptionModule(config, pos_weight=pos_weight)
+        # Load calibrated per-class thresholds if available (for resume/eval and immediate use)
+        try:
+            thr_path = Path(config.model_dir) / "class_thresholds.json"
+            if thr_path.exists():
+                payload = (
+                    torch.load(str(thr_path)) if thr_path.suffix == ".pt" else None
+                )
+                if thr_path.suffix == ".json":
+                    import json as _json
+
+                    with thr_path.open("r") as f:
+                        payload = _json.load(f)
+                if isinstance(payload, dict) and "class_thresholds" in payload:
+                    thrs = payload["class_thresholds"]
+                    if (
+                        isinstance(thrs, (list, tuple))
+                        and len(thrs) == config.num_drum_classes
+                    ):
+                        config.class_thresholds = list(map(float, thrs))
+                        logger.info(
+                            f"Loaded calibrated thresholds from {thr_path}: {config.class_thresholds}"
+                        )
+        except Exception as e:
+            logger.warning(f"Failed to load calibrated thresholds: {e}")
         wandb_logger = setup_logger(
             config, args.project_name, use_wandb, args.experiment_tag
         )
@@ -143,7 +167,7 @@ def main() -> None:
 
         logger.info("Creating data loaders...")
         train_loader, val_loader, test_loader = create_data_loaders(
-            config=config, data_dir=config.data_dir
+            config=config, data_dir=config.data_dir, with_lengths=True
         )
         logger.info("Data loaders created successfully.")
 
