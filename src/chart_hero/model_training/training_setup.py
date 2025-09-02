@@ -152,6 +152,12 @@ def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
 def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callback]:
     # Build a filename pattern that tracks the configured monitor metric
     filename_pattern = f"drum-transformer-{{epoch:02d}}-{{{config.monitor}:.3f}}"
+    # Decide when to evaluate callbacks based on monitor target
+    # - If monitoring a validation metric (prefix 'val_'), run after validation
+    # - If monitoring a training metric, run at train epoch end (supports no-val runs)
+    is_val_metric = isinstance(config.monitor, str) and config.monitor.startswith(
+        "val_"
+    )
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(config.model_dir),
         filename=filename_pattern,
@@ -159,6 +165,7 @@ def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callb
         mode=config.mode,
         save_top_k=config.save_top_k,
         save_last=True,
+        save_on_train_epoch_end=not is_val_metric,
     )
     logger.info(
         "Checkpointing configured: dir=%s, filename=%s, monitor=%s, mode=%s, save_top_k=%s, save_last=%s",
@@ -176,7 +183,7 @@ def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callb
         mode=config.mode,
         patience=10,
         min_delta=0.001,
-        check_on_train_epoch_end=False,
+        check_on_train_epoch_end=not is_val_metric,
     )
     callbacks = [checkpoint_callback, early_stop_callback]
     if use_logger:
