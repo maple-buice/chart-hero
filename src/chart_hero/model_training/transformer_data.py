@@ -111,8 +111,21 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
         # Use a writable Tensor for spectrogram to avoid warnings and allow augmentation
         spectrogram = torch.tensor(spectrogram_np, dtype=torch.float32)
-        # Labels are not mutated; keep zero-copy conversion
-        label_matrix = torch.from_numpy(label_np).float()
+        # Labels may be rolled/augmented downstream; ensure writable Tensor to avoid warnings
+        label_matrix = torch.tensor(label_np, dtype=torch.float32)
+
+        # Robustness: ensure labels have shape (T, C) with T>0 and correct C
+        num_classes = self.config.num_drum_classes
+        if (
+            label_matrix.ndim != 2
+            or label_matrix.shape[-1] != num_classes
+            or label_matrix.shape[0] == 0
+        ):
+            T = int(spectrogram.shape[-1]) if spectrogram.ndim >= 3 else 0
+            if T <= 0:
+                # Fallback minimal length if spectrogram is also unexpected; avoid zero-length
+                T = int(getattr(self.config, "max_seq_len", 1))
+            label_matrix = torch.zeros((T, num_classes), dtype=torch.float32)
 
         # Ensure tensor is (1, freq, time)
         if spectrogram.dim() == 2:
@@ -235,6 +248,31 @@ def create_data_loaders(
 
     if not data_files["train"]:
         raise FileNotFoundError(f"No training data found in {data_dir}")
+
+    # Optional subsampling per split for faster iteration
+    def _subset_pairs(
+        pairs: List[Tuple[str, str]], split: str
+    ) -> List[Tuple[str, str]]:
+        if not pairs:
+            return pairs
+        frac = float(getattr(config, "dataset_fraction", 1.0) or 1.0)
+        cap = getattr(config, "max_files_per_split", None)
+        n = len(pairs)
+        keep = n
+        if 0.0 < frac < 1.0:
+            keep = max(1, int(round(n * frac)))
+        if isinstance(cap, int) and cap > 0:
+            keep = min(keep, cap)
+        if keep < n:
+            rng = np.random.default_rng(seed=getattr(config, "seed", 42))
+            idx = np.sort(rng.choice(n, size=keep, replace=False))
+            pairs = [pairs[int(i)] for i in idx]
+            logger.info("Subsampled %s split: %d/%d files", split, keep, n)
+        return pairs
+
+    data_files["train"] = _subset_pairs(data_files["train"], "train")
+    data_files["val"] = _subset_pairs(data_files["val"], "val")
+    data_files["test"] = _subset_pairs(data_files["test"], "test")
 
     # Create datasets
     train_dataset = NpyDrumDataset(data_files["train"], config, mode="train")

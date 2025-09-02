@@ -204,6 +204,10 @@ class BaseConfig:
     val_check_interval: float = 1.0  # How often to run validation (1.0 = every epoch)
     seed: int = 42
 
+    # Dataset subsampling for faster iteration
+    dataset_fraction: float = 1.0  # 0 < fraction <= 1.0
+    max_files_per_split: int | None = None
+
 
 @dataclass
 class LocalConfig(BaseConfig):

@@ -92,6 +92,16 @@ def setup_arg_parser() -> argparse.ArgumentParser:
         type=int,
         help="Override gradient accumulation batches",
     )
+    parser.add_argument(
+        "--dataset-fraction",
+        type=float,
+        help="Use a fraction of files per split (0 < f <= 1.0)",
+    )
+    parser.add_argument(
+        "--max-files-per-split",
+        type=int,
+        help="Hard cap on number of files per split",
+    )
     return parser
 
 
@@ -133,12 +143,18 @@ def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
         config.accumulate_grad_batches = args.accumulate_grad_batches
     if args.quick_test:
         config.num_epochs = 1
+    if args.dataset_fraction is not None:
+        config.dataset_fraction = float(args.dataset_fraction)
+    if args.max_files_per_split is not None:
+        config.max_files_per_split = int(args.max_files_per_split)
 
 
 def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callback]:
+    # Build a filename pattern that tracks the configured monitor metric
+    filename_pattern = f"drum-transformer-{{epoch:02d}}-{{{config.monitor}:.3f}}"
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(config.model_dir),
-        filename="drum-transformer-{epoch:02d}-{val_f1:.3f}",
+        filename=filename_pattern,
         monitor=config.monitor,
         mode=config.mode,
         save_top_k=config.save_top_k,
@@ -153,8 +169,14 @@ def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callb
         checkpoint_callback.save_top_k,
         checkpoint_callback.save_last,
     )
+    # Validate after validation epoch, not at train epoch end, so monitored
+    # validation metrics are available when the check runs.
     early_stop_callback = EarlyStopping(
-        monitor=config.monitor, mode=config.mode, patience=10, min_delta=0.001
+        monitor=config.monitor,
+        mode=config.mode,
+        patience=10,
+        min_delta=0.001,
+        check_on_train_epoch_end=False,
     )
     callbacks = [checkpoint_callback, early_stop_callback]
     if use_logger:
