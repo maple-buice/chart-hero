@@ -11,6 +11,7 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
@@ -141,11 +142,10 @@ def main() -> None:
         wandb_logger = setup_logger(
             config, args.project_name, use_wandb, args.experiment_tag
         )
-        callbacks = setup_callbacks(config, use_logger=use_wandb)
 
         trainer_kwargs: dict[str, Any] = {
             "logger": wandb_logger if use_wandb else False,
-            "callbacks": callbacks,
+            "callbacks": [],
             "max_epochs": config.num_epochs,
             "accelerator": config.device,
             "devices": 1,
@@ -157,6 +157,35 @@ def main() -> None:
             "limit_val_batches": 0.1 if args.quick_test else 1.0,
         }
 
+        logger.info("Creating data loaders...")
+        train_loader, val_loader, test_loader = create_data_loaders(
+            config=config, data_dir=config.data_dir, with_lengths=True
+        )
+        logger.info("Data loaders created successfully.")
+
+        # Initialize callbacks after we know whether val_loader has data
+        has_val = val_loader is not None and len(val_loader) > 0
+        if not has_val and getattr(config, "monitor", "val_f1").startswith("val_"):
+            logger.warning(
+                "No validation data detected; switching EarlyStopping/Checkpoint monitor to 'train_f1'."
+            )
+            config.monitor = "train_f1"
+            config.mode = "max"
+        callbacks = setup_callbacks(config, use_logger=use_wandb)
+        trainer_kwargs["callbacks"] = callbacks
+
+        # Log final checkpoint settings and model_dir
+        ckpt_cb = next((c for c in callbacks if isinstance(c, ModelCheckpoint)), None)
+        if ckpt_cb is not None:
+            logger.info(
+                "Checkpoints will be saved under %s with pattern '%s' monitored on '%s' (%s)",
+                ckpt_cb.dirpath,
+                ckpt_cb.filename,
+                ckpt_cb.monitor,
+                ckpt_cb.mode,
+            )
+
+        # Instantiate the Trainer after callbacks are finalized
         try:
             trainer = pl.Trainer(**trainer_kwargs)
         except Exception as e:
@@ -165,12 +194,6 @@ def main() -> None:
             config.device = "cpu"
             trainer_kwargs["accelerator"] = "cpu"
             trainer = pl.Trainer(**trainer_kwargs)
-
-        logger.info("Creating data loaders...")
-        train_loader, val_loader, test_loader = create_data_loaders(
-            config=config, data_dir=config.data_dir, with_lengths=True
-        )
-        logger.info("Data loaders created successfully.")
 
         checkpoint_path = None
         if args.resume or args.evaluate:
@@ -189,6 +212,20 @@ def main() -> None:
                 val_dataloaders=val_loader,
                 ckpt_path=checkpoint_path,
             )
+            # After fit, report best and last checkpoints
+            if ckpt_cb is not None:
+                logger.info(
+                    "Best model checkpoint: %s (score=%s)",
+                    ckpt_cb.best_model_path,
+                    str(ckpt_cb.best_model_score.item())
+                    if ckpt_cb.best_model_score is not None
+                    else "n/a",
+                )
+            last_ckpt = Path(config.model_dir) / "last.ckpt"
+            if last_ckpt.exists():
+                logger.info("Last checkpoint saved at %s", last_ckpt)
+            else:
+                logger.warning("Expected last checkpoint not found at %s", last_ckpt)
             if test_loader:
                 trainer.test(model, dataloaders=test_loader, ckpt_path="best")
 

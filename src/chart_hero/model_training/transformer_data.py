@@ -109,7 +109,9 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         # Load data via numpy memmap for lower I/O overhead
         spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
         label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
-        spectrogram = torch.from_numpy(spectrogram_np).float()
+        # Use a writable Tensor for spectrogram to avoid warnings and allow augmentation
+        spectrogram = torch.tensor(spectrogram_np, dtype=torch.float32)
+        # Labels are not mutated; keep zero-copy conversion
         label_matrix = torch.from_numpy(label_np).float()
 
         # Ensure tensor is (1, freq, time)

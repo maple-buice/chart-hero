@@ -19,6 +19,7 @@ from pytorch_lightning.loggers import WandbLogger
 
 import wandb
 from chart_hero.model_training.transformer_config import (
+    BaseConfig,
     auto_detect_config,
     get_config,
     validate_config,
@@ -143,6 +144,15 @@ def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callb
         save_top_k=config.save_top_k,
         save_last=True,
     )
+    logger.info(
+        "Checkpointing configured: dir=%s, filename=%s, monitor=%s, mode=%s, save_top_k=%s, save_last=%s",
+        checkpoint_callback.dirpath,
+        checkpoint_callback.filename,
+        checkpoint_callback.monitor,
+        checkpoint_callback.mode,
+        checkpoint_callback.save_top_k,
+        checkpoint_callback.save_last,
+    )
     early_stop_callback = EarlyStopping(
         monitor=config.monitor, mode=config.mode, patience=10, min_delta=0.001
     )
@@ -163,9 +173,6 @@ def setup_logger(
         log_model=True,
         save_dir=config.log_dir,
     )
-
-
-from chart_hero.model_training.transformer_config import BaseConfig
 
 
 def configure_run(args: argparse.Namespace) -> tuple[BaseConfig, bool]:
