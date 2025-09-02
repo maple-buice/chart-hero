@@ -102,6 +102,7 @@ def main() -> None:
                         data_dir=config.data_dir,
                         num_classes=config.num_drum_classes,
                         split="train",
+                        max_files=getattr(config, "pos_weight_max_files", None),
                     )
                     # Optional sampling cap (estimate on subset for huge datasets)
                     # If needed, implement sampling inside compute_class_pos_weights.

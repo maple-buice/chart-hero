@@ -226,7 +226,7 @@ def create_data_loaders(
         split_dir = data_path / split
         if not split_dir.exists():
             continue
-        for file in split_dir.glob("*_mel.npy"):
+        for file in sorted(split_dir.glob("*_mel.npy")):
             label_file = file.parent / file.name.replace("_mel.npy", "_label.npy")
             if label_file.exists():
                 data_files[split].append((str(file), str(label_file)))
@@ -239,20 +239,79 @@ def create_data_loaders(
     val_dataset = NpyDrumDataset(data_files["val"], config, mode="val")
     test_dataset = NpyDrumDataset(data_files["test"], config, mode="test")
 
-    # Heuristic: precompute sequence lengths (T) from label file shapes for bucketing
-    def _file_lengths(pairs: List[Tuple[str, str]]) -> List[int]:
+    # Efficient: estimate T from file size without opening arrays: T = bytes / (C * 4)
+    def _file_lengths_from_stat(
+        pairs: List[Tuple[str, str]], num_classes: int
+    ) -> List[int]:
         lengths: List[int] = []
+        bytes_per_timestep = num_classes * 4  # float32 per class
         for _, lbl in pairs:
-            try:
-                arr = np.load(lbl, allow_pickle=False, mmap_mode="r")
-                lengths.append(int(arr.shape[0]))
-            except Exception:
-                lengths.append(0)
+            size = os.stat(lbl).st_size
+            t = max(1, int(size // bytes_per_timestep))
+            lengths.append(t)
         return lengths
 
-    train_lengths = _file_lengths(data_files["train"]) if data_files["train"] else []
-    val_lengths = _file_lengths(data_files["val"]) if data_files["val"] else []
-    test_lengths = _file_lengths(data_files["test"]) if data_files["test"] else []
+    # Cache lengths to avoid re-computing across runs. Use model_dir to avoid read-only data_dir.
+    cache_root = Path(getattr(config, "model_dir", "."))
+    cache_dir = cache_root / ".length_cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        cache_dir = None
+
+    def _cache_paths(split: str) -> tuple[Path, Path]:
+        return (
+            cache_dir / f"lengths_{split}.npy",
+            cache_dir / f"lengths_{split}.meta.json",
+        )
+
+    import json as _json
+
+    def _load_or_compute_lengths(split: str, pairs: List[Tuple[str, str]]) -> List[int]:
+        if cache_dir is not None:
+            npy_path, meta_path = _cache_paths(split)
+            try:
+                if npy_path.exists() and meta_path.exists():
+                    meta = _json.loads(meta_path.read_text())
+                    if meta.get("num_files") == len(pairs):
+                        arr = np.load(npy_path)
+                        if arr.ndim == 1 and arr.shape[0] == len(pairs):
+                            logger.info(
+                                f"Loaded cached lengths for split '{split}' from {npy_path}"
+                            )
+                            return arr.astype(int).tolist()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load cached lengths for split '{split}': {e}"
+                )
+
+        lengths = (
+            _file_lengths_from_stat(pairs, config.num_drum_classes) if pairs else []
+        )
+        if cache_dir is not None:
+            try:
+                npy_path, meta_path = _cache_paths(split)
+                np.save(npy_path, np.array(lengths, dtype=np.int32))
+                meta = {"num_files": len(pairs)}
+                meta_path.write_text(_json.dumps(meta))
+                logger.info(f"Saved lengths cache for split '{split}' to {npy_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save lengths cache for split '{split}': {e}")
+        return lengths
+
+    train_lengths = (
+        _load_or_compute_lengths("train", data_files["train"])
+        if data_files["train"]
+        else []
+    )
+    val_lengths = (
+        _load_or_compute_lengths("val", data_files["val"]) if data_files["val"] else []
+    )
+    test_lengths = (
+        _load_or_compute_lengths("test", data_files["test"])
+        if data_files["test"]
+        else []
+    )
 
     # Auto-tune workers/prefetch for better CPU utilization
     cpu_count = os.cpu_count() or 4
@@ -264,10 +323,15 @@ def create_data_loaders(
         tuned_prefetch = max(2, min(8, tuned_prefetch if tuned_prefetch else 2))
 
     # Create data loaders
-    train_sampler = BucketBatchSampler(
-        train_lengths, batch_size=batch_size, shuffle=True, drop_last=True
-    )
     collate_fn = collate_with_lengths if with_lengths else custom_collate_fn
+
+    train_sampler = BucketBatchSampler(
+        train_lengths,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        bucket_size_mult=50,
+    )
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
@@ -280,7 +344,11 @@ def create_data_loaders(
     )
 
     val_sampler = BucketBatchSampler(
-        val_lengths, batch_size=config.val_batch_size, shuffle=False, drop_last=False
+        val_lengths,
+        batch_size=config.val_batch_size,
+        shuffle=False,
+        drop_last=False,
+        bucket_size_mult=50,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -294,7 +362,11 @@ def create_data_loaders(
     )
 
     test_sampler = BucketBatchSampler(
-        test_lengths, batch_size=config.val_batch_size, shuffle=False, drop_last=False
+        test_lengths,
+        batch_size=config.val_batch_size,
+        shuffle=False,
+        drop_last=False,
+        bucket_size_mult=50,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -311,29 +383,39 @@ def create_data_loaders(
 
 
 def compute_class_pos_weights(
-    data_dir: str, num_classes: int, split: str = "train"
+    data_dir: str,
+    num_classes: int,
+    split: str = "train",
+    max_files: Optional[int] = None,
 ) -> torch.Tensor:
     """Compute BCEWithLogits pos_weight per class from label .npy files.
 
     pos_weight = (N - P) / (P + eps) computed per class over all frames.
     """
     path = Path(data_dir) / split
-    pos = torch.zeros(num_classes, dtype=torch.float64)
-    total = torch.zeros(num_classes, dtype=torch.float64)
+    # Accumulate in NumPy to avoid PyTorch warnings with read-only memmaps
+    pos_np = np.zeros((num_classes,), dtype=np.float64)
+    total_frames = 0
     eps = 1e-6
     if not path.exists():
         return torch.ones(num_classes, dtype=torch.float32)
 
-    for label_file in path.glob("*_label.npy"):
-        arr = np.load(label_file)
+    label_files = list(path.glob("*_label.npy"))
+    if max_files is not None and len(label_files) > max_files:
+        # Random but deterministic subset selection for reproducibility
+        rng = np.random.default_rng(seed=12345)
+        label_files = list(rng.choice(label_files, size=max_files, replace=False))
+
+    for label_file in label_files:
+        arr = np.load(label_file, allow_pickle=False, mmap_mode="r")
         if arr.ndim != 2 or arr.shape[1] != num_classes:
             continue
-        # Sum positives and total frames per class
-        pos += torch.from_numpy(arr).sum(dim=0).to(torch.float64)
-        total += arr.shape[0]
+        # Sum positives per class in float64 for numerical stability
+        pos_np += np.sum(arr, axis=0, dtype=np.float64)
+        total_frames += int(arr.shape[0])
 
-    neg = (total - pos).clamp_min(0.0)
-    pw = (neg / (pos + eps)).to(torch.float32)
+    neg_np = np.maximum(0.0, total_frames - pos_np)
+    pw_np = (neg_np / (pos_np + eps)).astype(np.float32)
     # Bound pos_weight to reasonable range to avoid extreme gradients
-    pw = pw.clamp(min=0.5, max=50.0)
-    return pw
+    pw_np = np.clip(pw_np, 0.5, 50.0)
+    return torch.from_numpy(pw_np)
