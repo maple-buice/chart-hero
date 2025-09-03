@@ -227,7 +227,15 @@ def main() -> None:
             else:
                 logger.warning("Expected last checkpoint not found at %s", last_ckpt)
             if test_loader:
-                trainer.test(model, dataloaders=test_loader, ckpt_path="best")
+                # Prefer testing with best if available; otherwise fall back to last
+                test_ckpt: str | None = None
+                if ckpt_cb is not None and ckpt_cb.best_model_path:
+                    test_ckpt = ckpt_cb.best_model_path
+                elif last_ckpt.exists():
+                    test_ckpt = str(last_ckpt)
+                trainer.test(
+                    model, dataloaders=test_loader, ckpt_path=test_ckpt or None
+                )
 
     except Exception as e:
         logger.exception(f"An error occurred: {e}")

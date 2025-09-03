@@ -242,6 +242,22 @@ class DrumTranscriptionModule(pl.LightningModule):
             all_preds = torch.cat([x["preds"] for x in self.validation_step_outputs])
             all_labels = torch.cat([x["labels"] for x in self.validation_step_outputs])
             all_probs = torch.cat([x["probs"] for x in self.validation_step_outputs])
+            # Log base macro multilabel F1/Accuracy using current thresholds (always log to make it available
+            # for callbacks like ModelCheckpoint/EarlyStopping even when no external logger is configured)
+            base_f1 = torchmetrics.functional.f1_score(
+                all_preds.int(),
+                all_labels.int(),
+                task="multilabel",
+                num_labels=self.config.num_drum_classes,
+            )
+            self.log("val_f1", base_f1, prog_bar=True)
+            base_acc = torchmetrics.functional.accuracy(
+                all_preds.int(),
+                all_labels.int(),
+                task="multilabel",
+                num_labels=self.config.num_drum_classes,
+            )
+            self.log("val_acc", base_acc)
             if self.trainer.logger:
                 for i in range(self.config.num_drum_classes):
                     class_f1 = torchmetrics.functional.f1_score(
@@ -294,6 +310,7 @@ class DrumTranscriptionModule(pl.LightningModule):
                     num_labels=self.config.num_drum_classes,
                 )
                 self.log("val_f1_calibrated", cal_f1, prog_bar=True)
+        # Ensure the monitored scalar metrics are present at epoch end for checkpointing/early stopping
         self.validation_step_outputs.clear()
         # Apply calibrated thresholds to config for immediate downstream use
         if hasattr(self, "calibrated_thresholds") and self.calibrated_thresholds:

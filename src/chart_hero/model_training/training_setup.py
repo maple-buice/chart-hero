@@ -163,9 +163,11 @@ def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callb
         filename=filename_pattern,
         monitor=config.monitor,
         mode=config.mode,
+        verbose=True,
         save_top_k=config.save_top_k,
         save_last=True,
         save_on_train_epoch_end=not is_val_metric,
+        every_n_epochs=1,
     )
     logger.info(
         "Checkpointing configured: dir=%s, filename=%s, monitor=%s, mode=%s, save_top_k=%s, save_last=%s",
