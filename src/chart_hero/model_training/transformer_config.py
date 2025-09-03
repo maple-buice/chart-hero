@@ -203,6 +203,9 @@ class BaseConfig:
     log_every_n_steps: int = 50
     val_check_interval: float = 1.0  # How often to run validation (1.0 = every epoch)
     seed: int = 42
+    # Optional media logging (W&B)
+    enable_media_logging: bool = False
+    media_log_samples: int = 2
 
     # Dataset subsampling for faster iteration
     dataset_fraction: float = 1.0  # 0 < fraction <= 1.0
@@ -227,7 +230,7 @@ class LocalConfig(BaseConfig):
     train_batch_size: int = 4  # Conservative default for MPS
     val_batch_size: int = 8  # Conservative default for MPS
     num_workers: int = 2  # Reduced for MPS stability
-    pin_memory: bool = True  # Disabled since not supported on MPS
+    pin_memory: bool = False  # MPS does not support pinned memory; avoid warnings
 
     # Training settings
     gradient_checkpointing: bool = True
@@ -261,7 +264,7 @@ class LocalPerformanceConfig(LocalConfig):
     train_batch_size: int = 16
     val_batch_size: int = 32
     num_workers: int = 8
-    pin_memory: bool = True
+    pin_memory: bool = False
 
 
 @dataclass

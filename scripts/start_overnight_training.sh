@@ -56,7 +56,7 @@ echo "Experiment Tag: ${EXPERIMENT_TAG}"
 echo "Main Log File for this script: ${MAIN_LOG_FILE}"
 echo "Training will be run with 'caffeinate' to prevent macOS from sleeping."
 echo "Output from train_transformer.py will be logged to ${MAIN_LOG_FILE}."
-echo "Additional logs (e.g., GPU monitoring, model checkpoints) should be created by train_transformer.py in '${LOGS_DIR}' or 'model_training/transformer_models/' based on its internal logic, using the experiment tag."
+echo "Additional logs (e.g., GPU monitoring, model checkpoints) are created by train_transformer.py under the configured model dir, e.g. 'models/local_transformer_models/${EXPERIMENT_TAG}/' (Local) or 'model_training/transformer_models/${EXPERIMENT_TAG}/' (Cloud)."
 echo "Press Ctrl+C in the terminal running this script to stop caffeinate and the training."
 
 # --- Run Training with Caffeinate ---
@@ -64,7 +64,7 @@ echo "Press Ctrl+C in the terminal running this script to stop caffeinate and th
 # Caffeinate will exit when the training script finishes or is terminated.
 # Using 'tee' to send output to both the console (if running interactively) and the log file.
 # stderr is redirected to stdout (2>&1) to capture all output in the log.
-caffeinate -i -s python3 model_training/train_transformer.py \
+caffeinate -i -s python3 -m chart_hero.model_training.train_transformer \
     --config "${TRAINING_CONFIG_NAME}" \
     --experiment-tag "${EXPERIMENT_TAG}" \
     --data-dir "../datasets/processed" \

@@ -4,6 +4,7 @@ including argument parsing, configuration loading, and callback/logger setup.
 """
 
 import argparse
+import os
 import logging
 import sys
 from datetime import datetime
@@ -26,6 +27,25 @@ from chart_hero.model_training.transformer_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _load_env_local(path: Path) -> None:
+    """Load simple KEY=VALUE lines from a .env.local file into os.environ if not already set."""
+    if not path.exists():
+        return
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line or line.strip().startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        # Non-fatal: env loading should not interrupt training
+        pass
 
 
 def setup_arg_parser() -> argparse.ArgumentParser:
@@ -82,6 +102,11 @@ def setup_arg_parser() -> argparse.ArgumentParser:
         "--monitor-gpu",
         action="store_true",
         help="Flag for GPU monitoring awareness",
+    )
+    parser.add_argument(
+        "--log-media",
+        action="store_true",
+        help="Log qualitative media (e.g., histograms/heatmaps) to W&B",
     )
     parser.add_argument("--batch-size", type=int, help="Override batch size")
     parser.add_argument("--hidden-size", type=int, help="Override hidden size")
@@ -147,39 +172,54 @@ def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
         config.dataset_fraction = float(args.dataset_fraction)
     if args.max_files_per_split is not None:
         config.max_files_per_split = int(args.max_files_per_split)
+    if getattr(args, "log_media", False):
+        config.enable_media_logging = True
 
 
 def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callback]:
-    # Build a filename pattern that tracks the configured monitor metric
+    # Build filename pattern for best checkpoints based on the monitored metric
     filename_pattern = f"drum-transformer-{{epoch:02d}}-{{{config.monitor}:.3f}}"
-    # Decide when to evaluate callbacks based on monitor target
-    # - If monitoring a validation metric (prefix 'val_'), run after validation
-    # - If monitoring a training metric, run at train epoch end (supports no-val runs)
+    # If monitoring a validation metric (prefix 'val_'), evaluate/save after validation
+    # Otherwise, evaluate/save at train epoch end (supports no-val runs)
     is_val_metric = isinstance(config.monitor, str) and config.monitor.startswith(
         "val_"
     )
-    checkpoint_callback = ModelCheckpoint(
+
+    # Best-k checkpoint callback (monitored)
+    best_ckpt_cb = ModelCheckpoint(
         dirpath=str(config.model_dir),
         filename=filename_pattern,
         monitor=config.monitor,
         mode=config.mode,
         verbose=True,
         save_top_k=config.save_top_k,
-        save_last=True,
+        save_last=False,  # handled by a dedicated 'last' callback below
         save_on_train_epoch_end=not is_val_metric,
+    )
+
+    # Always-save last checkpoint every epoch regardless of metric value/improvement
+    # This guarantees a recoverable state even if monitored metric is NaN/missing.
+    last_ckpt_cb = ModelCheckpoint(
+        dirpath=str(config.model_dir),
+        filename="last",
+        monitor=None,
+        verbose=True,
+        save_top_k=0,
+        save_last=True,
+        save_on_train_epoch_end=True,
         every_n_epochs=1,
     )
+
     logger.info(
-        "Checkpointing configured: dir=%s, filename=%s, monitor=%s, mode=%s, save_top_k=%s, save_last=%s",
-        checkpoint_callback.dirpath,
-        checkpoint_callback.filename,
-        checkpoint_callback.monitor,
-        checkpoint_callback.mode,
-        checkpoint_callback.save_top_k,
-        checkpoint_callback.save_last,
+        "Checkpointing configured: best(dir=%s, filepat=%s, monitor=%s, mode=%s, top_k=%s); last(every epoch)=True",
+        best_ckpt_cb.dirpath,
+        best_ckpt_cb.filename,
+        best_ckpt_cb.monitor,
+        best_ckpt_cb.mode,
+        best_ckpt_cb.save_top_k,
     )
-    # Validate after validation epoch, not at train epoch end, so monitored
-    # validation metrics are available when the check runs.
+
+    # Early stopping aligned with where the monitored metric is produced
     early_stop_callback = EarlyStopping(
         monitor=config.monitor,
         mode=config.mode,
@@ -187,7 +227,8 @@ def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callb
         min_delta=0.001,
         check_on_train_epoch_end=not is_val_metric,
     )
-    callbacks = [checkpoint_callback, early_stop_callback]
+
+    callbacks = [best_ckpt_cb, last_ckpt_cb, early_stop_callback]
     if use_logger:
         callbacks.append(LearningRateMonitor(logging_interval="step"))
     return callbacks
@@ -201,12 +242,21 @@ def setup_logger(
     return WandbLogger(
         project=project_name,
         name=f"drum-transformer-{config.device}-{experiment_tag}",
-        log_model=True,
         save_dir=config.log_dir,
+        log_model="all",
+        group=experiment_tag,
+        tags=[
+            str(getattr(config, "device", "cpu")),
+            str(getattr(config, "model_name", "transformer")),
+            str(getattr(config, "monitor", "val_f1")),
+        ],
+        job_type="train",
     )
 
 
 def configure_run(args: argparse.Namespace) -> tuple[BaseConfig, bool]:
+    # Load environment variables from .env.local if present (e.g., WANDB_API_KEY)
+    _load_env_local(Path(".env.local"))
     if not args.experiment_tag and (args.resume or args.evaluate):
         logger.error("--experiment-tag is required for --resume or --evaluate.")
         sys.exit(1)
@@ -224,15 +274,7 @@ def configure_run(args: argparse.Namespace) -> tuple[BaseConfig, bool]:
         args.use_wandb or getattr(config, "use_wandb", False)
     )
 
-    if effective_use_wandb:
-        wandb.init(
-            project=args.project_name,
-            name=f"drum-transformer-{config.device}-{args.experiment_tag}",
-            config=config.__dict__,
-            dir=config.log_dir,
-            resume="allow",
-            id=args.experiment_tag,
-        )
+    # Let PyTorch Lightning's WandbLogger manage wandb runs to avoid duplicate/nested runs.
 
     apply_cli_overrides(config, args)
     validate_config(config)

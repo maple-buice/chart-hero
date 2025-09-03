@@ -153,14 +153,53 @@ def main() -> None:
             "gradient_clip_val": config.gradient_clip_val,
             "accumulate_grad_batches": config.accumulate_grad_batches,
             "enable_progress_bar": not args.no_progress_bar,
-            "limit_train_batches": 0.1 if args.quick_test else 1.0,
-            "limit_val_batches": 0.1 if args.quick_test else 1.0,
+            # Defaults; refined below if --quick-test is enabled
+            "limit_train_batches": 1.0,
+            "limit_val_batches": 1.0,
         }
 
+        # Make --quick-test actually quick regardless of dataset size
+        if args.quick_test:
+            # Lightning built-in: runs 1 train/val/test batch and short-circuits heavy work
+            trainer_kwargs["fast_dev_run"] = 1
+            # Keep safety caps; ignored when fast_dev_run is set but useful if toggled
+            trainer_kwargs["limit_train_batches"] = 1
+            trainer_kwargs["limit_val_batches"] = 1
+            trainer_kwargs["num_sanity_val_steps"] = 0
+            # Avoid multiprocessing/shm on macOS or restricted environments
+            try:
+                # Reduce potential multiprocessing/shm issues by forcing single-worker loaders
+                setattr(config, "num_workers", 0)
+                setattr(config, "persistent_workers", False)
+            except Exception:
+                pass
+
         logger.info("Creating data loaders...")
-        train_loader, val_loader, test_loader = create_data_loaders(
-            config=config, data_dir=config.data_dir, with_lengths=True
-        )
+        try:
+            train_loader, val_loader, test_loader = create_data_loaders(
+                config=config, data_dir=config.data_dir, with_lengths=True
+            )
+        except Exception as e:
+            msg = str(e)
+            if any(
+                s in msg
+                for s in (
+                    "torch_shm_manager",
+                    "_share_filename_cpu_",
+                    "Operation not permitted",
+                )
+            ):
+                logger.warning(
+                    "DataLoader multiprocessing error detected (%s). Retrying with num_workers=0 and persistent_workers=False.",
+                    e,
+                )
+                setattr(config, "num_workers", 0)
+                setattr(config, "persistent_workers", False)
+                train_loader, val_loader, test_loader = create_data_loaders(
+                    config=config, data_dir=config.data_dir, with_lengths=True
+                )
+            else:
+                raise
         logger.info("Data loaders created successfully.")
 
         # Initialize callbacks after we know whether val_loader has data
@@ -206,12 +245,46 @@ def main() -> None:
         if args.evaluate:
             trainer.test(model, dataloaders=test_loader, ckpt_path=checkpoint_path)
         else:
-            trainer.fit(
-                model,
-                train_dataloaders=train_loader,
-                val_dataloaders=val_loader,
-                ckpt_path=checkpoint_path,
-            )
+            try:
+                trainer.fit(
+                    model,
+                    train_dataloaders=train_loader,
+                    val_dataloaders=val_loader,
+                    ckpt_path=checkpoint_path,
+                )
+            except Exception as e:
+                msg = str(e)
+                if any(
+                    s in msg
+                    for s in (
+                        "torch_shm_manager",
+                        "_share_filename_cpu_",
+                        "Operation not permitted",
+                    )
+                ):
+                    logger.warning(
+                        "Trainer.fit failed due to multiprocessing/shm error (%s). Retrying with num_workers=0.",
+                        e,
+                    )
+                    setattr(config, "num_workers", 0)
+                    setattr(config, "persistent_workers", False)
+                    train_loader, val_loader, test_loader = create_data_loaders(
+                        config=config, data_dir=config.data_dir, with_lengths=True
+                    )
+                    # Rebuild the trainer to clear any dataloader-worker state
+                    try:
+                        trainer = pl.Trainer(**trainer_kwargs)
+                    except Exception:
+                        trainer_kwargs["accelerator"] = "cpu"
+                        trainer = pl.Trainer(**trainer_kwargs)
+                    trainer.fit(
+                        model,
+                        train_dataloaders=train_loader,
+                        val_dataloaders=val_loader,
+                        ckpt_path=checkpoint_path,
+                    )
+                else:
+                    raise
             # After fit, report best and last checkpoints
             if ckpt_cb is not None:
                 logger.info(

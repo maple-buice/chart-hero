@@ -12,10 +12,9 @@ from typing import Iterator, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torchaudio
 from torch.utils.data import DataLoader, Dataset, Sampler
 
-from .augment_audio import (
+from .augment_spec import (
     augment_spectrogram_frequency_masking,
     augment_spectrogram_time_masking,
 )
@@ -30,13 +29,24 @@ class SpectrogramProcessor:
 
     def __init__(self, config: BaseConfig):
         self.config = config
-        self.mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=config.sample_rate,
-            n_fft=config.n_fft,
-            hop_length=config.hop_length,
-            n_mels=config.n_mels,
-            power=2.0,
-        )
+        # Lazy import torchaudio so precomputed-numpy pipelines don't require it
+        try:
+            import torchaudio  # type: ignore
+
+            self.mel_transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=config.sample_rate,
+                n_fft=config.n_fft,
+                hop_length=config.hop_length,
+                n_mels=config.n_mels,
+                power=2.0,
+            )
+        except (
+            Exception
+        ) as e:  # pragma: no cover - only hit in environments without torchaudio
+            raise RuntimeError(
+                "torchaudio is required only when generating spectrograms from audio. "
+                "For precomputed .npy spectrograms, this class is unused."
+            ) from e
 
     def audio_to_spectrogram(self, audio: torch.Tensor) -> torch.Tensor:
         """Convert audio waveform to log-mel spectrogram."""
@@ -365,11 +375,13 @@ def create_data_loaders(
     # Create data loaders
     collate_fn = collate_with_lengths if with_lengths else custom_collate_fn
 
+    # Do not drop the last partial batch; on small datasets or heavy subsampling,
+    # dropping can yield zero train batches, which prevents any checkpoints.
     train_sampler = BucketBatchSampler(
         train_lengths,
         batch_size=batch_size,
         shuffle=True,
-        drop_last=True,
+        drop_last=False,
         bucket_size_mult=50,
     )
     train_loader = DataLoader(

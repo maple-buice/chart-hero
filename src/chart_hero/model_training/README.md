@@ -23,8 +23,56 @@ python prepare_egmd_data.py --sample-ratio 0.1 --memory-limit-gb 32 --high-perfo
 # Full training
 python model_training/train_transformer.py --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0
 
-# Quick test (1 epoch)
+# Quick test (fast_dev_run)
 python model_training/train_transformer.py --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0 --quick-test
+
+## Quick Test Mode
+
+When you pass `--quick-test`, training switches to a very fast end‑to‑end check:
+
+- Behavior: runs Lightning with `fast_dev_run=1` (exactly 1 batch for train/val/test), `num_sanity_val_steps=0`.
+- DataLoader: forces `num_workers=0` only for quick‑test to avoid shared memory and multiprocessing issues on macOS/restricted environments.
+- Checkpoints: best‑k is suppressed by fast_dev_run, but we keep saving `last.ckpt` to allow the post‑fit test step to restore the model and verify inference.
+- Intended use: smoke test full pipeline (data → model → train → val → test → ckpt restore) in seconds.
+
+Example (local, using the repo package path):
+
+```bash
+python -m chart_hero.model_training.train_transformer \
+  --config local_max_performance \
+  --no-wandb \
+  --data-dir ./tests/assets/dummy_data/processed \
+  --experiment-tag quicktest_demo \
+  --quick-test
+```
+
+Expected output:
+- Logs indicate `fast_dev_run` mode and a single batch per loop.
+- A `last.ckpt` appears under `models/local_transformer_models/<experiment-tag>/`.
+- Best‑k checkpoint path may show as `n/a` in quick‑test.
+
+## Checkpoints and Output Paths
+
+- Local configs write to: `models/local_transformer_models/<experiment-tag>/`
+- Cloud config writes to: `model_training/transformer_models/<experiment-tag>/`
+- Files:
+  - Best‑k: `drum-transformer-epoch=XX-val_f1=YY.YYY.ckpt` (or using the configured monitor)
+  - Always: `last.ckpt` (saved every epoch; kept in quick‑test as well)
+- If no validation split is found, the monitor automatically switches from `val_f1` to `train_f1`.
+
+## Safe Retry for DataLoader/Trainer
+
+Some macOS environments or restricted shells can error on multiprocessing/shared memory (e.g., `torch_shm_manager` “Operation not permitted”). The training script now:
+
+- Detects such errors when creating DataLoaders or during `trainer.fit`.
+- Automatically falls back to `num_workers=0` and disables `persistent_workers`, then retries once.
+- This logic only triggers on failure; normal runs keep your configured worker count unchanged.
+
+## MPS Notes (Apple Silicon)
+
+- Local configs set `pin_memory=False` to avoid the “pin_memory not supported on MPS” warning.
+- First optimization step on MPS is often slower; subsequent steps are faster.
+- To avoid contention, use unique `--experiment-tag` per concurrent training.
 ```
 
 ## Legacy Documentation: Drum Note Mapping

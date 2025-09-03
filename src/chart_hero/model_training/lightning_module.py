@@ -310,7 +310,33 @@ class DrumTranscriptionModule(pl.LightningModule):
                     num_labels=self.config.num_drum_classes,
                 )
                 self.log("val_f1_calibrated", cal_f1, prog_bar=True)
-        # Ensure the monitored scalar metrics are present at epoch end for checkpointing/early stopping
+            # Optional media logging to W&B (lightweight)
+            if (
+                getattr(self.config, "enable_media_logging", False)
+                and self.trainer.logger
+            ):
+                try:
+                    import numpy as _np
+                    import wandb as _wandb
+
+                    max_cols = min(128, all_probs.shape[0])
+                    heat = (
+                        all_probs[:max_cols].detach().cpu().float().T
+                    )  # (C, max_cols)
+                    img = _wandb.Image(
+                        _np.array(heat), caption="val_probs_heatmap (C x samples)"
+                    )
+                    self.logger.experiment.log(
+                        {"val/probs_heatmap": img}, step=int(self.global_step)
+                    )
+                    for i in range(min(3, self.config.num_drum_classes)):
+                        hist = _wandb.Histogram(all_probs[:, i].detach().cpu().numpy())
+                        self.logger.experiment.log(
+                            {f"val/prob_hist_class_{i}": hist},
+                            step=int(self.global_step),
+                        )
+                except Exception:
+                    pass
         self.validation_step_outputs.clear()
         # Apply calibrated thresholds to config for immediate downstream use
         if hasattr(self, "calibrated_thresholds") and self.calibrated_thresholds:

@@ -23,7 +23,12 @@ def config():
 def test_setup_callbacks(config):
     """Test the setup_callbacks function."""
     callbacks = setup_callbacks(config)
-    assert len(callbacks) == 3
+    # At minimum, expect EarlyStopping and at least one ModelCheckpoint
+    from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+
+    assert len(callbacks) >= 3
+    assert any(isinstance(cb, EarlyStopping) for cb in callbacks)
+    assert any(isinstance(cb, ModelCheckpoint) for cb in callbacks)
 
 
 @patch("chart_hero.model_training.training_setup.WandbLogger")
