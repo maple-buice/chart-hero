@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from shutil import which
 from typing import Optional
 
 import librosa
@@ -47,6 +48,23 @@ def estimate_bpm(path: str, sr: int) -> Optional[float]:
         return float(np.median(tempo))
     except Exception:
         return None
+
+
+def _ensure_ffmpeg_available() -> bool:
+    missing: list[str] = []
+    if which("ffmpeg") is None:
+        missing.append("ffmpeg")
+    if which("ffprobe") is None:
+        missing.append("ffprobe")
+    if missing:
+        print(
+            "Missing required tools: "
+            + ", ".join(missing)
+            + ".\nPlease install ffmpeg (includes ffprobe) and ensure both are on your PATH.\n"
+            + "macOS: brew install ffmpeg | Debian/Ubuntu: sudo apt-get install -y ffmpeg"
+        )
+        return False
+    return True
 
 
 def main() -> None:
@@ -145,6 +163,9 @@ def main() -> None:
 
     yt_info = None
     if args.link is not None:
+        # Ensure ffmpeg/ffprobe are available for YouTube audio extraction
+        if not _ensure_ffmpeg_available():
+            return
         print(f"Downloading audio track from {args.link}")
         yt_info = get_yt_audio(args.link)
         if yt_info is None:
@@ -274,4 +295,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
+    main()
     main()

@@ -20,6 +20,14 @@ If you're having trouble with getting all the packages and MPS to get along, try
 
 This project requires an `arm64` build of Python 3.11 on Apple Silicon machines to use the MPS accelerator.
 
+### 0. Install ffmpeg (required)
+
+`ffmpeg` and `ffprobe` must be installed and available on your `PATH`. They are used for audio processing and by the YouTube downloader.
+
+- macOS (Homebrew): `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt-get install -y ffmpeg`
+- Verify: `ffmpeg -version` and `ffprobe -version`
+
 ### 1. Install Python 3.11 with Homebrew
 
 If you don't have an `arm64` build of Python 3.11, you can install it with Homebrew:

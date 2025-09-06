@@ -31,6 +31,8 @@ demucs
 distlib==0.4.0
 executing==2.2.0
 fastjsonschema==2.21.1
+ffmpeg
+ffprobe
 filelock==3.18.0
 fonttools==4.59.0
 fqdn==1.5.1
