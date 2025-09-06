@@ -6,12 +6,11 @@ from typing import Optional
 import subprocess
 from shutil import which
 
-import librosa
 import soundfile as sf
 
 from .chart_writer import SongMeta, write_chart
 from .types import PredictionRow
-from chart_hero.utils.audio_io import get_duration
+from chart_hero.utils.audio_io import get_duration, load_audio
 
 
 def sanitize_name(name: str) -> str:
@@ -59,7 +58,7 @@ def convert_to_ogg(src: Path, dst: Path, target_sr: int = 44100) -> tuple[Path, 
             pass
 
     # Fallback: librosa read + soundfile write
-    y, _ = librosa.load(str(src), sr=target_sr, mono=True)
+    y, _ = load_audio(str(src), sr=target_sr, mono=True)
     sf.write(str(dst), y, target_sr, format="OGG", subtype="VORBIS")
     return dst, float(len(y) / target_sr)
 

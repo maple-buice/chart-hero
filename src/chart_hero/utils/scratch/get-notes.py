@@ -13,6 +13,7 @@ import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Audio
+from chart_hero.utils.audio_io import load_audio
 
 musicDir = "music"
 songFileName = "Imagine Dragons - Believer.mp3"
@@ -44,7 +45,7 @@ midioutput = demucsSplitSongOutputDir + "/" + "drums.mid"
 # The example recording included in this notebook consists of a drum beat that
 # gradually increases in tempo from 30 BPM to 240 BPM over a 30-second time interval.
 
-y, sr = librosa.load(filename)
+y, sr = load_audio(filename)
 
 # %%
 # We can visualize the spectrogram of this recording and listen to it.
