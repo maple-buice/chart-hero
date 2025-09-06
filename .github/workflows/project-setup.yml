@@ -32,8 +32,8 @@ jobs:
                   projectV2(number:$number){
                     id
                     fields(first:50){ nodes {
-                      id name dataType
-                      ... on ProjectV2SingleSelectField { options { id name } }
+                      ... on ProjectV2FieldCommon { id name dataType }
+                      ... on ProjectV2SingleSelectField { id name dataType options { id name } }
                     }}
                   }
                 }
