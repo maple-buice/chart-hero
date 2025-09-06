@@ -31,6 +31,7 @@ install: venv
 .PHONY: pre-commit
 pre-commit: install
 	$(PRECOMMIT) install
+	$(PRECOMMIT) install --hook-type pre-push
 
 .PHONY: test
 test:

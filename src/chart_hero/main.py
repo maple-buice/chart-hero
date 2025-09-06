@@ -7,16 +7,15 @@ from typing import Optional
 
 import librosa
 import numpy as np
+from librosa.feature.rhythm import tempo as lr_tempo
 
 from chart_hero.inference.artwork import generate_art
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
 from chart_hero.inference.lyrics import get_synced_lyrics, to_rb_tokens
-from chart_hero.inference.mid_vocals import (
-    write_vocals_midi,
-    SyllableEvent as VoxSyllable,
-    Phrase as VoxPhrase,
-)
+from chart_hero.inference.mid_export import write_notes_mid
+from chart_hero.inference.mid_vocals import Phrase as VoxPhrase
+from chart_hero.inference.mid_vocals import SyllableEvent as VoxSyllable
 from chart_hero.inference.packager import package_clonehero_song
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
@@ -24,8 +23,7 @@ from chart_hero.inference.song_identifier import (
 )
 from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
-from chart_hero.utils.audio_io import load_audio, get_duration
-from librosa.feature.rhythm import tempo as lr_tempo
+from chart_hero.utils.audio_io import get_duration, load_audio
 
 
 def _load_env_local(path: Path) -> None:
@@ -142,7 +140,7 @@ def main() -> None:
     parser.add_argument(
         "--export-clonehero",
         action="store_true",
-        help="Export a Clone Hero-ready folder with notes.chart and song.ini.",
+        help="Export a Clone Hero-ready folder with notes.mid and song.ini.",
     )
     parser.add_argument(
         "--to-clonehero",
@@ -302,10 +300,11 @@ def main() -> None:
             album_path=album_path,
             background_path=bg_path,
             convert_audio=not args.no_convert,
+            write_chart=False,
         )
         print(f"Clone Hero chart exported to {ch_dir}")
 
-        # Lyrics: fetch synced lyrics and export vocals MIDI as talkies
+        # Lyrics: fetch synced lyrics
         try:
             duration_sec = float(get_duration(f_path))
         except Exception:
@@ -338,26 +337,32 @@ def main() -> None:
             print(f"Lyrics fetch failed: {e}")
             lyrics = None
 
-        if lyrics and lyrics.lines:
-            # Build syllable events and phrases
-            tokens = to_rb_tokens(lyrics.lines)
-            syllables = [
-                VoxSyllable(text=tok, t0=syl.t0, t1=syl.t1) for (syl, tok) in tokens
-            ]
-            phrases: list[VoxPhrase] = [
-                VoxPhrase(t0=ln.t0, t1=ln.t1) for ln in lyrics.lines if (ln.t1 > ln.t0)
-            ]
-            try:
-                write_vocals_midi(
-                    out_path=Path(ch_dir) / "notes.mid",
-                    syllables=syllables,
-                    phrases=phrases,
-                    bpm=float(bpm),
-                    ppq=480,
-                )
-                print(f"Vocals (talkies) MIDI written: {Path(ch_dir) / 'notes.mid'}")
-            except Exception as e:
-                print(f"Failed to write vocals MIDI: {e}")
+        # Build combined notes.mid: drums always, vocals if available
+        try:
+            vocals_syllables = None
+            vocals_phrases = None
+            if lyrics and lyrics.lines:
+                tokens = to_rb_tokens(lyrics.lines)
+                vocals_syllables = [
+                    VoxSyllable(text=tok, t0=syl.t0, t1=syl.t1) for (syl, tok) in tokens
+                ]
+                vocals_phrases = [
+                    VoxPhrase(t0=ln.t0, t1=ln.t1)
+                    for ln in lyrics.lines
+                    if (ln.t1 > ln.t0)
+                ]
+            notes_mid = write_notes_mid(
+                out_dir=Path(ch_dir),
+                bpm=float(bpm),
+                ppq=480,
+                sr=config.sample_rate,
+                prediction_rows=pred_rows,
+                vocals_syllables=vocals_syllables,
+                vocals_phrases=vocals_phrases,
+            )
+            print(f"notes.mid written: {notes_mid}")
+        except Exception as e:
+            print(f"Failed to write notes.mid: {e}")
 
     # Cleanup for no-cache temp download unless --keep-temp is set
     if (
@@ -385,6 +390,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
-    main()
     main()

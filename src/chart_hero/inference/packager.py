@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Optional
 import subprocess
+from pathlib import Path
 from shutil import which
+from typing import Optional
 
 import soundfile as sf
 
+from chart_hero.utils.audio_io import get_duration, load_audio
+
 from .chart_writer import SongMeta, write_chart
 from .types import PredictionRow
-from chart_hero.utils.audio_io import get_duration, load_audio
 
 
 def sanitize_name(name: str) -> str:
@@ -75,12 +76,15 @@ def package_clonehero_song(
     album_path: Optional[Path] = None,
     background_path: Optional[Path] = None,
     convert_audio: bool = True,
+    write_chart: bool = False,
 ) -> Path:
     """
-    Create a Clone Hero song folder with notes.chart, song.ini, audio, and art.
+    Create a Clone Hero song folder with song.ini, audio, and art.
+    Optionally writes a legacy notes.chart if write_chart=True; default flow
+    is to emit notes.mid elsewhere and only use this to prep the folder.
     Returns the path to the created song folder.
     """
-    pack_root = clonehero_root / "Songs" / "Chart Hero"
+    pack_root = clonehero_root / "Chart Hero"
     pack_root.mkdir(parents=True, exist_ok=True)
 
     folder_name = sanitize_name(
@@ -100,17 +104,33 @@ def package_clonehero_song(
             music_file.write_bytes(source_audio.read_bytes())
         dur_sec = get_duration(str(music_file))
 
-    # Write chart (include MusicStream value to be explicit; CH will also pick song.ogg automatically)
-    meta = SongMeta(name=title, artist=artist or None, charter="chart-hero")
-    write_chart(
-        out_dir,
-        meta,
-        bpm=bpm,
-        resolution=resolution,
-        sr=sr_model,
-        prediction_rows=prediction_rows,
-        music_stream=music_file.name,
-    )
+    # Ensure song.ini exists (for either .chart or .mid flows)
+    ini_path = out_dir / "song.ini"
+    if not ini_path.exists():
+        ini_lines = [
+            "[Song]",
+            f"name = {title}",
+            f"artist = {artist or ''}",
+            f"charter = chart-hero",
+            f"genre = Unknown",
+            f"year = ",
+            f"diff_drums = 3",
+            f"pro_drums = True",
+        ]
+        ini_path.write_text("\n".join(ini_lines) + "\n", encoding="utf-8")
+
+    # Optionally write a .chart (legacy path). Default is False now that we use notes.mid.
+    if write_chart:
+        meta = SongMeta(name=title, artist=artist or None, charter="chart-hero")
+        write_chart(
+            out_dir,
+            meta,
+            bpm=bpm,
+            resolution=resolution,
+            sr=sr_model,
+            prediction_rows=prediction_rows,
+            music_stream=music_file.name,
+        )
 
     # Add song.ini extras (background/banner) by appending keys if files present
     if album_path and album_path.exists():
@@ -119,7 +139,6 @@ def package_clonehero_song(
         (out_dir / "background.jpg").write_bytes(background_path.read_bytes())
 
     # Optionally update song.ini with length and art hints
-    ini_path = out_dir / "song.ini"
     try:
         lines = ini_path.read_text(encoding="utf-8").splitlines()
         # Insert/replace song_length (ms)
@@ -144,4 +163,5 @@ def package_clonehero_song(
     except Exception:
         pass
 
+    return out_dir
     return out_dir

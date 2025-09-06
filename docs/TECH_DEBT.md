@@ -40,6 +40,16 @@ Unit Testing TODOs (new features)
   - Convert short fixture; verify output codec/sample rate/duration within tolerance.
   - Exercise fallback path by simulating missing ffmpeg; no crash/segfault when writing OGG.
 
+- mid_export.py: write_notes_mid (PART DRUMS + PART VOCALS)
+  - Drums mapping: model classes → Expert gems 96..101; dedupe bases per tick.
+  - Pro-cymbal toggles: emit 110/111/112 only when state change required; default cymbals ON.
+  - Event ordering and delta times stable; short gem/toggle durations; channel 10 messages.
+  - Vocals merge: lyrics meta, phrase markers, talkies timing do not collide with drums.
+  - Round-trip sanity: parse notes.mid and verify expected lane counts per small fixture.
+- main+packager integration: prefer notes.mid over notes.chart
+  - No notes.chart written by default; notes.mid present; song.ini created; song_length populated.
+  - Smoke test: generated CH folder loads with notes.mid only; MusicStream presence not required.
+
 General
 - Add fixture LRC/VTT samples and golden MIDI for quick validation.
 - Consider dependency-injection for HTTP and yt_dlp in tests to avoid network.

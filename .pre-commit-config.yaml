@@ -1,4 +1,4 @@
-fail_fast: true
+fail_fast: false
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -26,3 +26,4 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+        stages: [push]
