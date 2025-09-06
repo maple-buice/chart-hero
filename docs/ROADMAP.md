@@ -20,6 +20,29 @@ Near-Term (High Priority)
   - Moonscraper-compatible `.chart` writer + `song.ini`
   - Integrated `--export-clonehero`
   - DONE: `src/chart_hero/inference/chart_writer.py`, `main.py`
+  - NEXT: Switch export to MIDI (`notes.mid`) for vocals compatibility
+    - Add PART VOCALS generation (talkies first, pitched later)
+    - Replace/augment current `.chart` drums with MIDI drums once stable
+    - Track work in `src/chart_hero/inference/mid_vocals.py`
+
+Lyrics & Vocals
+- Synced lyrics integration
+  - Primary: LRCLIB by Spotify ID or text+duration
+  - Fallback: YouTube captions (WebVTT) via yt-dlp
+  - Syllabification (CMUdict/pyphen heuristic) to split words to syllables
+  - Output normalized structure (lines → words → syllables)
+  - Scaffolded: `src/chart_hero/inference/lyrics.py`
+- PART VOCALS MIDI exporter
+  - Emit lyric tokens per syllable and phrase markers
+  - MVP: talkies only (MIDI note 100), constant tempo
+  - Scaffolded: `src/chart_hero/inference/mid_vocals.py`
+
+YouTube Music Premium Cookies
+- Add cookies support to yt-dlp downloads to prefer YT Music Premium sources
+  - Detect env: `YTDLP_COOKIES_FROM_BROWSER` or `YTDLP_COOKIEFILE`
+  - Pass via `cookiesfrombrowser` or `cookiefile` in `get_yt_audio`
+  - Tighten format to prefer AAC/M4A
+  - Status: TODO
 - Data/Schema validation
   - Discovery script exports JSON + schema validates charts and INIs
   - DONE: `scripts/discover_clonehero.py`, `schemas/`
