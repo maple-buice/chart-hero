@@ -70,6 +70,12 @@ pip install -e .
 
 Refer to `model_training/README.md` for data preparation and training commands.
 
+### YouTube Downloads
+
+- Use `--link <url>` to download audio via yt-dlp. Requires `ffmpeg`/`ffprobe` on PATH.
+- Downloads are cached under `music/YouTube/<videoid>_<title>/song.m4a` and auto-pruned to the 10 most recent.
+- To force a fresh temporary download without touching the cache, pass `--no-cache` (the temp files are deleted after the run unless `--keep-temp` is set).
+
 ## Configuration
 
 ### AudD API Key

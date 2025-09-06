@@ -1,5 +1,9 @@
+import json
 import os
-from typing import cast
+import re
+import shutil
+import time
+from typing import Any, Dict, List, cast
 
 import librosa
 import numpy as np
@@ -100,36 +104,212 @@ class yt_audio:
     title: str
     description: str
     thumbnail_url: str
+    from_cache: bool
+    temp_dir: str | None
 
-    def __init__(self, path: str, title: str, description: str, thumbnail_url: str):
+    def __init__(
+        self,
+        path: str,
+        title: str,
+        description: str,
+        thumbnail_url: str,
+        from_cache: bool = False,
+        temp_dir: str | None = None,
+    ):
         self.path = path
         self.title = title
         self.description = description
         self.thumbnail_url = thumbnail_url
+        self.from_cache = from_cache
+        self.temp_dir = temp_dir
 
 
-def get_yt_audio(link: str) -> yt_audio | None:
-    download_path = "music/YouTube/"
-    os.makedirs(download_path, exist_ok=True)
-    ydl_opts = {
-        "format": "m4a/bestaudio/best",
-        "outtmpl": download_path + "song.%(ext)s",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "m4a",
-            }
-        ],
-    }
+def get_yt_audio(link: str, no_cache: bool = False) -> yt_audio | None:
+    base_dir = "music/YouTube"
+    index_path = os.path.join(base_dir, "cache_index.json")
+    os.makedirs(base_dir, exist_ok=True)
+
+    def _load_index() -> Dict[str, Any]:
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {"version": 1, "entries": []}
+            data.setdefault("version", 1)
+            data.setdefault("entries", [])
+            if not isinstance(data["entries"], list):
+                data["entries"] = []
+            return data
+        except Exception:
+            return {"version": 1, "entries": []}
+
+    def _save_index(data: Dict[str, Any]) -> None:
+        try:
+            tmp = index_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, index_path)
+        except Exception:
+            pass
+
+    def _prune_missing(data: Dict[str, Any]) -> Dict[str, Any]:
+        entries: List[Dict[str, Any]] = []
+        for e in data.get("entries", []):
+            d = e.get("dir")
+            if (
+                isinstance(d, str)
+                and os.path.isdir(d)
+                and os.path.exists(os.path.join(d, e.get("file", "song.m4a")))
+            ):
+                entries.append(e)
+        data["entries"] = entries
+        return data
+
+    def _enforce_limit(data: Dict[str, Any], limit: int = 10) -> Dict[str, Any]:
+        entries: List[Dict[str, Any]] = list(data.get("entries", []))
+        if len(entries) <= limit:
+            return data
+        # Sort by last_access ascending
+        entries.sort(key=lambda e: float(e.get("last_access", 0.0)))
+        to_delete = entries[:-limit]
+        keep = entries[-limit:]
+        for e in to_delete:
+            d = e.get("dir")
+            try:
+                if isinstance(d, str) and os.path.isdir(d):
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+        data["entries"] = keep
+        return data
+
+    def _sanitize(name: str) -> str:
+        # Keep simple, filesystem-safe names
+        name = re.sub(r"[\\/:*?\"<>|]", "_", name)
+        name = re.sub(r"\s+", " ", name).strip()
+        return name[:80]
 
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(link, download=True)
+        # First fetch metadata without downloading to get a stable ID
+        with YoutubeDL({"quiet": True}) as ydl:
+            info = ydl.extract_info(link, download=False)
+        if not info:
+            return None
+        vid = str(info.get("id", "unknown"))
+        title = info.get("title", "Unknown Title")
+        desc = info.get("description", "")
+        thumb = info.get("thumbnail", None)
+
+        # If no-cache requested: download to a temp dir and return without touching index
+        if no_cache:
+            # Create a temporary subfolder per run
+            folder = f"tmp_{vid}_{int(time.time())}_{_sanitize(title)}"
+            song_dir = os.path.join(base_dir, folder)
+            os.makedirs(song_dir, exist_ok=True)
+            target_path = os.path.join(song_dir, "song.m4a")
+
+            ydl_opts = {
+                "format": "m4a/bestaudio/best",
+                "outtmpl": os.path.join(song_dir, "song.%(ext)s"),
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "m4a",
+                    }
+                ],
+                "overwrites": True,
+            }
+            with YoutubeDL(ydl_opts) as ydl:
+                info2 = ydl.extract_info(link, download=True)
+                title = info2.get("title", title)
+                desc = info2.get("description", desc)
+                thumb = info2.get("thumbnail", thumb)
             return yt_audio(
-                path=os.path.join(download_path, "song.m4a"),
-                title=info.get("title", "Unknown Title"),
-                description=info.get("description", ""),
-                thumbnail_url=info.get("thumbnail", None),
+                path=target_path,
+                title=title,
+                description=desc,
+                thumbnail_url=thumb,
+                from_cache=False,
+                temp_dir=song_dir,
             )
+
+        # Else: cache-enabled flow. Load and sanitize cache index first
+        index = _load_index()
+        index = _prune_missing(index)
+
+        # Try cache hit by video id
+        now = time.time()
+        for e in index.get("entries", []):
+            if e.get("id") == vid:
+                d = e.get("dir")
+                f = e.get("file", "song.m4a")
+                full = os.path.join(d, f) if isinstance(d, str) else None
+                if full and os.path.exists(full):
+                    # Update last_access and persist
+                    e["last_access"] = now
+                    _save_index(index)
+                    return yt_audio(
+                        path=full,
+                        title=title,
+                        description=desc,
+                        thumbnail_url=thumb,
+                        from_cache=True,
+                    )
+
+        # Cache miss: prepare folder and download
+        folder = f"{vid}_{_sanitize(title)}"
+        song_dir = os.path.join(base_dir, folder)
+        os.makedirs(song_dir, exist_ok=True)
+        target_path = os.path.join(song_dir, "song.m4a")
+
+        ydl_opts = {
+            "format": "m4a/bestaudio/best",
+            "outtmpl": os.path.join(song_dir, "song.%(ext)s"),
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "m4a",
+                }
+            ],
+            "overwrites": False,
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            info2 = ydl.extract_info(link, download=True)
+            # Prefer updated metadata if available
+            title = info2.get("title", title)
+            desc = info2.get("description", desc)
+            thumb = info2.get("thumbnail", thumb)
+
+        # Update index with new entry
+        size = 0
+        try:
+            size = os.path.getsize(target_path)
+        except Exception:
+            pass
+        entry = {
+            "id": vid,
+            "dir": song_dir,
+            "file": "song.m4a",
+            "title": title,
+            "last_access": now,
+            "size_bytes": int(size),
+        }
+        entries_list: List[Dict[str, Any]] = index.get("entries", [])
+        # If any stale entries for same id exist, replace
+        entries_list = [e for e in entries_list if e.get("id") != vid]
+        entries_list.append(entry)
+        index["entries"] = entries_list
+
+        # Enforce limit and persist index
+        index = _enforce_limit(index, limit=10)
+        _save_index(index)
+
+        return yt_audio(
+            path=target_path,
+            title=title,
+            description=desc,
+            thumbnail_url=thumb,
+            from_cache=False,
+        )
     except Exception:
         return None

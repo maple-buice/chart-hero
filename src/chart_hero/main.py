@@ -79,6 +79,13 @@ def main() -> None:
     src_group.add_argument("-p", "--path", type=str, help="Path to the audio file.")
     src_group.add_argument("-l", "--link", type=str, help="Link to a youtube video.")
     parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help=(
+            "Do not use or update the YouTube audio cache; force a fresh temporary download."
+        ),
+    )
+    parser.add_argument(
         "-o",
         "--output-dir",
         type=str,
@@ -166,11 +173,14 @@ def main() -> None:
         # Ensure ffmpeg/ffprobe are available for YouTube audio extraction
         if not _ensure_ffmpeg_available():
             return
-        print(f"Downloading audio track from {args.link}")
-        yt_info = get_yt_audio(args.link)
+        yt_info = get_yt_audio(args.link, no_cache=bool(args.no_cache))
         if yt_info is None:
             print("Could not download audio from link.")
             return
+        if getattr(yt_info, "from_cache", False):
+            print(f"Using cached audio: {yt_info.path}")
+        else:
+            print(f"Downloaded audio: {yt_info.path}")
         f_path = yt_info.path
         title = yt_info.title or Path(f_path).stem
         artist = None
@@ -287,9 +297,27 @@ def main() -> None:
         )
         print(f"Clone Hero chart exported to {ch_dir}")
 
-    if args.link is not None and not args.keep_temp:
+    # Cleanup for no-cache temp download unless --keep-temp is set
+    if (
+        args.link is not None
+        and getattr(args, "no_cache", False)
+        and not args.keep_temp
+        and yt_info is not None
+    ):
         try:
-            os.remove(f_path)
+            temp_dir = getattr(yt_info, "temp_dir", None)
+            if temp_dir:
+                td_path = Path(temp_dir)
+                if td_path.exists():
+                    for p in sorted(td_path.rglob("*"), reverse=True):
+                        try:
+                            p.unlink()
+                        except Exception:
+                            pass
+                    try:
+                        td_path.rmdir()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
