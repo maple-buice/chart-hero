@@ -21,7 +21,8 @@ Required secret (for adding to a User Project v2)
 Enable automation
 1) Add secret `GH_PROJECT_TOKEN` (Settings → Secrets and variables → Actions).
 2) Trigger “Sync ROADMAP/TECH_DEBT to issues” workflow manually once.
-3) New/updated issues will be auto-added to the Project by the “Add issues/PRs to Project” workflow.
+3) Open a new issue or PR — it will be auto-added to the Project by the “Add issues/PRs to Project” workflow.
+   - Note: the add-to-project workflow no longer supports manual (workflow_dispatch) runs. Manual runs cause a GraphQL error (contentId null) because there is no issue/PR context.
 
 Custom fields (optional)
 - If you add custom fields to your Project (e.g., Priority, Area), we can extend the workflows to set them using a small GitHub Script step.

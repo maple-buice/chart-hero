@@ -4,8 +4,7 @@ on:
   issues:
     types: [opened, reopened]
   pull_request:
-    types: [opened, reopened]
-  workflow_dispatch: {}
+    types: [opened, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -15,9 +14,13 @@ permissions:
 jobs:
   add-to-project:
     runs-on: ubuntu-latest
+    # Only run when the event has issue/PR context to avoid null contentId
+    if: ${{ github.event_name == 'issues' || github.event_name == 'pull_request' }}
     steps:
       - name: Add to GitHub Project v2
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: https://github.com/users/maple-buice/projects/1
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          # Pass explicit content-id; action will infer if omitted, but this is safer
+          content-id: ${{ github.event.issue.node_id || github.event.pull_request.node_id }}
