@@ -18,59 +18,24 @@ jobs:
             const owner = 'maple-buice';
             const number = 1; // your user project number
 
-            // Desired single-select fields and options
-            const desired = {
-              'Status': ['Todo','In Progress','Done'],
-              'Priority': ['P0','P1','P2','P3'],
-              'Area': ['lyrics','vocals','export','downloader','inference'],
-            };
-
-            // Fetch project and fields
-            const projResp = await github.graphql(`
-              query($login:String!, $number:Int!){
-                user(login:$login){
-                  projectV2(number:$number){
-                    id
-                    fields(first:50){ nodes {
-                      ... on ProjectV2FieldCommon { id name dataType }
-                      ... on ProjectV2SingleSelectField { id name dataType options { id name } }
-                    }}
-                  }
+            // Use a minimal query to validate access to the Project; avoid union selections
+            try {
+              const projResp = await github.graphql(`
+                query($login:String!, $number:Int!){
+                  user(login:$login){ projectV2(number:$number){ id title } }
                 }
+              `, { login: owner, number });
+              const proj = projResp.user && projResp.user.projectV2;
+              if (!proj) {
+                core.setFailed('Project not found or token lacks access. Ensure GH_PROJECT_TOKEN has project scope and the project exists.');
+                return;
               }
-            `, { login: owner, number });
-            const project = projResp.user.projectV2;
-            const projectId = project.id;
-            const fields = project.fields.nodes;
-            const findField = (name) => fields.find(f => (f.name||'').toLowerCase() === name.toLowerCase());
-
-            for (const [fname, opts] of Object.entries(desired)){
-              let field = findField(fname);
-              if (!field){
-                // Create field
-                const createResp = await github.graphql(`
-                  mutation($projectId:ID!, $name:String!){
-                    createProjectV2Field(input:{projectId:$projectId, dataType:SINGLE_SELECT, name:$name}){
-                      projectV2Field{ id __typename }
-                    }
-                  }
-                `, { projectId, name: fname });
-                const newId = createResp.createProjectV2Field.projectV2Field.id;
-                // Append to local cache for subsequent updates
-                field = { id: newId, name: fname, dataType: 'SINGLE_SELECT', options: [] };
-                fields.push(field);
-                core.info(`Created field ${fname}`);
-              }
-
-              // Note: Updating options for single-select fields via GraphQL is not
-              // available to this workflow token at the moment. Please add options
-              // in the Project UI if they are missing. The add-to-project workflow
-              // will use existing options by name when present.
-              const current = (field.options || []).map(o => (o.name||''));
-              const missing = opts.filter(o => !current.find(c => c.toLowerCase() === o.toLowerCase()));
-              if (missing.length){
-                core.warning(`Field "${fname}" is missing options: ${missing.join(', ')}. Add these in the Project UI.`);
-              } else {
-                core.info(`Field "${fname}" has required options.`);
-              }
+              core.info(`Project resolved: ${proj.title} (${proj.id})`);
+              core.info('Fields: Please verify in the UI that single-select fields exist with these options:');
+              core.info('- Status: Todo, In Progress, Done');
+              core.info('- Priority: P0, P1, P2, P3');
+              core.info('- Area: lyrics, vocals, export, downloader, inference');
+              core.info('The add-to-project workflow will use these fields if present.');
+            } catch (e) {
+              core.setFailed(`GraphQL access error: ${e}`);
             }
