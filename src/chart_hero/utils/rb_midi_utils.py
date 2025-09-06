@@ -41,7 +41,12 @@ class RbMidiProcessor:
         Returns: tensor (num_time_frames, len(TARGET_CLASSES)).
         """
         try:
-            mf = mido.MidiFile(midi_path)
+            # Some community MIDIs have out-of-range data bytes; clip to 0..127 if supported.
+            try:
+                mf = mido.MidiFile(midi_path, clip=True)  # type: ignore[call-arg]
+            except TypeError:
+                # Older mido versions don't support clip; fall back without it.
+                mf = mido.MidiFile(midi_path)
         except Exception as e:
             print(f"Warning: Could not read MIDI file {midi_path}: {e}")
             return None
@@ -181,3 +186,149 @@ class RbMidiProcessor:
             idx = DRUM_HIT_TO_INDEX.get(cls_key)
             if idx is not None:
                 label[frame, idx] = 1.0
+
+    # --- Event-level extraction for inventory/export ---
+    def _tick_to_seconds(
+        self, tick: int, tempo_changes: list[tuple[int, int]], tpq: int
+    ) -> float:
+        """Convert absolute tick to seconds using a tempo map (us_per_beat)."""
+        sec = 0.0
+        last_tick = 0
+        last_tempo = 500000  # default 120 BPM
+        for t_tick, tempo in tempo_changes:
+            if t_tick > tick:
+                break
+            if t_tick > last_tick:
+                sec += (t_tick - last_tick) * (last_tempo / 1_000_000.0) / tpq
+                last_tick = t_tick
+            last_tempo = tempo
+        if tick > last_tick:
+            sec += (tick - last_tick) * (last_tempo / 1_000_000.0) / tpq
+        return float(sec)
+
+    def extract_events_per_difficulty(self, midi_path: Path) -> dict[str, Any] | None:
+        """
+        Parse a Rock Band/Clone Hero-style MIDI and return per-difficulty drum events.
+
+        Returns a dict with keys:
+          - tpq: ticks per quarter note
+          - tempos: list of {tick, us_per_beat}
+          - difficulties: {"Easy"|"Medium"|"Hard"|"Expert": {"events": [...]}}
+
+        Event entries include {tick, time_sec, lane, hit, flags, len_ticks} using
+        the repo's normalized 8-class mapping (TARGET_CLASSES).
+        """
+        try:
+            # Use clipping to handle invalid data bytes in some MIDIs when supported.
+            try:
+                mf = mido.MidiFile(midi_path, clip=True)  # type: ignore[call-arg]
+            except TypeError:
+                mf = mido.MidiFile(midi_path)
+        except Exception as e:
+            print(f"Warning: Could not read MIDI file {midi_path}: {e}")
+            return None
+
+        tpq = mf.ticks_per_beat or 480
+        tempo_map = self._collect_tempo_changes(mf)
+        drum_tracks = self._find_drum_tracks(mf)
+        if not drum_tracks:
+            drum_tracks = [mf.tracks[-1]]
+
+        # Flatten messages with absolute tick
+        events: list[tuple[int, mido.Message]] = []
+        for tr in drum_tracks:
+            t = 0
+            for msg in tr:
+                t += msg.time
+                events.append((t, msg))
+        events.sort(key=lambda x: x[0])
+
+        diffs = {"Easy": 60, "Medium": 72, "Hard": 84, "Expert": 96}
+        out: dict[str, dict[str, list[dict[str, Any]]]] = {
+            d: {"events": []} for d in diffs
+        }
+
+        # Per-note stacks (start_tick) for len_ticks calculation per difficulty/note
+        pending: dict[tuple[str, int], list[int]] = {}
+
+        # Cymbal toggles for Y/B/G pads (2/3/4)
+        cym_toggle: dict[int, bool] = {2: True, 3: True, 4: True}
+
+        for abs_tick, msg in events:
+            if msg.type == "note_on" and msg.velocity > 0:
+                n = msg.note
+                # Cymbal toggles (global state)
+                if n in (110, 111, 112):
+                    pad = {110: 2, 111: 3, 112: 4}[n]
+                    cym_toggle[pad] = not cym_toggle.get(pad, True)
+                    continue
+                # Double kick note (map as kick on Expert)
+                if n == 95:
+                    t_sec = self._tick_to_seconds(abs_tick, tempo_map, tpq)
+                    out["Expert"]["events"].append(
+                        {
+                            "tick": int(abs_tick),
+                            "time_sec": t_sec,
+                            "lane": 0,
+                            "hit": "0",
+                            "flags": {"double_kick": True},
+                            "len_ticks": 0,
+                        }
+                    )
+                    continue
+                # Difficulty gem starts
+                for dname, start in diffs.items():
+                    if start <= n <= start + 5:
+                        key = (dname, n)
+                        pending.setdefault(key, []).append(abs_tick)
+                        break
+            # Handle note_off or note_on with velocity 0 => close sustain
+            elif (msg.type == "note_off") or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                n = msg.note
+                for dname, start in diffs.items():
+                    if start <= n <= start + 5:
+                        key = (dname, n)
+                        stack = pending.get(key)
+                        if stack:
+                            on_tick = stack.pop(0)
+                            pad = n - start  # 0..5
+                            lane = pad
+                            # Map to normalized hit
+                            if pad == 0:
+                                hit = "0"
+                            elif pad == 1:
+                                hit = "1"
+                            elif pad in (2, 3, 4):
+                                if cym_toggle.get(pad, True):
+                                    hit = {2: "66", 3: "67", 4: "68"}[pad]
+                                else:
+                                    hit = {2: "2", 3: "3", 4: "4"}[pad]
+                            else:  # pad == 5
+                                hit = "4"
+                            t_sec = self._tick_to_seconds(on_tick, tempo_map, tpq)
+                            out[dname]["events"].append(
+                                {
+                                    "tick": int(on_tick),
+                                    "time_sec": t_sec,
+                                    "lane": int(lane),
+                                    "hit": hit,
+                                    "flags": {
+                                        "cymbal": bool(
+                                            pad in (2, 3, 4)
+                                            and cym_toggle.get(pad, True)
+                                        )
+                                    },
+                                    "len_ticks": int(abs_tick - on_tick),
+                                }
+                            )
+                        break
+
+        return {
+            "tpq": int(tpq),
+            "tempos": [
+                {"tick": int(t), "us_per_beat": int(us)} for (t, us) in tempo_map
+            ],
+            "difficulties": out,
+        }

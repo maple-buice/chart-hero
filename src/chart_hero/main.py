@@ -56,10 +56,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Transcribe and chart drum patterns from an audio file."
     )
-    parser.add_argument(
-        "-p", "--path", type=str, required=True, help="Path to the audio file."
-    )
-    parser.add_argument("-l", "--link", type=str, help="Link to a youtube video.")
+    # Exactly one of --path or --link must be provided
+    src_group = parser.add_mutually_exclusive_group(required=True)
+    src_group.add_argument("-p", "--path", type=str, help="Path to the audio file.")
+    src_group.add_argument("-l", "--link", type=str, help="Link to a youtube video.")
     parser.add_argument(
         "-o",
         "--output-dir",

@@ -199,3 +199,4 @@ wandb/
 CloneHero/
 
 .env*
+artifacts/
