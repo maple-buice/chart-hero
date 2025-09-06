@@ -2,9 +2,9 @@ name: Add issues/PRs to Project
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [opened, reopened, closed, labeled, unlabeled]
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, closed, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -18,9 +18,116 @@ jobs:
     if: ${{ github.event_name == 'issues' || github.event_name == 'pull_request' }}
     steps:
       - name: Add to GitHub Project v2
+        id: add_to_project
         uses: actions/add-to-project@v0.5.0
         with:
           project-url: https://github.com/users/maple-buice/projects/1
           github-token: ${{ secrets.GH_PROJECT_TOKEN }}
           # Pass explicit content-id; action will infer if omitted, but this is safer
           content-id: ${{ github.event.issue.node_id || github.event.pull_request.node_id }}
+
+      - name: Set Project fields (Status, Priority, Area)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const owner = 'maple-buice';
+            const number = 1;
+            const nodeId = (context.payload.issue && context.payload.issue.node_id) || (context.payload.pull_request && context.payload.pull_request.node_id);
+            if (!nodeId) { core.setFailed('No node_id in event'); return; }
+
+            // Fetch project id and fields
+            const projResp = await github.graphql(`
+              query($login:String!, $number:Int!){
+                user(login:$login){
+                  projectV2(number:$number){
+                    id
+                    fields(first:50){ nodes { id name dataType ... on ProjectV2SingleSelectField { options { id name } } } }
+                  }
+                }
+              }
+            `, { login: owner, number });
+            const project = projResp.user.projectV2;
+            const projectId = project.id;
+            const fields = project.fields.nodes;
+            const findField = (name) => fields.find(f => (f.name||'').toLowerCase() === name.toLowerCase());
+            const statusField = findField('Status');
+            const priorityField = findField('Priority');
+            const areaField = findField('Area');
+            const getOptionId = (field, optName) => {
+              if (!field || !field.options) return null;
+              const opt = field.options.find(o => (o.name||'').toLowerCase() === optName.toLowerCase());
+              return opt ? opt.id : null;
+            };
+
+            // Find the project item for this issue/PR
+            async function findItemId(projectId, nodeId){
+              let cursor = null;
+              while (true){
+                const q = await github.graphql(`
+                  query($projectId:ID!, $after:String){
+                    node(id:$projectId){
+                      ... on ProjectV2{
+                        items(first:100, after:$after){ nodes{ id content{ ... on Issue { id number } ... on PullRequest { id number } } } pageInfo{ hasNextPage endCursor } }
+                      }
+                    }
+                  }
+                `, { projectId, after: cursor });
+                const items = q.node.items.nodes;
+                for (const it of items){
+                  if (it.content && it.content.id === nodeId) return it.id;
+                }
+                if (!q.node.items.pageInfo.hasNextPage) break;
+                cursor = q.node.items.pageInfo.endCursor;
+              }
+              return null;
+            }
+
+            const addedItemId = '${{ steps.add_to_project.outputs.itemId }}';
+            const itemId = addedItemId || await findItemId(projectId, nodeId);
+            if (!itemId){ core.setFailed('Could not resolve project item id'); return; }
+
+            // Determine target Status
+            let targetStatus = null;
+            if (context.eventName === 'issues' && context.payload.action === 'closed') targetStatus = 'Done';
+            if (context.eventName === 'pull_request' && context.payload.action === 'closed' && context.payload.pull_request.merged) targetStatus = 'Done';
+            if (!targetStatus && context.payload.action && ['opened','reopened','ready_for_review'].includes(context.payload.action)) targetStatus = 'Todo';
+
+            if (statusField && targetStatus){
+              const statusOptId = getOptionId(statusField, targetStatus);
+              if (statusOptId){
+                await github.graphql(`
+                  mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optId:String!){
+                    updateProjectV2ItemFieldValue(input:{projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{singleSelectOptionId:$optId}}){ clientMutationId }
+                  }
+                `, { projectId, itemId, fieldId: statusField.id, optId: statusOptId });
+              }
+            }
+
+            // Priority from issue body (Issue Forms include a 'Priority:' line)
+            const body = (context.payload.issue && context.payload.issue.body) || (context.payload.pull_request && context.payload.pull_request.body) || '';
+            const m = body && body.match(/Priority:\s*(P[0-3])/i);
+            if (priorityField && m) {
+              const priorityName = m[1].toUpperCase();
+              const prioOptId = getOptionId(priorityField, priorityName);
+              if (prioOptId) {
+                await github.graphql(`
+                  mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optId:String!){
+                    updateProjectV2ItemFieldValue(input:{projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{singleSelectOptionId:$optId}}){ clientMutationId }
+                  }
+                `, { projectId, itemId, fieldId: priorityField.id, optId: prioOptId });
+              }
+            }
+
+            // Area from labels: match any Area option present as a label (case-insensitive)
+            if (areaField && areaField.options){
+              const labels = (context.payload.issue?.labels || context.payload.pull_request?.labels || []).map(l => (typeof l === 'string' ? l : l.name) || '').map(s => s.toLowerCase());
+              const areaOpt = areaField.options.find(o => labels.includes((o.name||'').toLowerCase()));
+              if (areaOpt){
+                await github.graphql(`
+                  mutation($projectId:ID!, $itemId:ID!, $fieldId:ID!, $optId:String!){
+                    updateProjectV2ItemFieldValue(input:{projectId:$projectId, itemId:$itemId, fieldId:$fieldId, value:{singleSelectOptionId:$optId}}){ clientMutationId }
+                  }
+                `, { projectId, itemId, fieldId: areaField.id, optId: areaOpt.id });
+              }
+            }

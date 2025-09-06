@@ -1,0 +1,82 @@
+name: Ensure Project fields
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  setup-project-fields:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure fields (Status, Priority, Area)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const owner = 'maple-buice';
+            const number = 1; // your user project number
+
+            // Desired single-select fields and options
+            const desired = {
+              'Status': ['Todo','In Progress','Done'],
+              'Priority': ['P0','P1','P2','P3'],
+              'Area': ['lyrics','vocals','export','downloader','inference'],
+            };
+
+            // Fetch project and fields
+            const projResp = await github.graphql(`
+              query($login:String!, $number:Int!){
+                user(login:$login){
+                  projectV2(number:$number){
+                    id
+                    fields(first:50){ nodes {
+                      id name dataType
+                      ... on ProjectV2SingleSelectField { options { id name } }
+                    }}
+                  }
+                }
+              }
+            `, { login: owner, number });
+            const project = projResp.user.projectV2;
+            const projectId = project.id;
+            const fields = project.fields.nodes;
+            const findField = (name) => fields.find(f => (f.name||'').toLowerCase() === name.toLowerCase());
+
+            for (const [fname, opts] of Object.entries(desired)){
+              let field = findField(fname);
+              if (!field){
+                // Create field
+                const createResp = await github.graphql(`
+                  mutation($projectId:ID!, $name:String!){
+                    createProjectV2Field(input:{projectId:$projectId, dataType:SINGLE_SELECT, name:$name}){
+                      projectV2Field{ id __typename }
+                    }
+                  }
+                `, { projectId, name: fname });
+                const newId = createResp.createProjectV2Field.projectV2Field.id;
+                // Append to local cache for subsequent updates
+                field = { id: newId, name: fname, dataType: 'SINGLE_SELECT', options: [] };
+                fields.push(field);
+                core.info(`Created field ${fname}`);
+              }
+
+              // Ensure options (replace with desired set)
+              // Fetch current options if missing
+              let current = (field.options || []).map(o => (o.name||''));
+              const needUpdate = current.length !== opts.length || opts.some(o => !current.find(c => c.toLowerCase() === o.toLowerCase()));
+              if (needUpdate){
+                const optionsInput = opts.map(name => ({ name }));
+                await github.graphql(`
+                  mutation($fieldId:ID!, $options:[ProjectV2SingleSelectFieldOptionInput!]!){
+                    updateProjectV2SingleSelectField(input:{fieldId:$fieldId, options:$options}){
+                      projectV2SingleSelectField{ id }
+                    }
+                  }
+                `, { fieldId: field.id, options: optionsInput });
+                core.info(`Updated ${fname} options -> ${opts.join(', ')}`);
+              } else {
+                core.info(`No update needed for ${fname}`);
+              }
+            }

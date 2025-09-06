@@ -1,0 +1,38 @@
+# Standard labels for this repository and Project automation
+labels:
+  # Type
+  - name: bug
+    color: d73a4a
+    description: Something isn't working
+  - name: feature
+    color: 0e8a16
+    description: New feature or enhancement
+  - name: chore
+    color: 8b949e
+    description: Maintenance or refactor
+  - name: testing
+    color: fbca04
+    description: Add or improve tests
+  - name: tech-debt
+    color: 5319e7
+    description: Debt to revisit or clean up
+  - name: roadmap
+    color: 0366d6
+    description: Item synced from ROADMAP.md
+
+  # Areas (mapped to Project Area field)
+  - name: lyrics
+    color: 1f6feb
+    description: Synced lyrics fetching/parsing
+  - name: vocals
+    color: 0969da
+    description: PART VOCALS export and processing
+  - name: export
+    color: 0a3069
+    description: Clone Hero packaging and outputs
+  - name: downloader
+    color: 34d058
+    description: yt-dlp, quality, cookies, caching
+  - name: inference
+    color: a371f7
+    description: Model inference, smoothing, thresholds

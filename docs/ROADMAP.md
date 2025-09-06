@@ -3,7 +3,7 @@ Project Roadmap
 
 Status: living document to track planned work and priorities.
 
-Near-Term (High Priority)
+## Near-Term (High Priority)
 - MIDI labels: Robust RB drum parsing
   - Select correct tracks (PART DRUMS, REAL_DRUMS_PS), handle tempo maps
   - Handle Pro-Cymbal toggles (110/111/112), double-kick (95)
@@ -47,7 +47,7 @@ YouTube Music Premium Cookies
   - Discovery script exports JSON + schema validates charts and INIs
   - DONE: `scripts/discover_clonehero.py`, `schemas/`
 
-Modeling & Inference (Next)
+## Modeling & Inference (Next)
 - Threshold optimization
   - Sweep per-class thresholds on val set; auto-select and save with model
 - Inference smoothing
@@ -60,7 +60,7 @@ Modeling & Inference (Next)
 - Difficulty reductions
   - Produce Hard/Medium/Easy via density/pruning and cymbal→tom simplifications
 
-Training Data & Labels
+## Training Data & Labels
 - TARGET_CLASSES alignment
   - Confirm `['0','1','2','3','4','66','67','68']` consistently across label creation and heads
 - RB MIDI dynamics
@@ -68,7 +68,7 @@ Training Data & Labels
 - Track selection robustness
   - Prefer expert but fall back intelligently; support merged multi-track charts
 
-Advanced Modeling
+## Advanced Modeling
 - Multi-task heads
   - Separate base pads (0–4/5) and cymbal flags (66/67/68) heads; combine at write time
 - Variable tempo/TS
@@ -76,18 +76,37 @@ Advanced Modeling
 - Calibration
   - Temperature scaling / Platt scaling of logits per class for stable thresholds
 
-Tooling & Integration
+## Tooling & Integration
 - Validation using song files and expert/pro drum tracks
   - Explore adding a secondary validation suite that reads Clone Hero songs (notes.chart/.mid) and compares event-level predictions to expert/pro drums tracks with tolerance
   - Add a `--validate-against-songs` mode to run the model over aligned audio and compute CH‑style metrics
 - Class-threshold sweeps & reports
   - Implement sweeps with plots; persist best thresholds to config/ckpt
 
-Attribution & Licensing
+## Attribution & Licensing
 - Moonscraper BSD‑3‑Clause
   - DONE: `THIRD_PARTY_NOTICES.md`; behavior ported, no direct code copied
 
-Backlog / Ideas
+## Backlog / Ideas
 - Human-in-the-loop correction tools
 - Active learning from hard negatives (polyrhythms, ghost notes)
 - Sample-aware augmentation (kit-specific timbre perturbations)
+
+## Lyrics & Vocals
+- [ ] (R-001) Synced lyrics integration via LRCLIB primary, YT captions fallback
+  - Primary: LRCLIB by Spotify ID or text+duration
+  - Fallback: YouTube captions (WebVTT) via yt-dlp
+  - Syllabification (CMUdict/pyphen heuristic) to split words to syllables
+  - Output normalized structure (lines → words → syllables)
+  - Scaffolded: `src/chart_hero/inference/lyrics.py`
+- [ ] (R-002) PART VOCALS MIDI exporter (talkies first)
+  - Emit lyric tokens per syllable and phrase markers
+  - MVP: talkies only (MIDI note 100), constant tempo
+  - Scaffolded: `src/chart_hero/inference/mid_vocals.py`
+
+## YouTube Music Premium Cookies
+- [ ] (R-003) Add cookies support to yt-dlp downloads to prefer YT Music Premium sources
+  - Detect env: `YTDLP_COOKIES_FROM_BROWSER` or `YTDLP_COOKIEFILE`
+  - Pass via `cookiesfrombrowser` or `cookiefile` in `get_yt_audio`
+  - Tighten format to prefer AAC/M4A
+  - Status: TODO

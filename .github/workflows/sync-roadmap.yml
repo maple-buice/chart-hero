@@ -4,6 +4,11 @@ on:
   workflow_dispatch: {}
   schedule:
     - cron: '0 9 * * 1'  # Mondays 09:00 UTC
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'docs/ROADMAP.md'
+      - 'docs/TECH_DEBT.md'
 
 permissions:
   contents: read
