@@ -19,7 +19,8 @@ What’s included
 - Label sync: `.github/workflows/label-sync.yml` + `.github/labels.yml`
   - Ensures standard labels exist (type + area) and are ready for Project field mapping
  - Project setup: `.github/workflows/project-setup.yml`
-   - Creates Project v2 single-select fields (Status, Priority, Area) and sets options
+   - Creates Project v2 single-select fields (Status, Priority, Area)
+   - Notes missing options to add via UI when GraphQL option update is unavailable
 
 Required secret (for adding to a User Project v2)
 - Create a Personal Access Token (classic), not fine-grained:
@@ -51,7 +52,7 @@ Notes
 - The roadmap sync workflow uses `GITHUB_TOKEN` to create issues; it does not require your PAT.
 - The sync script is idempotent by title; it won’t duplicate existing issues.
 
-4) Run “Ensure Project fields” to create the fields and options automatically (uses `GH_PROJECT_TOKEN`).
+4) Run “Ensure Project fields” to create fields (uses `GH_PROJECT_TOKEN`). If the workflow warns about missing options, add them in the Project UI (Status: Todo/In Progress/Done; Priority: P0–P3; Area: lyrics/vocals/export/downloader/inference).
 
 Project field prerequisites
 - Create single-select fields in your Project:
