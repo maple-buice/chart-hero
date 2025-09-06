@@ -10,14 +10,24 @@ import requests
 
 
 REPO = os.environ.get("GITHUB_REPOSITORY")
-# Prefer explicit GH_TOKEN, else fall back to Actions' GITHUB_TOKEN
+# Token used for issue operations
 TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+# Optional token permitted to modify Projects v2 (classic PAT with 'project' scope)
+PROJECT_TOKEN = os.environ.get("GH_PROJECT_TOKEN") or os.environ.get("PROJECT_TOKEN")
+PROJECT_URL = os.environ.get("PROJECT_URL")
 API = "https://api.github.com"
 
 HEADERS = {}
 if TOKEN:
     HEADERS = {
         "Authorization": f"Bearer {TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
+
+PROJ_HEADERS = {}
+if PROJECT_TOKEN:
+    PROJ_HEADERS = {
+        "Authorization": f"Bearer {PROJECT_TOKEN}",
         "Accept": "application/vnd.github+json",
     }
 
@@ -68,6 +78,76 @@ def make_issue(title: str, body: str, labels: list[str]) -> dict:
     )
     r.raise_for_status()
     return r.json()
+
+
+def _parse_project_url(url: str) -> Optional[tuple[str, int]]:
+    if not url:
+        return None
+    m = re.search(r"github\.com/(?:users|orgs)/([^/]+)/projects/(\d+)", url)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def get_project_id(project_url: str) -> Optional[str]:
+    if not PROJECT_TOKEN:
+        return None
+    parsed = _parse_project_url(project_url)
+    if not parsed:
+        return None
+    owner, number = parsed
+    query = """
+    query($login:String!, $number:Int!){
+      user(login:$login){ projectV2(number:$number){ id } }
+      organization(login:$login){ projectV2(number:$number){ id } }
+    }
+    """
+    r = requests.post(
+        f"{API}/graphql",
+        headers=PROJ_HEADERS,
+        json={"query": query, "variables": {"login": owner, "number": number}},
+    )
+    if r.status_code != 200:
+        return None
+    js = r.json()
+    try:
+        uid = js["data"]["user"]["projectV2"]["id"] if js["data"].get("user") else None
+        if uid:
+            return uid
+        oid = (
+            js["data"]["organization"]["projectV2"]["id"]
+            if js["data"].get("organization")
+            else None
+        )
+        return oid
+    except Exception:
+        return None
+
+
+def add_item_to_project(project_id: str, content_node_id: str) -> bool:
+    if not PROJECT_TOKEN or not project_id or not content_node_id:
+        return False
+    mutation = """
+    mutation($projectId:ID!, $contentId:ID!){
+      addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}){ item { id } }
+    }
+    """
+    r = requests.post(
+        f"{API}/graphql",
+        headers=PROJ_HEADERS,
+        json={
+            "query": mutation,
+            "variables": {"projectId": project_id, "contentId": content_node_id},
+        },
+    )
+    try:
+        r.raise_for_status()
+        js = r.json()
+        return bool(
+            js.get("data", {}).get("addProjectV2ItemById", {}).get("item", {}).get("id")
+        )
+    except Exception:
+        return False
 
 
 def close_issue(number: int) -> None:
@@ -186,7 +266,7 @@ def sync():
         checked = bool(it.get("checked"))
         title = f"Roadmap{f' [{sid}]' if sid else ''}: {disp}"
         if title not in existing_titles and not checked:
-            make_issue(
+            issue = make_issue(
                 title,
                 body=(
                     f"Auto-synced from ROADMAP.md section: {sec}\n\n"
@@ -195,6 +275,17 @@ def sync():
                 ),
                 labels=["roadmap"],
             )
+            # Add the newly created issue to Project if configured
+            try:
+                if PROJECT_URL:
+                    pid = get_project_id(PROJECT_URL)
+                    node_id = issue.get("node_id")
+                    if pid and node_id:
+                        ok = add_item_to_project(pid, node_id)
+                        if not ok:
+                            print("Warning: failed to add issue to Project")
+            except Exception:
+                pass
             created += 1
             time.sleep(0.3)
         elif title in existing_titles and checked:

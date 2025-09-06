@@ -26,7 +26,10 @@ jobs:
         run: pip install requests
       - name: Sync roadmap and tech debt
         env:
-          # Use Actions' token for creating issues (no PAT needed here)
+          # Use Actions' token for creating issues
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # Optional: project PAT for adding created issues to user Project v2
+          GH_PROJECT_TOKEN: ${{ secrets.GH_PROJECT_TOKEN }}
+          PROJECT_URL: https://github.com/users/maple-buice/projects/1
         run: python .github/scripts/sync_roadmap.py
