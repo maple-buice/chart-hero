@@ -84,7 +84,7 @@ def package_clonehero_song(
     is to emit notes.mid elsewhere and only use this to prep the folder.
     Returns the path to the created song folder.
     """
-    pack_root = clonehero_root / "Chart Hero"
+    pack_root = clonehero_root / "Songs" / "Chart Hero"
     pack_root.mkdir(parents=True, exist_ok=True)
 
     folder_name = sanitize_name(

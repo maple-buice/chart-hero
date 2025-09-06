@@ -269,7 +269,7 @@ def main() -> None:
                 pass
 
         # Determine CH root relative to project
-        ch_root = Path("CloneHero")
+        ch_root = Path("/Users/maple/Clone Hero")
         # Coerce DataFrame rows into strictly-typed PredictionRow entries
         pred_rows: list[PredictionRow] = []
         for raw in chart_generator.df.to_dict(orient="records"):
