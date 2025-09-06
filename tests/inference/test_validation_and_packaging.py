@@ -98,9 +98,10 @@ def test_package_clonehero_song(tmp_path: Path):
         convert_audio=True,
     )
 
-    assert (out_dir / "notes.chart").exists()
+    # Packaging prepares audio/art/ini. notes.mid is created by main flow.
+    # Ensure core artifacts exist and song.ini is valid.
     assert (out_dir / "song.ini").exists()
     assert (out_dir / "song.ogg").exists()
+    assert not (out_dir / "notes.chart").exists()
 
-    validate_chart_file(out_dir / "notes.chart")
     validate_song_ini_file(out_dir / "song.ini")
