@@ -11,6 +11,12 @@ import numpy as np
 from chart_hero.inference.artwork import generate_art
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
+from chart_hero.inference.lyrics import get_synced_lyrics, to_rb_tokens
+from chart_hero.inference.mid_vocals import (
+    write_vocals_midi,
+    SyllableEvent as VoxSyllable,
+    Phrase as VoxPhrase,
+)
 from chart_hero.inference.packager import package_clonehero_song
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
@@ -264,24 +270,24 @@ def main() -> None:
 
         # Determine CH root relative to project
         ch_root = Path("CloneHero")
-    # Coerce DataFrame rows into strictly-typed PredictionRow entries
-    pred_rows: list[PredictionRow] = []
-    for raw in chart_generator.df.to_dict(orient="records"):
-        row: PredictionRow = {}
-        for k, v in raw.items():
-            key = str(k)
-            val_int: int
-            if isinstance(v, bool):
-                val_int = int(v)
-            elif isinstance(v, (int,)):
-                val_int = int(v)
-            else:
-                try:
-                    val_int = int(float(v))
-                except Exception:
-                    continue
-            row[key] = val_int
-        pred_rows.append(row)
+        # Coerce DataFrame rows into strictly-typed PredictionRow entries
+        pred_rows: list[PredictionRow] = []
+        for raw in chart_generator.df.to_dict(orient="records"):
+            row: PredictionRow = {}
+            for k, v in raw.items():
+                key = str(k)
+                val_int: int
+                if isinstance(v, bool):
+                    val_int = int(v)
+                elif isinstance(v, (int,)):
+                    val_int = int(v)
+                else:
+                    try:
+                        val_int = int(float(v))
+                    except Exception:
+                        continue
+                row[key] = val_int
+            pred_rows.append(row)
         ch_dir = package_clonehero_song(
             clonehero_root=ch_root,
             title=title,
@@ -296,6 +302,60 @@ def main() -> None:
             convert_audio=not args.no_convert,
         )
         print(f"Clone Hero chart exported to {ch_dir}")
+
+        # Lyrics: fetch synced lyrics and export vocals MIDI as talkies
+        try:
+            duration_sec = float(librosa.get_duration(path=f_path))
+        except Exception:
+            duration_sec = None  # type: ignore[assignment]
+
+        spotify_id = None
+        if (
+            "audd_result" in locals()
+            and audd_result is not None
+            and getattr(audd_result, "spotify", None)
+        ):
+            try:
+                spotify_id = audd_result.spotify.id  # type: ignore[assignment]
+            except Exception:
+                spotify_id = None
+
+        lyrics = None
+        try:
+            lyrics = get_synced_lyrics(
+                link=args.link,
+                title=title,
+                artist=artist,
+                album=getattr(audd_result, "album", None)
+                if "audd_result" in locals() and audd_result
+                else None,
+                duration=duration_sec,
+                spotify_id=spotify_id,
+            )
+        except Exception as e:
+            print(f"Lyrics fetch failed: {e}")
+            lyrics = None
+
+        if lyrics and lyrics.lines:
+            # Build syllable events and phrases
+            tokens = to_rb_tokens(lyrics.lines)
+            syllables = [
+                VoxSyllable(text=tok, t0=syl.t0, t1=syl.t1) for (syl, tok) in tokens
+            ]
+            phrases: list[VoxPhrase] = [
+                VoxPhrase(t0=ln.t0, t1=ln.t1) for ln in lyrics.lines if (ln.t1 > ln.t0)
+            ]
+            try:
+                write_vocals_midi(
+                    out_path=Path(ch_dir) / "notes.mid",
+                    syllables=syllables,
+                    phrases=phrases,
+                    bpm=float(bpm),
+                    ppq=480,
+                )
+                print(f"Vocals (talkies) MIDI written: {Path(ch_dir) / 'notes.mid'}")
+            except Exception as e:
+                print(f"Failed to write vocals MIDI: {e}")
 
     # Cleanup for no-cache temp download unless --keep-temp is set
     if (
