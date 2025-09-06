@@ -24,6 +24,8 @@ from chart_hero.inference.song_identifier import (
 )
 from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
+from chart_hero.utils.audio_io import load_audio, get_duration
+from librosa.feature.rhythm import tempo as lr_tempo
 
 
 def _load_env_local(path: Path) -> None:
@@ -45,9 +47,9 @@ def _load_env_local(path: Path) -> None:
 
 def estimate_bpm(path: str, sr: int) -> Optional[float]:
     try:
-        y, s = librosa.load(path, sr=sr)
-        # Use librosa.beat.tempo which returns array of tempi; pick the first
-        tempo = librosa.beat.tempo(y=y, sr=s, hop_length=512, aggregate=None)
+        y, s = load_audio(path, sr=sr)
+        # Use the updated API for tempo
+        tempo = lr_tempo(y=y, sr=s, hop_length=512, aggregate=None)
         if tempo is None or len(tempo) == 0:
             return None
         # Robust statistic: median of local tempos
@@ -246,7 +248,7 @@ def main() -> None:
     # Create the chart
     chart_generator = ChartGenerator(
         prediction_df,
-        song_duration=librosa.get_duration(path=f_path),
+        song_duration=get_duration(f_path),
         bpm=bpm,
         sample_rate=config.sample_rate,
         song_title=title,
@@ -305,7 +307,7 @@ def main() -> None:
 
         # Lyrics: fetch synced lyrics and export vocals MIDI as talkies
         try:
-            duration_sec = float(librosa.get_duration(path=f_path))
+            duration_sec = float(get_duration(f_path))
         except Exception:
             duration_sec = None  # type: ignore[assignment]
 

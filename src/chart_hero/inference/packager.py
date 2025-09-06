@@ -3,12 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Optional
+import subprocess
+from shutil import which
 
 import librosa
 import soundfile as sf
 
 from .chart_writer import SongMeta, write_chart
 from .types import PredictionRow
+from chart_hero.utils.audio_io import get_duration
 
 
 def sanitize_name(name: str) -> str:
@@ -18,11 +21,45 @@ def sanitize_name(name: str) -> str:
 
 def convert_to_ogg(src: Path, dst: Path, target_sr: int = 44100) -> tuple[Path, float]:
     """
-    Convert an audio file to OGG Vorbis using librosa+soundfile.
+    Convert an audio file to OGG Vorbis.
+
+    Preference order:
+    1) ffmpeg CLI (robust, avoids libsndfile crashes)
+    2) librosa + soundfile fallback
+
     Returns: (output_path, duration_seconds)
     """
-    y, sr = librosa.load(str(src), sr=target_sr, mono=True)
     dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # Prefer ffmpeg to avoid potential libsndfile-related segfaults
+    if which("ffmpeg") is not None:
+        try:
+            cmd = [
+                "ffmpeg",
+                "-y",  # overwrite
+                "-loglevel",
+                "error",
+                "-i",
+                str(src),
+                "-vn",  # no video
+                "-ac",
+                "2",
+                "-ar",
+                str(target_sr),
+                "-c:a",
+                "libvorbis",
+                str(dst),
+            ]
+            subprocess.run(cmd, check=True)
+            # Get duration of encoded file
+            dur = float(get_duration(str(dst)))
+            return dst, dur
+        except Exception:
+            # fall back below
+            pass
+
+    # Fallback: librosa read + soundfile write
+    y, _ = librosa.load(str(src), sr=target_sr, mono=True)
     sf.write(str(dst), y, target_sr, format="OGG", subtype="VORBIS")
     return dst, float(len(y) / target_sr)
 
@@ -62,7 +99,7 @@ def package_clonehero_song(
         music_file = out_dir / source_audio.name
         if source_audio.resolve() != music_file.resolve():
             music_file.write_bytes(source_audio.read_bytes())
-        dur_sec = librosa.get_duration(path=str(music_file))
+        dur_sec = get_duration(str(music_file))
 
     # Write chart (include MusicStream value to be explicit; CH will also pick song.ogg automatically)
     meta = SongMeta(name=title, artist=artist or None, charter="chart-hero")

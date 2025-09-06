@@ -19,6 +19,7 @@ from chart_hero.model_training.augment_audio import (
 )
 from chart_hero.model_training.transformer_config import BaseConfig, get_config
 from chart_hero.utils.midi_utils import MidiProcessor
+from chart_hero.utils.audio_io import load_audio
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class EGMDRawDataset(Dataset[tuple[torch.Tensor | None, torch.Tensor | None]]):
         midi_filename = self.dataset_dir / row["midi_filename"]
 
         try:
-            audio_np, sr_f = librosa.load(audio_filename, sr=self.config.sample_rate)
+            audio_np, sr_f = load_audio(audio_filename, sr=self.config.sample_rate)
             sr: int = int(sr_f)
             spec_np = create_transient_enhanced_spectrogram(
                 y=audio_np,
@@ -196,7 +197,7 @@ def main(
                 )
                 if not audio_path.exists():
                     continue
-                audio_np, sr_f = librosa.load(audio_path, sr=config.sample_rate)
+                audio_np, sr_f = load_audio(audio_path, sr=config.sample_rate)
                 sr = int(sr_f)
                 augmentations = {
                     "pitch": augment_pitch_jitter(audio_np, sr),

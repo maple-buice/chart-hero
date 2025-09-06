@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from yt_dlp import YoutubeDL
 
 from .types import Segment, TransformerConfig
+from chart_hero.utils.audio_io import load_audio
 
 
 def create_transient_enhanced_spectrogram(
@@ -52,7 +53,7 @@ def audio_to_tensors(audio_path: str, config: TransformerConfig) -> list[Segment
     Transforms an audio file into a list of tensor segments for the model.
     """
     try:
-        y, sr_f = librosa.load(audio_path, sr=config.sample_rate)
+        y, sr_f = load_audio(audio_path, sr=config.sample_rate)
         sr: int = int(sr_f)
     except Exception as e:
         print(f"Error loading audio file: {e}")
