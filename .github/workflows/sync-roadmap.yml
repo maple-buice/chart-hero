@@ -21,6 +21,7 @@ jobs:
         run: pip install requests
       - name: Sync roadmap and tech debt
         env:
-          GH_TOKEN: ${{ secrets.GH_PROJECT_TOKEN }}
+          # Use Actions' token for creating issues (no PAT needed here)
+          GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python .github/scripts/sync_roadmap.py

@@ -10,13 +10,16 @@ import requests
 
 
 REPO = os.environ.get("GITHUB_REPOSITORY")
-TOKEN = os.environ.get("GH_TOKEN")
+# Prefer explicit GH_TOKEN, else fall back to Actions' GITHUB_TOKEN
+TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 API = "https://api.github.com"
 
-HEADERS = {
-    "Authorization": f"Bearer {TOKEN}",
-    "Accept": "application/vnd.github+json",
-}
+HEADERS = {}
+if TOKEN:
+    HEADERS = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Accept": "application/vnd.github+json",
+    }
 
 
 def read(path: str) -> str:
@@ -86,7 +89,10 @@ def parse_bullets(md: str, section: str) -> list[str]:
 
 def sync():
     if not REPO or not TOKEN:
-        print("Missing GITHUB_REPOSITORY or GH_TOKEN", file=sys.stderr)
+        print(
+            "Missing GITHUB_REPOSITORY or token (GH_TOKEN/GITHUB_TOKEN)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     ensure_labels(["roadmap", "tech-debt", "testing"])
