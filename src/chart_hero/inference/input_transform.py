@@ -124,6 +124,27 @@ class yt_audio:
         self.temp_dir = temp_dir
 
 
+def _cookies_opts_from_env() -> dict:
+    """Build yt-dlp cookie options from env if present.
+
+    Recognized env:
+    - YTDLP_COOKIES_FROM_BROWSER: e.g., 'chrome', 'firefox', 'edge'
+    - YTDLP_COOKIEFILE: path to a cookies.txt
+    """
+    opts: dict = {}
+    try:
+        cfb = os.environ.get("YTDLP_COOKIES_FROM_BROWSER")
+        if cfb:
+            # yt-dlp expects a tuple like ("chrome",)
+            opts["cookiesfrombrowser"] = (cfb.strip(),)
+        cfile = os.environ.get("YTDLP_COOKIEFILE")
+        if cfile:
+            opts["cookiefile"] = cfile.strip()
+    except Exception:
+        pass
+    return opts
+
+
 def get_yt_audio(link: str, no_cache: bool = False) -> yt_audio | None:
     base_dir = "music/YouTube"
     index_path = os.path.join(base_dir, "cache_index.json")
@@ -209,7 +230,7 @@ def get_yt_audio(link: str, no_cache: bool = False) -> yt_audio | None:
             target_path = os.path.join(song_dir, "song.m4a")
 
             ydl_opts = {
-                "format": "m4a/bestaudio/best",
+                "format": "bestaudio[acodec^=mp4a][ext=m4a]/bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": os.path.join(song_dir, "song.%(ext)s"),
                 "postprocessors": [
                     {
@@ -218,7 +239,10 @@ def get_yt_audio(link: str, no_cache: bool = False) -> yt_audio | None:
                     }
                 ],
                 "overwrites": True,
+                "quiet": True,
+                "noprogress": True,
             }
+            ydl_opts.update(_cookies_opts_from_env())
             with YoutubeDL(ydl_opts) as ydl:
                 info2 = ydl.extract_info(link, download=True)
                 title = info2.get("title", title)
@@ -263,7 +287,7 @@ def get_yt_audio(link: str, no_cache: bool = False) -> yt_audio | None:
         target_path = os.path.join(song_dir, "song.m4a")
 
         ydl_opts = {
-            "format": "m4a/bestaudio/best",
+            "format": "bestaudio[acodec^=mp4a][ext=m4a]/bestaudio[ext=m4a]/bestaudio/best",
             "outtmpl": os.path.join(song_dir, "song.%(ext)s"),
             "postprocessors": [
                 {
@@ -272,7 +296,10 @@ def get_yt_audio(link: str, no_cache: bool = False) -> yt_audio | None:
                 }
             ],
             "overwrites": False,
+            "quiet": True,
+            "noprogress": True,
         }
+        ydl_opts.update(_cookies_opts_from_env())
         with YoutubeDL(ydl_opts) as ydl:
             info2 = ydl.extract_info(link, download=True)
             # Prefer updated metadata if available
