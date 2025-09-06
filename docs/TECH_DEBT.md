@@ -27,6 +27,19 @@ Unit Testing TODOs (new features)
   - Integration flow with/without AudD; missing metadata; local/linked audio.
   - No crash if lyrics unavailable; still exports chart.
 
+- audio_io.py: ffmpeg-based loader + duration helper
+  - Mocked runs with/without ffmpeg/ffprobe in PATH; fallback to librosa.
+  - Decode mono/stereo; resample to requested `sr`; dtype/shape invariants.
+  - get_duration cross-check vs librosa within tolerance; error paths on non-audio files.
+- main.py: BPM estimation with `librosa.feature.rhythm.tempo`
+  - Regression vs previous alias on small corpus within tolerance; hop_length impact.
+- inference/input_transform.py + training/data_preparation.py
+  - Ensure consistent spectrogram shapes and `sr` when using `load_audio`.
+  - Augmentation path still produces expected frame counts and padding behavior.
+- inference/packager.py: OGG conversion via ffmpeg with soundfile fallback
+  - Convert short fixture; verify output codec/sample rate/duration within tolerance.
+  - Exercise fallback path by simulating missing ffmpeg; no crash/segfault when writing OGG.
+
 General
 - Add fixture LRC/VTT samples and golden MIDI for quick validation.
 - Consider dependency-injection for HTTP and yt_dlp in tests to avoid network.
