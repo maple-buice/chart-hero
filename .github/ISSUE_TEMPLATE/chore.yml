@@ -1,0 +1,15 @@
+name: Chore
+description: Maintenance task or refactor
+labels: [chore]
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: e.g., Refactor lyrics parser to support phrases
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details

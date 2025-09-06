@@ -1,0 +1,23 @@
+name: Add issues/PRs to Project
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request:
+    types: [opened, reopened]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add to GitHub Project v2
+        uses: actions/add-to-project@v0.5.0
+        with:
+          project-url: https://github.com/users/maple-buice/projects/1
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}

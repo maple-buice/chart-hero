@@ -1,0 +1,16 @@
+name: Test
+description: Add or improve tests
+labels: [testing]
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: e.g., Add unit tests for LRC/VTT parsing
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What should be covered?

@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest a new feature or enhancement
+labels: [feature]
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line description of the feature
+      placeholder: e.g., Add synced lyrics export to notes.mid
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What problem does this solve? Proposed approach.
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+    validations:
+      required: false
