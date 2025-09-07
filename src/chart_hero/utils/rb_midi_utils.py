@@ -81,8 +81,8 @@ class RbMidiProcessor:
 
         label = torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
         if active is None:
-            # No gem notes found; return empty labels
-            return label
+            # No Expert-difficulty drum gems found; skip this chart
+            return None
 
         start = diff_start[active]
 
