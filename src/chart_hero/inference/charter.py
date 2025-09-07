@@ -276,11 +276,32 @@ class Charter:
                     else:
                         keep_mask = torch.ones_like(seg_probs, dtype=torch.bool)
 
+                    # Pre-compute a positive-valued spectrogram for light-weight spectral gates
+                    # seg["spec"] is log-mel (dB-ish) multiplied by an onset envelope.
+                    # Convert to a positive scale that preserves relative band energy.
+                    seg_spec = seg["spec"]
+                    if isinstance(seg_spec, np.ndarray):
+                        spec_pos = seg_spec - float(np.min(seg_spec)) + 1e-6
+                    else:
+                        spec_pos = np.asarray(seg_spec)
+                        spec_pos = spec_pos - float(np.min(spec_pos)) + 1e-6
+
+                    # Cymbal gating knobs
+                    hf_gate = getattr(self.config, "cymbal_highfreq_ratio_gate", None)
+                    hf_cut = float(
+                        getattr(self.config, "cymbal_highfreq_cutoff_mel", 0.7)
+                    )
+
                     for t in range(T_p):
                         p_t = seg_probs[t]  # [C]
                         km_t = keep_mask[t]
                         # Binary activations by threshold
                         act = (p_t >= thr_row) & km_t
+
+                        # Map to frame center using kernel size and stride (for gates that look at the input feature)
+                        frame_idx = (
+                            seg["start_frame"] + t * stride_frames + (patch // 2)
+                        )
 
                         # Optional onset gate: require onset probability >= threshold
                         if onset_probs is not None:
@@ -297,6 +318,31 @@ class Charter:
                         if gate is not None:
                             if float(p_t.max().item()) < float(gate):
                                 continue
+
+                        # Optional spectral gate to suppress cymbal FPs caused by pitched trills, vocals, etc.
+                        # Require a minimum fraction of energy in the high-mel bands around this time.
+                        if hf_gate is not None:
+                            try:
+                                n_m = int(spec_pos.shape[0])
+                                f0 = max(0, int(frame_idx) - 1)
+                                f1 = min(int(frame_idx) + 2, int(spec_pos.shape[1]))
+                                hi0 = int(max(0, min(n_m - 1, round(n_m * hf_cut))))
+                                win = spec_pos[:, f0:f1]
+                                total = float(win.sum())
+                                high = float(win[hi0:, :].sum()) if total > 0 else 0.0
+                                hf_ratio = (high / total) if total > 0 else 0.0
+                                if hf_ratio < float(hf_gate):
+                                    # Zero out cymbal activations before arbitration
+                                    for cym_lab in ("66", "67", "68"):
+                                        cym_i = (
+                                            classes.index(cym_lab)
+                                            if cym_lab in classes
+                                            else None
+                                        )
+                                        if cym_i is not None:
+                                            act[cym_i] = False
+                            except Exception:
+                                pass
 
                         # Pairwise arbitration per color (prefer higher prob when both fire)
                         # Yellow: tom '2' vs hat '67'
@@ -353,10 +399,6 @@ class Charter:
                         ):
                             continue
 
-                        # Map to frame center using kernel size and stride
-                        frame_idx = (
-                            seg["start_frame"] + t * stride_frames + (patch // 2)
-                        )
                         # Apply per-class time offsets by shifting sample position
                         # Use the largest offset among active classes to avoid splitting events
                         add_ms = 0.0

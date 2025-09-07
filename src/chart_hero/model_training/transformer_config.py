@@ -151,6 +151,14 @@ class BaseConfig:
     # Optional per-class time offset (ms) applied to predicted events at decode
     class_time_offsets_ms: list[float] | None = None
 
+    # Inference-only gates
+    # Require a minimum fraction of energy in the high-mel bands to allow cymbal classes
+    # This is useful to suppress pitched trills or vocals that can look transient but lack
+    # broadband high-frequency content typical of cymbals.
+    cymbal_highfreq_ratio_gate: float | None = None  # e.g., 0.28–0.40
+    # Fraction of mel bins considered "high" for the above ratio (0..1 of n_mels)
+    cymbal_highfreq_cutoff_mel: float = 0.7
+
     # Data
     train_batch_size: int = 32
     val_batch_size: int = 32

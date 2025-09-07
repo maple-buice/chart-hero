@@ -145,6 +145,8 @@ def predict_events(
     nms_k: Optional[int] = None,
     class_thresholds: Optional[List[float]] = None,
     class_gains: Optional[List[float]] = None,
+    cymbal_hf_gate: Optional[float] = None,
+    cymbal_hf_cut: Optional[float] = None,
 ) -> List[Event]:
     config = get_config("local")
     # Apply balanced inference defaults if not provided via CLI
@@ -163,38 +165,34 @@ def predict_events(
         # Make tom win require clearly higher prob than cymbal
         if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
             config.tom_over_cymbal_margin = 0.45
-        # Per-class thresholds/gains defaults (only if not provided)
+        # Per-class thresholds default only if no checkpoint calibration file
         if (
             getattr(config, "class_thresholds", None) is None
             and class_thresholds is None
         ):
-            thr_map = {
-                "0": 0.55,
-                "1": 0.62,
-                "2": 0.60,
-                "3": 0.60,
-                "4": 0.65,
-                "66": 0.86,
-                "67": 0.88,
-                "68": 0.92,
-            }
-            classes = get_drum_hits()
-            config.class_thresholds = [
-                float(thr_map.get(c, config.prediction_threshold)) for c in classes
-            ]
-        if getattr(config, "class_gains", None) is None and class_gains is None:
-            gn_map = {
-                "0": 1.00,
-                "1": 1.02,
-                "2": 1.10,
-                "3": 1.10,
-                "4": 1.05,
-                "66": 1.04,
-                "67": 1.06,
-                "68": 0.92,
-            }
-            classes = get_drum_hits()
-            config.class_gains = [float(gn_map.get(c, 1.0)) for c in classes]
+            try:
+                from pathlib import Path as _Path
+
+                thr_path = _Path(model_path).parent / "class_thresholds.json"
+                has_calibrated = thr_path.exists()
+            except Exception:
+                has_calibrated = False
+            if not has_calibrated:
+                thr_map = {
+                    "0": 0.55,
+                    "1": 0.62,
+                    "2": 0.60,
+                    "3": 0.60,
+                    "4": 0.65,
+                    "66": 0.86,
+                    "67": 0.88,
+                    "68": 0.92,
+                }
+                classes = get_drum_hits()
+                config.class_thresholds = [
+                    float(thr_map.get(c, config.prediction_threshold)) for c in classes
+                ]
+        # Do not force class_gains by default; keep None unless provided
     except Exception:
         # If any defaults application fails, continue with existing config
         pass
@@ -207,6 +205,11 @@ def predict_events(
         config.cymbal_margin = float(cymbal_margin)
     if nms_k is not None and nms_k > 0:
         config.event_nms_kernel_patches = int(nms_k)
+    # Optional HF cymbal gate
+    if cymbal_hf_gate is not None:
+        config.cymbal_highfreq_ratio_gate = float(cymbal_hf_gate)
+    if cymbal_hf_cut is not None:
+        config.cymbal_highfreq_cutoff_mel = float(cymbal_hf_cut)
 
     # Mix audio if multiple paths provided
     mixed_path, _ = _maybe_mix_audio(list(audio_paths), config.sample_rate)
@@ -484,6 +487,18 @@ def main() -> None:
         default=None,
         help="Per-class probability multipliers '0=1.0,1=1.0,2=0.4,3=0.4,4=0.4,66=1.0,67=1.1,68=1.1' (values clipped to >=0)",
     )
+    ap.add_argument(
+        "--cymbal-hf-gate",
+        type=float,
+        default=None,
+        help="Require this fraction of mel energy in high bands for cymbal classes (e.g., 0.30–0.40)",
+    )
+    ap.add_argument(
+        "--cymbal-hf-cut",
+        type=float,
+        default=None,
+        help="Fraction of mel bins considered 'high' for the cymbal HF gate (default 0.70)",
+    )
     args = ap.parse_args()
 
     truth = load_truth_from_mid(Path(args.mid))
@@ -567,6 +582,8 @@ def main() -> None:
         nms_k=args.nms_k,
         class_thresholds=per_class_overrides,
         class_gains=gains_list,
+        cymbal_hf_gate=args.cymbal_hf_gate,
+        cymbal_hf_cut=args.cymbal_hf_cut,
     )
     # Apply per-class time offsets to predictions
     if offsets_map:

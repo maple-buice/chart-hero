@@ -23,9 +23,10 @@ MODELS_DIR := models/local_transformer_models
 LATEST_LAST := $(shell ls -t $(MODELS_DIR)/*/last.ckpt 2>/dev/null | head -n 1)
 DEFAULT_MODEL := $(if $(wildcard $(MODELS_DIR)/last.ckpt),$(MODELS_DIR)/last.ckpt,$(MODELS_DIR)/best_model.ckpt)
 INFER_MODEL ?= $(if $(LATEST_LAST),$(LATEST_LAST),$(DEFAULT_MODEL))
-LINK ?= https://youtu.be/KSbwHJMPq8w?si=zKQSXmGtMWH8n1DU
+CRUEL_SUMMER ?= https://youtu.be/SU8Jx80fCmg?si=LGzRTq-vx6xsylmZ
+REDWINE_SUPERNOVA ?= https://youtu.be/KSbwHJMPq8w?si=zKQSXmGtMWH8n1DU
 # Optional: provide multiple links separated by spaces
-LINKS ?= $(LINK)
+LINKS ?= $(CRUEL_SUMMER) $(REDWINE_SUPERNOVA)
 PRESET ?= conservative
 
 .PHONY: help

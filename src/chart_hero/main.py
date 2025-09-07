@@ -277,6 +277,18 @@ def main() -> None:
         help="Aux onset gate threshold (0..1) if model has onset head",
     )
     parser.add_argument(
+        "--cymbal-hf-gate",
+        type=float,
+        default=None,
+        help="Require this fraction of mel energy in high bands for cymbals (e.g., 0.30–0.40)",
+    )
+    parser.add_argument(
+        "--cymbal-hf-cut",
+        type=float,
+        default=None,
+        help="Fraction of mel bins considered 'high' for the cymbal HF gate (default 0.70)",
+    )
+    parser.add_argument(
         "--clonehero-root",
         type=str,
         default=None,
@@ -505,39 +517,34 @@ def main() -> None:
             config.cymbal_margin = 0.30
         if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
             config.tom_over_cymbal_margin = 0.45
-        # Set per-class thresholds/gains if not already set
+        # Set per-class thresholds only if no checkpoint calibration file is present.
+        # Charter will automatically load class_thresholds.json when available.
         if getattr(config, "class_thresholds", None) is None:
-            from chart_hero.model_training.transformer_config import get_drum_hits
+            try:
+                from pathlib import Path as _Path
 
-            thr_map = {
-                "0": 0.55,
-                "1": 0.62,
-                "2": 0.60,
-                "3": 0.60,
-                "4": 0.65,
-                "66": 0.86,
-                "67": 0.88,
-                "68": 0.92,
-            }
-            classes = get_drum_hits()
-            config.class_thresholds = [
-                float(thr_map.get(c, config.prediction_threshold)) for c in classes
-            ]
-        if getattr(config, "class_gains", None) is None:
-            from chart_hero.model_training.transformer_config import get_drum_hits
+                thr_path = _Path(args.model_path).parent / "class_thresholds.json"
+                has_calibrated = thr_path.exists()
+            except Exception:
+                has_calibrated = False
+            if not has_calibrated:
+                from chart_hero.model_training.transformer_config import get_drum_hits
 
-            gn_map = {
-                "0": 1.00,
-                "1": 1.02,
-                "2": 1.10,
-                "3": 1.10,
-                "4": 1.05,
-                "66": 1.04,
-                "67": 1.06,
-                "68": 0.92,
-            }
-            classes = get_drum_hits()
-            config.class_gains = [float(gn_map.get(c, 1.0)) for c in classes]
+                thr_map = {
+                    "0": 0.55,
+                    "1": 0.62,
+                    "2": 0.60,
+                    "3": 0.60,
+                    "4": 0.65,
+                    "66": 0.86,
+                    "67": 0.88,
+                    "68": 0.92,
+                }
+                classes = get_drum_hits()
+                config.class_thresholds = [
+                    float(thr_map.get(c, config.prediction_threshold)) for c in classes
+                ]
+        # Do not force class_gains by default; keep None unless user provides overrides/preset
         # Apply preset overrides if requested
         if args.preset:
             if args.preset == "conservative":
@@ -559,6 +566,11 @@ def main() -> None:
                     # Safe to set even if model lacks onset head; code checks presence
                     if getattr(config, "onset_gate_threshold", None) is None:
                         config.onset_gate_threshold = 0.65
+                    # Add cymbal high-frequency energy gate (suppresses pitched synth/vocals)
+                    if getattr(config, "cymbal_highfreq_ratio_gate", None) is None:
+                        config.cymbal_highfreq_ratio_gate = 0.32
+                    if not hasattr(config, "cymbal_highfreq_cutoff_mel"):
+                        config.cymbal_highfreq_cutoff_mel = 0.70
                 except Exception:
                     pass
                 # Enforce conservative per-class min spacing (ms)
@@ -602,6 +614,11 @@ def main() -> None:
                 config.event_nms_kernel_patches = min(
                     7, int(getattr(config, "event_nms_kernel_patches", 9))
                 )
+                # Relax cymbal HF gate in aggressive mode
+                try:
+                    config.cymbal_highfreq_ratio_gate = None
+                except Exception:
+                    pass
                 if getattr(config, "class_thresholds", None):
                     lab = get_drum_hits()
                     thr = list(config.class_thresholds)
@@ -628,6 +645,10 @@ def main() -> None:
         config.tom_over_cymbal_margin = float(args.tom_over_cymbal_margin)
     if args.onset_gate is not None:
         config.onset_gate_threshold = float(args.onset_gate)
+    if args.cymbal_hf_gate is not None:
+        config.cymbal_highfreq_ratio_gate = float(args.cymbal_hf_gate)
+    if args.cymbal_hf_cut is not None:
+        config.cymbal_highfreq_cutoff_mel = float(args.cymbal_hf_cut)
     # Parse per-class thresholds and gains
     if args.class_thresholds:
         from chart_hero.model_training.transformer_config import get_drum_hits
