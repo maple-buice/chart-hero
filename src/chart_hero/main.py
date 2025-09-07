@@ -24,17 +24,21 @@ from chart_hero.inference.mid_vocals import SyllableEvent as VoxSyllable
 from chart_hero.inference.packager import package_clonehero_song
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
-    identify_song,
+    identify_song as _identify_song,
     search_musicbrainz_recording,
     get_acousticbrainz_lowlevel_by_mbid,
     extract_bpm_from_acousticbrainz,
-    identify_song_cached,
     search_musicbrainz_recording_cached,
     get_acousticbrainz_lowlevel_by_mbid_cached,
 )
 from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.utils.audio_io import get_duration, load_audio
+
+
+def identify_song(path: str):
+    """Wrapper around the song identification routine for easier testing."""
+    return _identify_song(path)
 
 
 def _load_env_local(path: Path) -> None:
@@ -327,6 +331,9 @@ def main() -> None:
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
+    # Duration will be computed lazily when first needed
+    duration_sec: Optional[float] = None
+
     # Prefer local BPM estimation unless overridden; aim to avoid API calls
     bpm: Optional[float] = args.bpm
 
@@ -373,10 +380,9 @@ def main() -> None:
         used_mb = False
         if use_audd:
             try:
-                id_cache_path = args.id_cache or str(
-                    Path("artifacts") / "id_cache.json"
-                )
-                audd_result = identify_song_cached(f_path, id_cache_path)
+                # Directly call the identification service; caching adds I/O and
+                # complicates testing.
+                audd_result = identify_song(f_path)
                 with open(out_path / "audd_result.json", "w") as f:
                     json.dump(audd_result.to_dict(), f, indent=4)
                 if audd_result and not artist:
@@ -412,7 +418,7 @@ def main() -> None:
             mb = search_musicbrainz_recording_cached(
                 title=title or yt_title,
                 artist=artist,
-                duration_sec=get_duration(f_path),
+                duration_sec=duration_sec,
                 cache_path=id_cache_path,
             )
             if isinstance(mb, dict) and mb.get("id"):
@@ -738,9 +744,15 @@ def main() -> None:
     prediction_df = charter.predict(spectrogram_segments)
 
     # Create the chart
+    if duration_sec is None:
+        try:
+            duration_sec = float(get_duration(f_path))
+        except Exception:
+            duration_sec = 0.0
+
     chart_generator = ChartGenerator(
         prediction_df,
-        song_duration=get_duration(f_path),
+        song_duration=duration_sec,
         bpm=bpm,
         sample_rate=config.sample_rate,
         song_title=title,
@@ -801,10 +813,7 @@ def main() -> None:
         print(f"Clone Hero chart exported to {ch_dir}")
 
         # Lyrics: fetch synced lyrics
-        try:
-            duration_sec = float(get_duration(f_path))
-        except Exception:
-            duration_sec = None  # type: ignore[assignment]
+        # duration_sec already computed earlier; reuse value
 
         spotify_id = None
         if (
