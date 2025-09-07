@@ -33,3 +33,11 @@ def test_rb_midi_processor_on_rb2_mid(config):
     assert labels.shape == (frames, config.num_drum_classes)
     # Expect some drum content
     assert torch.sum(labels) > 0
+
+
+def test_rb_midi_processor_returns_none_when_no_drums(config):
+    midi_path = Path("tests/assets/dummy_data/dummy_0.mid")
+    proc = RbMidiProcessor(config)
+    frames = int(10 * (config.sample_rate / config.hop_length))
+    labels = proc.create_label_matrix(midi_path, frames)
+    assert labels is None
