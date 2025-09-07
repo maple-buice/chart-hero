@@ -11,7 +11,12 @@ Usage:
     [--patch-stride 8] [--tol-ms 45]
 
 Outputs a concise summary of per-class precision/recall/F1 and mean/median
-timing offsets (ms) for matched events. Also writes a CSV of events if desired.
+timing offsets (ms) for matched events.
+
+Additions:
+- IOI-binned recall and subdivision recall per class.
+- Optional per-class constant offset application from JSON.
+- Optional metrics CSV export (IOI and subdivision bins).
 """
 
 from dataclasses import dataclass
@@ -240,9 +245,35 @@ def predict_events(
     return ev
 
 
+def _greedy_match_indices(
+    pred_idx: List[int], true_idx: List[int], tol: int
+) -> Dict[int, int]:
+    """Greedy match true indices to pred indices within +/- tol; returns mapping true->pred."""
+    used_true: set[int] = set()
+    mapping: Dict[int, int] = {}
+    for pi, p in enumerate(pred_idx):
+        best = None
+        best_d = tol + 1
+        for ti, t in enumerate(true_idx):
+            if ti in used_true:
+                continue
+            d = abs(p - t)
+            if d <= tol and d < best_d:
+                best = ti
+                best_d = d
+        if best is not None:
+            used_true.add(best)
+            mapping[best] = pi
+    return mapping
+
+
 def match_events(
-    pred: List[Event], true: List[Event], tol_s: float
-) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
+    pred: List[Event],
+    true: List[Event],
+    tol_s: float,
+) -> Tuple[
+    pd.DataFrame, Dict[str, Dict[str, float]], Dict[str, Dict[str, Dict[str, float]]]
+]:
     classes = get_drum_hits()
     # Build per-class lists
     pred_by = {c: [e for e in pred if e.cls == c] for c in classes}
@@ -250,6 +281,11 @@ def match_events(
 
     rows: List[Dict[str, object]] = []
     summary: Dict[str, Dict[str, float]] = {}
+    # IOI/subdivision stats per class
+    ioi_bins_ms = [10, 20, 30, 40, 60, 80, 120, 160, 240]
+    subdiv_keys = ["1/16", "1/32", "1/64", "1/128"]
+    subdiv_vals = [1.0 / 16.0, 1.0 / 32.0, 1.0 / 64.0, 1.0 / 128.0]
+    ioi_summary: Dict[str, Dict[str, Dict[str, float]]] = {}
 
     for c in classes:
         P = pred_by[c]
@@ -272,7 +308,7 @@ def match_events(
             if best is not None:
                 used.add(best)
                 tp += 1
-                offsets.append((P[0].t - T[best].t) if False else (p.t - T[best].t))
+                offsets.append((p.t - T[best].t))
             else:
                 fp += 1
                 rows.append({"cls": c, "type": "FP", "t": p.t})
@@ -296,7 +332,86 @@ def match_events(
             "offset_median_ms": float(np.median(off_ms)) if off_ms else 0.0,
         }
 
-    return pd.DataFrame(rows), summary
+        # Build IOI and subdivision stats for this class
+        # True event indices and times
+        true_idx = list(range(len(T)))
+        # Build greedy mapping using integer indices based on times converted to pseudo-frames at 1 ms resolution
+        # For this evaluator, use tol in samples -> convert times to integer milliseconds for robustness
+        pred_ms_idx = [int(round(p.t * 1000.0)) for p in P]
+        true_ms_idx = [int(round(t.t * 1000.0)) for t in T]
+        tol_ms = int(round(tol_s * 1000.0))
+        mapping = _greedy_match_indices(pred_ms_idx, true_ms_idx, tol_ms)
+
+        # IOI bins
+        bin_totals = {str(b): 0 for b in ioi_bins_ms}
+        bin_hits = {str(b): 0 for b in ioi_bins_ms}
+        # tempo estimate from this file (single tempo approximation)
+        # compute seconds per beat
+        # Get a naive tempo from adjacent true events if available
+        spb_guess = None
+        if len(T) > 1:
+            intervals = [T[i].t - T[i - 1].t for i in range(1, len(T))]
+            # median interval used as rough guide for subdivisions when no MIDI tempo provided downstream
+            med = float(np.median(np.array(intervals))) if intervals else None
+            if med and med > 0:
+                spb_guess = med * 2.0  # crude: assume many are 8ths -> 0.5 beat spacing
+        # Default to 0.5s per beat (~120 bpm) if unknown
+        spb = float(spb_guess or 0.5)
+        sub_totals = {k: 0 for k in subdiv_keys}
+        sub_hits = {k: 0 for k in subdiv_keys}
+        sub_tol = 0.2  # +/-20%
+
+        for i in range(1, len(T)):
+            ioi = (T[i].t - T[i - 1].t) * 1000.0  # ms
+            # IOI bin select
+            b_sel = None
+            for b in ioi_bins_ms:
+                if ioi <= b:
+                    b_sel = str(b)
+                    break
+            if b_sel is None:
+                b_sel = str(ioi_bins_ms[-1])
+            bin_totals[b_sel] += 1
+            if i in mapping:
+                bin_hits[b_sel] += 1
+            # Subdivision: nearest among target fractions of beat
+            beats = (ioi / 1000.0) / spb if spb > 0 else 0.0
+            best_k = None
+            best_err = 1e9
+            for k, v in zip(subdiv_keys, subdiv_vals):
+                err = abs(beats - v) / max(v, 1e-6)
+                if err < best_err:
+                    best_err = err
+                    best_k = k
+            if best_k is not None and best_err <= sub_tol:
+                sub_totals[best_k] += 1
+                if i in mapping:
+                    sub_hits[best_k] += 1
+
+        ioi_summary[c] = {
+            "ioi_bins": {
+                b: {
+                    "total": bin_totals[b],
+                    "hits": bin_hits[b],
+                    "recall": (bin_hits[b] / bin_totals[b])
+                    if bin_totals[b] > 0
+                    else None,
+                }
+                for b in map(str, ioi_bins_ms)
+            },
+            "subdiv_bins": {
+                k: {
+                    "total": sub_totals[k],
+                    "hits": sub_hits[k],
+                    "recall": (sub_hits[k] / sub_totals[k])
+                    if sub_totals[k] > 0
+                    else None,
+                }
+                for k in subdiv_keys
+            },
+        }
+
+    return pd.DataFrame(rows), summary, ioi_summary
 
 
 def main() -> None:
@@ -315,6 +430,18 @@ def main() -> None:
     ap.add_argument("--tol-ms", type=float, default=45.0)
     ap.add_argument(
         "--csv", type=str, default=None, help="Optional path to write FP/FN CSV"
+    )
+    ap.add_argument(
+        "--metrics-csv",
+        type=str,
+        default=None,
+        help="Optional path to write IOI/subdivision metrics CSV",
+    )
+    ap.add_argument(
+        "--offsets-json",
+        type=str,
+        default=None,
+        help="Apply per-class constant offsets (ms) to predictions before matching",
     )
     ap.add_argument(
         "--threshold",
@@ -409,6 +536,26 @@ def main() -> None:
     else:
         gains_list = None
 
+    # Optional per-class offsets (ms)
+    offsets_map: Optional[Dict[str, float]] = None
+    if args.offsets_json:
+        try:
+            import json as _json
+
+            with open(args.offsets_json, "r") as f:
+                data = _json.load(f)
+            if isinstance(data, dict) and "offsets_ms" in data:
+                m = data["offsets_ms"]
+            else:
+                m = data
+            classes = get_drum_hits()
+            if isinstance(m, dict):
+                offsets_map = {str(k): float(v) for k, v in m.items()}
+            elif isinstance(m, list) and len(m) == len(classes):
+                offsets_map = {classes[i]: float(v) for i, v in enumerate(m)}
+        except Exception:
+            offsets_map = None
+
     pred = predict_events(
         args.audio,
         args.model,
@@ -421,7 +568,14 @@ def main() -> None:
         class_thresholds=per_class_overrides,
         class_gains=gains_list,
     )
-    df, summary = match_events(pred, truth, tol_s=args.tol_ms / 1000.0)
+    # Apply per-class time offsets to predictions
+    if offsets_map:
+        shifted: List[Event] = []
+        for e in pred:
+            off_ms = float(offsets_map.get(e.cls, 0.0))
+            shifted.append(Event(t=e.t - off_ms / 1000.0, cls=e.cls))
+        pred = shifted
+    df, summary, ioi = match_events(pred, truth, tol_s=args.tol_ms / 1000.0)
 
     # Print concise summary
     order = get_drum_hits()
@@ -437,6 +591,64 @@ def main() -> None:
     if args.csv:
         Path(args.csv).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(args.csv, index=False)
+
+    # Print IOI and subdivision metrics
+    print("\nIOI-binned recall (per class):")
+    order = get_drum_hits()
+    for c in order:
+        bins = ioi[c]["ioi_bins"]
+        parts = [c]
+        for b in ["10", "20", "30", "40", "60", "80", "120", "160", "240"]:
+            val = bins[b]
+            if val["total"] > 0 and val["recall"] is not None:
+                parts.append(f"{b}ms:{val['recall']:.3f}")
+            else:
+                parts.append(f"{b}ms:n/a")
+        print("  ".join(parts))
+    print("\nSubdivision recall (per class):")
+    for c in order:
+        bins = ioi[c]["subdiv_bins"]
+        parts = [c]
+        for k in ["1/16", "1/32", "1/64", "1/128"]:
+            val = bins[k]
+            if val["total"] > 0 and val["recall"] is not None:
+                parts.append(f"{k}:{val['recall']:.3f}")
+            else:
+                parts.append(f"{k}:n/a")
+        print("  ".join(parts))
+
+    # Optional metrics CSV export
+    if args.metrics_csv:
+        outp = Path(args.metrics_csv)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        import csv as _csv
+
+        with outp.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["class", "metric", "bin_label", "support", "hits", "recall"])
+            for c in order:
+                for b, vals in ioi[c]["ioi_bins"].items():
+                    w.writerow(
+                        [
+                            c,
+                            "ioi",
+                            b,
+                            int(vals["total"]),
+                            int(vals["hits"]),
+                            vals["recall"] if vals["total"] > 0 else None,
+                        ]
+                    )
+                for k, vals in ioi[c]["subdiv_bins"].items():
+                    w.writerow(
+                        [
+                            c,
+                            "subdiv",
+                            k,
+                            int(vals["total"]),
+                            int(vals["hits"]),
+                            vals["recall"] if vals["total"] > 0 else None,
+                        ]
+                    )
 
 
 if __name__ == "__main__":

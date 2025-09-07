@@ -12,7 +12,12 @@ from librosa.feature.rhythm import tempo as lr_tempo
 from chart_hero.inference.artwork import generate_art
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
-from chart_hero.inference.lyrics import get_synced_lyrics, to_rb_tokens
+from chart_hero.inference.lyrics import (
+    get_synced_lyrics,
+    to_rb_tokens,
+    Lyrics,
+    parse_lrc,
+)
 from chart_hero.inference.mid_export import write_notes_mid
 from chart_hero.inference.mid_vocals import Phrase as VoxPhrase
 from chart_hero.inference.mid_vocals import SyllableEvent as VoxSyllable
@@ -138,6 +143,12 @@ def main() -> None:
         help="Run without making API calls to AudD.",
     )
     parser.add_argument(
+        "--lyrics-cache",
+        type=str,
+        default=None,
+        help="Path to a JSON file to cache synced lyrics (LRC) across runs.",
+    )
+    parser.add_argument(
         "--export-clonehero",
         action="store_true",
         help="Export a Clone Hero-ready folder with notes.mid and song.ini.",
@@ -167,6 +178,21 @@ def main() -> None:
         type=float,
         default=None,
         help="Override BPM (skips estimation/API)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        choices=[
+            "local",
+            "local_performance",
+            "local_max_performance",
+            "overnight_default",
+            "local_highres",
+            "local_micro",
+            "cloud",
+        ],
+        help="Model config to use for inference; if omitted, attempts to adapt to checkpoint",
     )
     parser.add_argument(
         "--patch-stride",
@@ -297,8 +323,54 @@ def main() -> None:
     if bpm is None:
         bpm = 120.0
 
-    # Process the audio file to get the spectrogram tensors
-    config = get_config("local")
+    # Build config (default local), then adapt to checkpoint if present
+    config = get_config(args.config or "local")
+    # If a checkpoint is provided, try to import its structural hyperparameters
+    try:
+        import torch as _torch
+
+        if args.model_path and Path(args.model_path).exists():
+            ckpt = _torch.load(args.model_path, map_location="cpu")
+            state = ckpt.get("state_dict", ckpt)
+            # Apply hparams dictionary when available
+            hparams = ckpt.get("hyper_parameters") or ckpt.get("hparams")
+            if isinstance(hparams, dict):
+                for k in (
+                    "sample_rate",
+                    "n_mels",
+                    "n_fft",
+                    "hop_length",
+                    "hidden_size",
+                    "num_layers",
+                    "num_heads",
+                    "intermediate_size",
+                    "patch_size",
+                    "patch_stride",
+                    "enable_onset_head",
+                ):
+                    if k in hparams:
+                        try:
+                            setattr(config, k, hparams[k])
+                        except Exception:
+                            pass
+            # Fallback: infer from weights
+            pe = state.get("model.patch_embed.projection.weight")
+            if pe is not None and hasattr(pe, "shape") and len(pe.shape) == 3:
+                embed_dim, n_mels, patch_time = (
+                    int(pe.shape[0]),
+                    int(pe.shape[1]),
+                    int(pe.shape[2]),
+                )
+                try:
+                    config.hidden_size = embed_dim
+                    config.n_mels = n_mels
+                    pt = list(getattr(config, "patch_size", (patch_time, 16)))
+                    pt[0] = patch_time
+                    config.patch_size = tuple(pt)  # type: ignore[assignment]
+                except Exception:
+                    pass
+    except Exception:
+        pass
     # Apply balanced inference defaults unless overridden by CLI
     try:
         if getattr(config, "activity_gate", None) is None:
@@ -355,6 +427,44 @@ def main() -> None:
                 config.event_nms_kernel_patches = max(
                     11, int(getattr(config, "event_nms_kernel_patches", 9))
                 )
+                # Strengthen arbitration margins and onset gating (if onset head exists)
+                try:
+                    config.cymbal_margin = max(
+                        0.40, float(getattr(config, "cymbal_margin", 0.1) or 0.1)
+                    )
+                    config.tom_over_cymbal_margin = max(
+                        0.55,
+                        float(getattr(config, "tom_over_cymbal_margin", 0.35) or 0.35),
+                    )
+                    # Safe to set even if model lacks onset head; code checks presence
+                    if getattr(config, "onset_gate_threshold", None) is None:
+                        config.onset_gate_threshold = 0.65
+                except Exception:
+                    pass
+                # Enforce conservative per-class min spacing (ms)
+                try:
+                    base_map = getattr(config, "min_spacing_ms_map", None) or {}
+                    conservative_map = {
+                        "0": 32.0,  # Kick
+                        "1": 30.0,  # Snare
+                        "2": 28.0,  # HiTom
+                        "3": 30.0,  # MidTom
+                        "4": 32.0,  # LowTom
+                        "66": 26.0,  # Crash
+                        "67": 28.0,  # HiHat
+                        "68": 30.0,  # Ride
+                    }
+                    base_map.update(
+                        {
+                            k: max(base_map.get(k, 0.0), v)
+                            for k, v in conservative_map.items()
+                        }
+                    )
+                    config.min_spacing_ms_map = base_map
+                    if getattr(config, "min_spacing_ms_default", None) is None:
+                        config.min_spacing_ms_default = 24.0
+                except Exception:
+                    pass
                 # Harden cymbal thresholds slightly if present
                 if getattr(config, "class_thresholds", None):
                     lab = get_drum_hits()
@@ -545,6 +655,24 @@ def main() -> None:
                 spotify_id = None
 
         lyrics = None
+        # Lyrics cache setup
+        cache_key: Optional[str] = None
+        cache_path: Optional[Path] = None
+        try:
+            cache_path = (
+                Path(args.lyrics_cache)
+                if args.lyrics_cache
+                else (Path("artifacts") / "lyrics_cache.json")
+            )
+            if args.link:
+                cache_key = f"yt:{args.link}"
+            if spotify_id:
+                cache_key = f"sp:{spotify_id}"
+            if not cache_key and title:
+                cache_key = f"meta:{artist or ''}|{title}"
+        except Exception:
+            cache_key = None
+            cache_path = None
         try:
             # Logging inputs for lyrics fetch
             print(
@@ -563,16 +691,65 @@ def main() -> None:
                     ensure_ascii=False,
                 ),
             )
-            lyrics = get_synced_lyrics(
-                link=args.link,
-                title=title,
-                artist=artist,
-                album=getattr(audd_result, "album", None)
-                if "audd_result" in locals() and audd_result
-                else None,
-                duration=duration_sec,
-                spotify_id=spotify_id,
-            )
+            # Try cache first if available (LRC)
+            cache_used = False
+            if cache_key and cache_path and cache_path.exists():
+                try:
+                    with cache_path.open("r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                    ent = payload.get(cache_key)
+                    if isinstance(ent, dict) and isinstance(ent.get("raw_lrc"), str):
+                        lrc = ent["raw_lrc"]
+                        lines = parse_lrc(lrc)
+                        if lines:
+                            lyrics = Lyrics(
+                                source=str(ent.get("source") or "cache"),
+                                confidence=float(ent.get("confidence", 0.8)),
+                                lines=lines,
+                                raw_lrc=lrc,
+                            )
+                            cache_used = True
+                            print("Loaded lyrics from cache.")
+                except Exception:
+                    pass
+            if not cache_used:
+                lyrics = get_synced_lyrics(
+                    link=args.link,
+                    title=title,
+                    artist=artist,
+                    album=getattr(audd_result, "album", None)
+                    if "audd_result" in locals() and audd_result
+                    else None,
+                    duration=duration_sec,
+                    spotify_id=spotify_id,
+                )
+                # Save to cache if we have raw LRC
+                try:
+                    if (
+                        lyrics
+                        and getattr(lyrics, "raw_lrc", None)
+                        and cache_key
+                        and cache_path is not None
+                    ):
+                        cache_path.parent.mkdir(parents=True, exist_ok=True)
+                        payload: dict = {}
+                        if cache_path.exists():
+                            try:
+                                with cache_path.open("r", encoding="utf-8") as f:
+                                    payload = json.load(f)
+                            except Exception:
+                                payload = {}
+                        payload[cache_key] = {
+                            "source": lyrics.source,
+                            "confidence": lyrics.confidence,
+                            "raw_lrc": lyrics.raw_lrc,
+                            "title": title,
+                            "artist": artist,
+                        }
+                        with cache_path.open("w", encoding="utf-8") as f:
+                            json.dump(payload, f, indent=2)
+                except Exception:
+                    pass
             if lyrics is None:
                 print("No synced lyrics found.")
             else:

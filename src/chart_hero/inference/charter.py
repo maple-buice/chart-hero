@@ -18,8 +18,66 @@ from .types import PredictionRow, Segment, TransformerConfig
 class Charter:
     def __init__(self, config: TransformerConfig, model_path: str | os.PathLike[str]):
         self.config = config
+        # Attempt to read structural hyperparameters from the checkpoint to avoid
+        # shape mismatches (e.g., patch_size, hidden_size, time_embed length).
+        max_time_patches = None
+        try:
+            import torch as _torch
+
+            ckpt = _torch.load(str(model_path), map_location="cpu")
+            state = ckpt.get("state_dict", ckpt)
+            # Derive time positional embedding length
+            te = state.get("model.pos_encoding.time_embed")
+            if te is not None and hasattr(te, "shape") and len(te.shape) == 3:
+                max_time_patches = int(te.shape[1])
+            # Derive patch/kernel size and hidden dims from patch_embed weights
+            pe = state.get("model.patch_embed.projection.weight")
+            if pe is not None and hasattr(pe, "shape") and len(pe.shape) == 3:
+                # shape: [embed_dim, n_mels, patch_time]
+                embed_dim, n_mels, patch_time = (
+                    int(pe.shape[0]),
+                    int(pe.shape[1]),
+                    int(pe.shape[2]),
+                )
+                # Apply to config if differs
+                try:
+                    self.config.hidden_size = embed_dim  # type: ignore[attr-defined]
+                    self.config.n_mels = n_mels  # type: ignore[attr-defined]
+                    pt = list(getattr(self.config, "patch_size", (patch_time, 16)))
+                    pt[0] = patch_time
+                    self.config.patch_size = tuple(pt)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            # If hyperparameters saved by Lightning exist, prefer them for consistency
+            hparams = ckpt.get("hyper_parameters") or ckpt.get("hparams")
+            if isinstance(hparams, dict):
+                for k in (
+                    "sample_rate",
+                    "n_mels",
+                    "n_fft",
+                    "hop_length",
+                    "hidden_size",
+                    "num_layers",
+                    "num_heads",
+                    "intermediate_size",
+                    "patch_size",
+                    "patch_stride",
+                    "enable_onset_head",
+                ):
+                    if k in hparams:
+                        try:
+                            setattr(self.config, k, hparams[k])
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Load model with strict=False to allow criterion buffers etc. to differ
         self.model = DrumTranscriptionModule.load_from_checkpoint(
-            str(model_path), config=config
+            str(model_path),
+            config=self.config,
+            max_time_patches=max_time_patches,
+            strict=False,
         )
         self.model.eval()
         # Try to load calibrated per-class thresholds saved during training

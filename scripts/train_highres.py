@@ -19,13 +19,20 @@ from shutil import which
 
 def main() -> None:
     py = sys.executable or which("python") or "python3"
-    args = [
-        py,
-        "-m",
-        "chart_hero.model_training.train_transformer",
-        "--config",
-        "local_highres",
-    ] + sys.argv[1:]
+    # If caller doesn't specify --data-dir, default to the high-res dataset path
+    passed = " ".join(sys.argv[1:])
+    add_data = "--data-dir" not in passed
+    args = (
+        [
+            py,
+            "-m",
+            "chart_hero.model_training.train_transformer",
+            "--config",
+            "local_highres",
+        ]
+        + (["--data-dir", "datasets/processed_highres"] if add_data else [])
+        + sys.argv[1:]
+    )
     # Run and forward exit code
     res = subprocess.run(args)
     sys.exit(res.returncode)

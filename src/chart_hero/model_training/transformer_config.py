@@ -350,7 +350,11 @@ class LocalHighResConfig(LocalConfig):
     # Class imbalance handling
     pos_weight_cap: float = 10.0  # cap auto pos_weight
 
-    # Sequence length can get large with stride=1; prefer 8s windows on stable MPS
+    # Default dataset paths for high-res npy shards
+    data_dir: str = "datasets/processed_highres"
+    audio_dir: str = "datasets/processed_highres"
+
+    # Sequence length can get large with stride=1; prefer shorter segments for stability
     max_audio_length: float = 45.0
 
     # Batching tuned down for the higher sequence length

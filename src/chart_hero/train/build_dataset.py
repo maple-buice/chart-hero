@@ -86,6 +86,30 @@ def list_stems(song_dir: Path) -> dict[str, Path]:
     return stems
 
 
+def parse_song_ini(song_dir: Path) -> dict[str, str]:
+    """Parse song.ini for simple metadata (artist, name, charter)."""
+    ini_path = song_dir / "song.ini"
+    info: dict[str, str] = {}
+    if not ini_path.exists():
+        return info
+    try:
+        with ini_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip().lower()
+                v = v.strip()
+                if k in ("artist", "name", "charter"):
+                    info[k] = v
+    except Exception:
+        pass
+    return info
+
+
 def load_audio_for_training(
     song_dir: Path, config: BaseConfig
 ) -> tuple[np.ndarray, str]:
@@ -306,11 +330,12 @@ def dilate_labels_time(labels: torch.Tensor, frames: int) -> torch.Tensor:
 
 def estimate_and_apply_global_offset(
     y: np.ndarray, labels: torch.Tensor, config: BaseConfig
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, int, float]:
     """Estimate a small global offset (in frames) aligning labels to audio onset envelope.
 
     Uses librosa onset strength at the model's hop_length, searches lags within ±250 ms.
-    Returns labels shifted accordingly (zeros filled).
+    Returns (shifted_labels, best_lag_frames, best_score), where best_score is
+    a normalized correlation-like score (higher is better alignment).
     """
     try:
         hop = int(config.hop_length)
@@ -320,7 +345,7 @@ def estimate_and_apply_global_offset(
         lab_sum = labels.sum(dim=1).detach().cpu().numpy().astype(np.float32)
         T = min(len(onset_env), lab_sum.shape[0])
         if T <= 1:
-            return labels
+            return labels, 0, 0.0
         a = onset_env[:T]
         b = lab_sum[:T]
 
@@ -347,12 +372,15 @@ def estimate_and_apply_global_offset(
                 yv = b
             if len(x) <= 1 or len(yv) <= 1:
                 continue
-            score = float(np.dot(x, yv) / max(1, len(x)))
+            # normalized dot to reduce scale dependency
+            xn = x / (float(np.linalg.norm(x)) + 1e-8)
+            yn = yv / (float(np.linalg.norm(yv)) + 1e-8)
+            score = float(np.dot(xn, yn))
             if score > best_score:
                 best_score = score
                 best_lag = lag
         if best_lag == 0:
-            return labels
+            return labels, int(best_lag), float(best_score)
         # Positive lag means labels trail audio -> shift labels left by lag
         shifted = torch.zeros_like(labels)
         if best_lag > 0:
@@ -360,9 +388,9 @@ def estimate_and_apply_global_offset(
         else:
             lag = -best_lag
             shifted[lag:, :] = labels[:-lag, :]
-        return shifted
+        return shifted, int(best_lag), float(best_score)
     except Exception:
-        return labels
+        return labels, 0, 0.0
 
 
 def save_pair(
@@ -391,17 +419,121 @@ def main() -> None:
     ap.add_argument("--config", type=str, default="local_highres")
     ap.add_argument("--max-files", type=int, default=None)
     ap.add_argument("--splits", type=float, nargs=3, default=[0.8, 0.1, 0.1])
+    ap.add_argument(
+        "--json-index-dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional directory of JSON chart entries (artifacts). When provided, restrict candidates to those paths."
+        ),
+    )
+    ap.add_argument(
+        "--limit-songs",
+        type=int,
+        default=None,
+        help="Pick at most this many candidate songs using simple heuristics (prefer MIDI + stems).",
+    )
+    ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument(
+        "--discovery-cache",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to cache discovered song folders as JSON for faster subsequent runs. "
+            "Defaults to <out-dir>/discovery_cache.json if not provided."
+        ),
+    )
+    ap.add_argument(
+        "--refresh-discovery",
+        action="store_true",
+        help="Ignore any existing discovery cache and rescan roots.",
+    )
+    ap.add_argument(
+        "--min-align-score",
+        type=float,
+        default=0.05,
+        help="Skip charts whose global onset alignment score is below this threshold",
+    )
+    ap.add_argument(
+        "--dedupe",
+        action="store_true",
+        help="Skip likely duplicate audio by simple perceptual hashing of spectrogram",
+    )
     args = ap.parse_args()
 
     config = get_config(args.config)
     processor = SpectrogramProcessor(config)
 
-    folders = find_song_folders(args.roots)
+    # Discovery with optional caching
+    cache_path: Optional[Path]
+    if args.discovery_cache:
+        cache_path = Path(args.discovery_cache)
+    else:
+        cache_path = Path(args.out_dir) / "discovery_cache.json"
+
+    folders: List[Path]
+    use_cache = False
+    if (not args.refresh_discovery) and cache_path and cache_path.exists():
+        try:
+            import json as _json
+
+            payload = _json.loads(cache_path.read_text())
+            roots_cached = payload.get("roots")
+            if isinstance(roots_cached, list) and all(
+                isinstance(x, str) for x in roots_cached
+            ):
+                if set(map(str, args.roots)) == set(roots_cached):
+                    folders = [
+                        Path(x)
+                        for x in payload.get("folders", [])
+                        if isinstance(x, str)
+                    ]
+                    use_cache = bool(folders)
+        except Exception:
+            use_cache = False
+    if not use_cache:
+        folders = find_song_folders(args.roots)
+        # Persist cache for next run
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            import json as _json
+
+            cache_path.write_text(
+                _json.dumps(
+                    {
+                        "roots": list(map(str, args.roots)),
+                        "folders": [str(x) for x in folders],
+                    },
+                    indent=2,
+                )
+            )
+        except Exception:
+            pass
     if not folders:
         print("No Clone Hero songs found.")
         return
+    # Optional: restrict to folders referenced by JSON index
+    if args.json_index_dir:
+        json_root = Path(args.json_index_dir)
+        if json_root.exists():
+            json_dirs: set[Path] = set()
+            for jp in json_root.rglob("*.json"):
+                try:
+                    import json as _json
+
+                    with jp.open("r") as f:
+                        payload = _json.load(f)
+                    path_str = payload.get("path") or payload.get("notes")
+                    if isinstance(path_str, str) and path_str:
+                        p = Path(path_str)
+                        if p.exists():
+                            json_dirs.add(p.parent)
+                except Exception:
+                    continue
+            if json_dirs:
+                folders = [d for d in folders if d in json_dirs]
     if args.max_files is not None and len(folders) > args.max_files:
-        rng = np.random.default_rng(seed=42)
+        rng = np.random.default_rng(seed=args.seed)
         idx = rng.choice(len(folders), size=args.max_files, replace=False)
         folders = [folders[int(i)] for i in sorted(idx)]
     print(f"Found {len(folders)} candidate song folders")
@@ -418,19 +550,71 @@ def main() -> None:
             if p.exists():
                 recs.append(Record(song_dir=d, notes_path=p, source="chart"))
                 break
+    # If requested, choose a limited number of songs guided by simple audio/chart heuristics
+    if args.limit_songs is not None and len(recs) > args.limit_songs:
+
+        def _score_record(r: Record) -> int:
+            score = 0
+            if r.source == "midi":
+                score += 2
+            stems = list_stems(r.song_dir)
+            drum_keys = [k for k in stems.keys() if "drum" in k]
+            other_keys = [
+                k
+                for k in stems.keys()
+                if any(
+                    w in k
+                    for w in ("guitar", "bass", "vocals", "rhythm", "keys", "backing")
+                )
+            ]
+            if drum_keys and other_keys:
+                score += 3
+            elif drum_keys:
+                score += 1
+            # Prefer Expert when detectable from path/name
+            pstr = str(r.notes_path).lower()
+            if "expert" in pstr:
+                score += 1
+            # Penalize if no obvious audio (rare)
+            if choose_audio_path(r.song_dir) is None and not drum_keys:
+                score -= 2
+            return score
+
+        scored: list[tuple[Record, int]] = [(r, _score_record(r)) for r in recs]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        # Bias selection to the top tier but keep diversity using RNG
+        topK = max(args.limit_songs * 3, args.limit_songs)
+        top = scored[: min(len(scored), topK)]
+        rng = np.random.default_rng(seed=args.seed)
+        if len(top) > args.limit_songs:
+            sel = sorted(
+                rng.choice(len(top), size=args.limit_songs, replace=False).tolist()
+            )
+            recs = [top[i][0] for i in sel]
+        else:
+            recs = [r for r, _ in top]
+
     if not recs:
         print("No usable charts found (notes.mid / notes.chart / notes.txt).")
         return
 
-    # Simple split by folder (deterministic shuffle)
-    rng = np.random.default_rng(seed=1234)
-    order = list(range(len(recs)))
-    rng.shuffle(order)
-    n = len(order)
-    n_train = int(args.splits[0] * n)
-    n_val = int(args.splits[1] * n)
-    idx_train = set(order[:n_train])
-    idx_val = set(order[n_train : n_train + n_val])
+    # Group-aware split by (artist|name|charter) to avoid leakage
+    meta = [parse_song_ini(r.song_dir) for r in recs]
+    groups: Dict[str, List[int]] = {}
+    for i, r in enumerate(recs):
+        m = meta[i]
+        key = f"{m.get('artist', '?')}|{m.get('name', '?')}|{m.get('charter', '?')}"
+        groups.setdefault(key, []).append(i)
+    rng = np.random.default_rng(seed=args.seed)
+    keys = list(groups.keys())
+    rng.shuffle(keys)
+    n_groups = len(keys)
+    g_train = int(round(args.splits[0] * n_groups))
+    g_val = int(round(args.splits[1] * n_groups))
+    key_train = set(keys[:g_train])
+    key_val = set(keys[g_train : g_train + g_val])
+    idx_train = {i for k in key_train for i in groups[k]}
+    idx_val = {i for k in key_val for i in groups[k]}
 
     out_root = Path(args.out_dir)
     out_train = out_root / "train"
@@ -442,10 +626,35 @@ def main() -> None:
     classes = get_drum_hits()
     written = 0
     skipped = 0
+    desynced = 0
+    dup_skipped = 0
+    domain_counts: Dict[str, int] = {}
+    seen_hashes: set[str] = set()
+
+    def _spec_phash(spec: torch.Tensor, target_size: Tuple[int, int] = (16, 16)) -> str:
+        # spec: (1,F,T) or (F,T)
+        arr = spec.squeeze(0).detach().cpu().numpy()
+        F, T = arr.shape
+        fh, th = target_size
+        # average pool to fh x th
+        f_bins = np.array_split(np.arange(F), fh)
+        t_bins = np.array_split(np.arange(T), th)
+        small = np.zeros((fh, th), dtype=np.float32)
+        for i, fb in enumerate(f_bins):
+            for j, tb in enumerate(t_bins):
+                small[i, j] = float(np.mean(arr[np.ix_(fb, tb)]))
+        med = float(np.median(small))
+        bits = (small > med).astype(np.uint8).flatten()
+        # pack bits to hex
+        # 256 bits -> 32 bytes -> 64 hex
+        by = np.packbits(bits)
+        return by.tobytes().hex()
+
     for i, rec in enumerate(recs):
         try:
             # Load/mix audio and convert to spectrogram
             y, domain = load_audio_for_training(rec.song_dir, config)
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
             if y.size == 0:
                 skipped += 1
                 continue
@@ -465,7 +674,10 @@ def main() -> None:
                 skipped += 1
                 continue
             # Global offset correction via onset alignment (±250 ms)
-            labels = estimate_and_apply_global_offset(y, labels, config)
+            labels, lag, score = estimate_and_apply_global_offset(y, labels, config)
+            if not np.isfinite(score) or score < float(args.min_align_score):
+                desynced += 1
+                continue
             # Optional label dilation for training robustness
             dil = int(getattr(config, "label_dilation_frames", 0) or 0)
             if dil > 0:
@@ -473,6 +685,16 @@ def main() -> None:
 
             # Save pair
             base = f"{rec.song_dir.parent.name}_{rec.song_dir.name}_{i:06d}"
+            # Duplicate detection (on spectrogram) if requested
+            if args.dedupe:
+                try:
+                    h = _spec_phash(spec)
+                    if h in seen_hashes:
+                        dup_skipped += 1
+                        continue
+                    seen_hashes.add(h)
+                except Exception:
+                    pass
             split_dir = (
                 out_train if i in idx_train else (out_val if i in idx_val else out_test)
             )
@@ -484,8 +706,12 @@ def main() -> None:
             continue
 
     print(
-        f"Done. Wrote {written} examples ({out_root}). Skipped {skipped} due to missing audio/labels."
+        f"Done. Wrote {written} examples ({out_root}). Skipped {skipped} missing, {desynced} desynced, {dup_skipped} duplicates."
     )
+    if domain_counts:
+        print("Domain distribution:")
+        for k, v in sorted(domain_counts.items(), key=lambda x: -x[1]):
+            print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

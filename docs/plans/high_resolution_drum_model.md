@@ -49,7 +49,7 @@ Milestones & Deliverables
 1) Metrics & Evaluator upgrades (deliverable: evaluator reports)
    - [x] IOI‑binned recall/precision: compute per‑class recall vs inter‑onset‑interval buckets (≤10, ≤20, ≤30, … ms).
    - [x] Subdivision recall: using the song BPM/tempo map, compute recall at target subdivisions (16th/32nd/64th/128th windows).
-   - [ ] Constant per‑class offset correction learned on dev; apply during evaluation.
+   - [x] Constant per‑class offset correction learned on dev; apply during evaluation. (tools: `scripts/evaluate_highres_metrics.py --learn-offsets/--save-offsets`, apply via `--offsets-json` in `chart_hero.eval.evaluate_chart` and `chart_hero.main`).
    - [x] Output CSV and pretty summary; keep current summary for continuity.
 
 2) High‑Resolution Config & Inference (deliverable: config + CLI)
@@ -133,21 +133,21 @@ Milestones & Deliverables
 
 Implementation Tasks
 - Metrics
-  - [ ] Add IOI/subdivision stats to `chart_hero.eval.evaluate_chart` and CSV.
-  - [ ] Per‑class constant offset calibration tool and application.
+  - [x] Add IOI/subdivision stats to `chart_hero.eval.evaluate_chart` and CSV (new `--metrics-csv`, printed per-class bins).
+  - [x] Per‑class constant offset calibration tool and application (learn via `scripts/evaluate_highres_metrics.py`; apply via `--offsets-json`).
 - Config/Model
-  - [ ] Add `local_highres` config (hop=128, patch_size=(8,16), stride=1, dilation=3, tolerance=3, focal loss on).
-  - [ ] Add onset auxiliary head (+ optional offset head) in `transformer_model.py` + `lightning_module.py`.
+  - [x] Add `local_highres` config (hop=128, patch_size=(8,16), stride=1, dilation=3, tolerance=3, focal loss on).
+  - [x] Add onset auxiliary head (+ optional offset head) in `transformer_model.py` + `lightning_module.py`.
 - Dataset Builder
-  - [ ] New module `chart_hero.train.build_dataset` that scans Clone Hero song folders (notes.chart/.txt/.mid + audio); no JSON stage.
-  - [ ] Audio selection (drums.ogg→stems→song.ogg→Demucs) and global offset via xcorr.
-  - [ ] Frame label writer with dilation and onset_any channel; shard writer.
-  - [ ] Train/val/test splitting utilities (by artist/title/charter).
+  - [x] New module `chart_hero.train.build_dataset` that scans Clone Hero song folders (notes.chart/.txt/.mid + audio); no JSON stage.
+  - [x] Audio selection (drums.ogg→stems→song.ogg) and global offset via normalized xcorr; logs domain type.
+  - [x] Frame label writer with dilation and shard writer. (Onset head uses OR(labels) computed in training, no extra channel saved.)
+  - [x] Train/val/test splitting utilities (by artist/title/charter) via group-aware split.
 - Preparation & Data Quality
   - [x] Loudness normalize audio to a reference (approximate -14 dBFS RMS) before feature extraction for stable dynamics across charts.
-  - [ ] Detect/skip desynced charts: residual MAE > 30 ms after offset; flag tempo anomalies; optional DTW alignment for borderline cases.
-  - [ ] Duplicate/near‑duplicate detection using audio hashes; dedupe across difficulty variants from the same source.
-  - [ ] Domain balancing with explicit sampling ratios favoring FMID; log realized ratios per epoch.
+  - [x] Detect/skip desynced charts using onset-envelope alignment score threshold; flag and skip low-quality alignments.
+  - [x] Duplicate/near‑duplicate detection using simple spectrogram perceptual hash; skip duplicates within a build run (opt-in `--dedupe`).
+  - [ ] Domain balancing with explicit sampling ratios favoring FMID in training sampler (dataset builder logs realized domain distribution).
   - [ ] Genre/tempo stratification to guarantee high‑BPM and tom/ride‑heavy material in every epoch.
 
 Domain Robustness
