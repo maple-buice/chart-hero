@@ -25,6 +25,12 @@ from chart_hero.inference.packager import package_clonehero_song
 from chart_hero.inference.song_identifier import (
     get_data_from_acousticbrainz,
     identify_song,
+    search_musicbrainz_recording,
+    get_acousticbrainz_lowlevel_by_mbid,
+    extract_bpm_from_acousticbrainz,
+    identify_song_cached,
+    search_musicbrainz_recording_cached,
+    get_acousticbrainz_lowlevel_by_mbid_cached,
 )
 from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
@@ -141,6 +147,21 @@ def main() -> None:
         "--no-api",
         action="store_true",
         help="Run without making API calls to AudD.",
+    )
+    parser.add_argument(
+        "--id-source",
+        type=str,
+        default="auto",
+        choices=["auto", "audd", "musicbrainz"],
+        help=(
+            "Metadata/BPM source: 'auto' (use AudD if available else MusicBrainz), 'audd', or 'musicbrainz'."
+        ),
+    )
+    parser.add_argument(
+        "--id-cache",
+        type=str,
+        default=None,
+        help="Path to cache identification lookups (AudD/MusicBrainz/AcousticBrainz) as JSON.",
     )
     parser.add_argument(
         "--lyrics-cache",
@@ -294,31 +315,130 @@ def main() -> None:
     out_path = Path(args.output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Prefer local BPM estimation unless overridden
+    # Prefer local BPM estimation unless overridden; aim to avoid API calls
     bpm: Optional[float] = args.bpm
+
+    # Improved local tempo estimate with histogram confidence
+    def _estimate_bpm_local(path: str, sr: int) -> tuple[Optional[float], float]:
+        try:
+            import numpy as _np
+
+            y, s = load_audio(path, sr=sr)
+            # Beat track to get beat frames and intervals
+            beats = librosa.beat.beat_track(y=y, sr=s, units="frames")[1]
+            if beats is not None and len(beats) >= 3:
+                times = librosa.frames_to_time(beats, sr=s)
+                iois = _np.diff(times)
+                iois = iois[(iois > 0.1) & (iois < 2.0)]  # clamp 30–600 BPM
+                if iois.size > 0:
+                    bpms = 60.0 / iois
+                    # Histogram in 0.5 BPM bins
+                    hist, edges = _np.histogram(bpms, bins=_np.arange(30, 241, 0.5))
+                    idx = int(hist.argmax())
+                    mode_bpm = float((edges[idx] + edges[idx + 1]) / 2.0)
+                    conf = float(hist.max() / max(1, hist.sum()))
+                    return mode_bpm, conf
+            # Fallback to librosa.tempo median when beat track insufficient
+            tempo = lr_tempo(y=y, sr=s, hop_length=512, aggregate=None)
+            if tempo is not None and len(tempo) > 0:
+                return float(np.median(tempo)), 0.3
+        except Exception:
+            return None, 0.0
+        return None, 0.0
+
     if bpm is None:
-        bpm = estimate_bpm(f_path, sr=22050)
+        bpm_local, bpm_conf = _estimate_bpm_local(f_path, sr=22050)
+        bpm = bpm_local if bpm_local else None
 
     audd_result = None
-    # Use AudD primarily to enrich metadata on local files when available
-    if not args.no_api and os.environ.get("AUDD_API_TOKEN"):
-        try:
-            audd_result = identify_song(f_path)
-            with open(out_path / "audd_result.json", "w") as f:
-                json.dump(audd_result.to_dict(), f, indent=4)
-            if audd_result and not artist:
-                artist = audd_result.artist
-                # Prefer MusicBrainz title if available
-                if audd_result.title:
-                    title = audd_result.title
-            # Optionally fetch acousticbrainz but do not override BPM unless none
-            if audd_result and audd_result.musicbrainz and bpm is None:
-                acousticbrainz_result = get_data_from_acousticbrainz(audd_result)
-                with open(out_path / "acousticbrainz_result.json", "w") as f:
-                    json.dump(acousticbrainz_result, f, indent=4)
-                bpm = acousticbrainz_result.get("bpm")
-        except Exception as e:
-            print(f"AudD lookup failed: {e}")
+    # Metadata/BPM identification pipeline (AudD or MusicBrainz/AcousticBrainz)
+    try:
+        use_audd = (
+            args.id_source in ("auto", "audd")
+            and (not args.no_api)
+            and os.environ.get("AUDD_API_TOKEN")
+        )
+        used_mb = False
+        if use_audd:
+            try:
+                id_cache_path = args.id_cache or str(
+                    Path("artifacts") / "id_cache.json"
+                )
+                audd_result = identify_song_cached(f_path, id_cache_path)
+                with open(out_path / "audd_result.json", "w") as f:
+                    json.dump(audd_result.to_dict(), f, indent=4)
+                if audd_result and not artist:
+                    artist = audd_result.artist
+                    # Prefer MusicBrainz title if available
+                    if audd_result.title:
+                        title = audd_result.title
+                # Optionally fetch AB BPM via MBID
+                if audd_result and audd_result.musicbrainz:
+                    try:
+                        ab = get_data_from_acousticbrainz(audd_result)
+                        with open(out_path / "acousticbrainz_result.json", "w") as f:
+                            json.dump(ab, f, indent=4)
+                        bpm_ab = extract_bpm_from_acousticbrainz(ab)
+                        if bpm_ab:
+                            bpm = bpm or bpm_ab
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"AudD lookup failed: {e}")
+        # If MB requested or AudD unavailable/failed, try MusicBrainz + AcousticBrainz
+        if (args.id_source in ("auto", "musicbrainz")) and (bpm is None):
+            yt_title = title or ""
+            if not artist and (" - " in yt_title or " – " in yt_title):
+                for sep in (" - ", " – "):
+                    if sep in yt_title:
+                        parts = yt_title.split(sep, 1)
+                        if len(parts) == 2:
+                            artist = artist or parts[0].strip()
+                            title = parts[1].strip() or title
+                            break
+            id_cache_path = args.id_cache or str(Path("artifacts") / "id_cache.json")
+            mb = search_musicbrainz_recording_cached(
+                title=title or yt_title,
+                artist=artist,
+                duration_sec=get_duration(f_path),
+                cache_path=id_cache_path,
+            )
+            if isinstance(mb, dict) and mb.get("id"):
+                used_mb = True
+                try:
+                    with open(out_path / "musicbrainz_result.json", "w") as f:
+                        json.dump(mb, f, indent=2)
+                except Exception:
+                    pass
+                ab = get_acousticbrainz_lowlevel_by_mbid_cached(
+                    str(mb.get("id")), id_cache_path
+                )
+                if isinstance(ab, dict):
+                    try:
+                        with open(out_path / "acousticbrainz_result.json", "w") as f:
+                            json.dump(ab, f, indent=2)
+                    except Exception:
+                        pass
+                    bpm_ab = extract_bpm_from_acousticbrainz(ab)
+                    if bpm_ab:
+                        bpm = bpm_ab
+            # Fill metadata from MB if missing
+            try:
+                if used_mb and isinstance(mb, dict):
+                    if not artist:
+                        ac = mb.get("artist-credit") or mb.get("artist_credit")
+                        if isinstance(ac, list) and ac and isinstance(ac[0], dict):
+                            nm = ac[0].get("name") or ac[0].get("artist", {}).get(
+                                "name"
+                            )
+                            if nm:
+                                artist = str(nm)
+                    if not title and isinstance(mb.get("title"), str):
+                        title = str(mb.get("title"))
+            except Exception:
+                pass
+    except Exception:
+        pass
     # Fallback BPM
     if bpm is None:
         bpm = 120.0
