@@ -1,6 +1,15 @@
 from dataclasses import asdict, dataclass
 from typing import Any, Optional, TypeVar
 
+
+def _dget(d: dict[str, Any], key: str, default: Any = None) -> Any:
+    """Dictionary get that also checks a hyphen/underscore variant."""
+    if key in d:
+        return d[key]
+    alt = key.replace("_", "-")
+    return d.get(alt, default)
+
+
 T = TypeVar("T")
 
 
@@ -109,7 +118,7 @@ class spotify_artist:
     href: str
     id: str
     name: str
-    type: str
+    type: Optional[str]
     uri: str
 
     @classmethod
@@ -119,7 +128,7 @@ class spotify_artist:
             href=data["href"],
             id=data["id"],
             name=data["name"],
-            type=data["type"],
+            type=data.get("type"),
             uri=data["uri"],
         )
 
@@ -147,8 +156,8 @@ class spotify_album:
     name: str
     release_date: str
     release_date_precision: str
-    total_tracks: int
-    type: str
+    total_tracks: Optional[int]
+    type: Optional[str]
     uri: str
 
     @classmethod
@@ -164,8 +173,8 @@ class spotify_album:
             name=data["name"],
             release_date=data["release_date"],
             release_date_precision=data["release_date_precision"],
-            total_tracks=data["total_tracks"],
-            type=data["type"],
+            total_tracks=data.get("total_tracks"),
+            type=data.get("type"),
             uri=data["uri"],
         )
 
@@ -182,11 +191,11 @@ class spotify_result:
     external_urls: spotify_external_urls
     href: str
     id: str
-    is_local: bool
+    is_local: Optional[bool]
     name: str
     popularity: int
     track_number: int
-    type: str
+    type: Optional[str]
     uri: str
 
     @classmethod
@@ -202,11 +211,11 @@ class spotify_result:
             external_urls=spotify_external_urls.from_dict(data["external_urls"]),
             href=data["href"],
             id=data["id"],
-            is_local=data["is_local"],
+            is_local=data.get("is_local", False),
             name=data["name"],
             popularity=data["popularity"],
             track_number=data["track_number"],
-            type=data["type"],
+            type=data.get("type"),
             uri=data["uri"],
         )
 
@@ -221,10 +230,10 @@ class artist:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "artist":
         return cls(
-            id=data["id"],
-            name=data["name"],
-            sort_name=data["sort_name"],
-            disambiguation=data.get("disambiguation"),
+            id=_dget(data, "id"),
+            name=_dget(data, "name"),
+            sort_name=_dget(data, "sort_name"),
+            disambiguation=_dget(data, "disambiguation"),
         )
 
 
@@ -242,16 +251,16 @@ class artist_credit:
 class track:
     id: str
     length: int
-    number: int
+    number: Any
     title: str
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "track":
         return cls(
-            id=data["id"],
-            length=data["length"],
-            number=data["number"],
-            title=data["title"],
+            id=_dget(data, "id"),
+            length=_dget(data, "length"),
+            number=_dget(data, "number"),
+            title=_dget(data, "title"),
         )
 
 
@@ -266,11 +275,11 @@ class media:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "media":
         return cls(
-            format=data["format"],
-            position=data["position"],
-            track=[track.from_dict(item) for item in data["track"]],
-            track_count=data["track_count"],
-            track_offset=data["track_offset"],
+            format=_dget(data, "format"),
+            position=_dget(data, "position"),
+            track=[track.from_dict(item) for item in _dget(data, "track", [])],
+            track_count=_dget(data, "track_count"),
+            track_offset=_dget(data, "track_offset"),
         )
 
 
@@ -284,10 +293,10 @@ class area:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "area":
         return cls(
-            id=data["id"],
-            iso_3166_1_codes=data["iso_3166_1_codes"],
-            name=data["name"],
-            sort_name=data["sort_name"],
+            id=_dget(data, "id"),
+            iso_3166_1_codes=_dget(data, "iso_3166_1_codes"),
+            name=_dget(data, "name"),
+            sort_name=_dget(data, "sort_name"),
         )
 
 
@@ -298,7 +307,9 @@ class release_event:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "release_event":
-        return cls(area=area.from_dict(data["area"]), date=data["date"])
+        return cls(
+            area=area.from_dict(_dget(data, "area", {})), date=_dget(data, "date")
+        )
 
 
 @dataclass
@@ -312,11 +323,11 @@ class release_group:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "release_group":
         return cls(
-            id=data["id"],
-            primary_type=data["primary_type"],
-            secondary_types=data["secondary_types"],
-            title=data["title"],
-            type_id=data["type_id"],
+            id=_dget(data, "id"),
+            primary_type=_dget(data, "primary_type"),
+            secondary_types=_dget(data, "secondary_types", []),
+            title=_dget(data, "title"),
+            type_id=_dget(data, "type_id"),
         )
 
 
@@ -339,23 +350,25 @@ class release:
     def from_dict(cls, data: dict[str, Any]) -> "release":
         return cls(
             artist_credit=[
-                artist_credit.from_dict(item) for item in data["artist_credit"]
+                artist_credit.from_dict(item)
+                for item in _dget(data, "artist_credit", [])
             ],
-            count=data["count"],
-            country=data["country"],
-            date=data["date"],
-            disambiguation=data["disambiguation"],
-            id=data["id"],
-            media=[media.from_dict(item) for item in data["media"]],
+            count=_dget(data, "count"),
+            country=_dget(data, "country"),
+            date=_dget(data, "date"),
+            disambiguation=_dget(data, "disambiguation", ""),
+            id=_dget(data, "id"),
+            media=[media.from_dict(item) for item in _dget(data, "media", [])],
             release_events=[
-                release_event.from_dict(item) for item in data["release_events"]
+                release_event.from_dict(item)
+                for item in _dget(data, "release_events", [])
             ]
-            if data.get("release_events")
+            if _dget(data, "release_events") is not None
             else None,
-            release_group=release_group.from_dict(data["release_group"]),
-            status=data["status"],
-            title=data["title"],
-            track_count=data["track_count"],
+            release_group=release_group.from_dict(_dget(data, "release_group", {})),
+            status=_dget(data, "status"),
+            title=_dget(data, "title"),
+            track_count=_dget(data, "track_count"),
         )
 
 
@@ -376,17 +389,18 @@ class musicbrainz_result:
     def from_dict(cls, data: dict[str, Any]) -> "musicbrainz_result":
         return cls(
             artist_credit=[
-                artist_credit.from_dict(item) for item in data["artist_credit"]
+                artist_credit.from_dict(item)
+                for item in _dget(data, "artist_credit", [])
             ],
-            disambiguation=data["disambiguation"],
-            id=data["id"],
-            isrcs=data["isrcs"],
-            length=data["length"],
-            releases=[release.from_dict(item) for item in data["releases"]],
-            score=data["score"],
-            tags=data.get("tags"),
-            title=data["title"],
-            video=data.get("video"),
+            disambiguation=_dget(data, "disambiguation", ""),
+            id=_dget(data, "id"),
+            isrcs=_dget(data, "isrcs", []),
+            length=_dget(data, "length"),
+            releases=[release.from_dict(item) for item in _dget(data, "releases", [])],
+            score=_dget(data, "score"),
+            tags=_dget(data, "tags"),
+            title=_dget(data, "title"),
+            video=_dget(data, "video"),
         )
 
 
@@ -423,7 +437,8 @@ class audd_song_result:
             if data.get("spotify")
             else None,
             musicbrainz=[
-                musicbrainz_result.from_dict(item) for item in data["musicbrainz"]
+                musicbrainz_result.from_dict(item)
+                for item in data.get("musicbrainz", [])
             ],
         )
 

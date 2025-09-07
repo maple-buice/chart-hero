@@ -323,6 +323,23 @@ def main() -> None:
 
         lyrics = None
         try:
+            # Logging inputs for lyrics fetch
+            print(
+                "Fetching lyrics with:",
+                json.dumps(
+                    {
+                        "link": args.link,
+                        "title": title,
+                        "artist": artist,
+                        "album": getattr(audd_result, "album", None)
+                        if "audd_result" in locals() and audd_result
+                        else None,
+                        "duration": duration_sec,
+                        "spotify_id": spotify_id,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
             lyrics = get_synced_lyrics(
                 link=args.link,
                 title=title,
@@ -333,6 +350,15 @@ def main() -> None:
                 duration=duration_sec,
                 spotify_id=spotify_id,
             )
+            if lyrics is None:
+                print("No synced lyrics found.")
+            else:
+                try:
+                    print(
+                        f"Lyrics found from {lyrics.source}; lines={len(lyrics.lines)}"
+                    )
+                except Exception:
+                    print("Lyrics found.")
         except Exception as e:
             print(f"Lyrics fetch failed: {e}")
             lyrics = None

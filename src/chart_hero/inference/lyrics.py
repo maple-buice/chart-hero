@@ -20,6 +20,7 @@ from typing import Any, Iterable, List, Optional
 import json
 import math
 import re
+import os
 import urllib.parse
 import urllib.request
 
@@ -37,6 +38,12 @@ try:
     from yt_dlp import YoutubeDL  # type: ignore
 except Exception:  # pragma: no cover - yt_dlp is a project dep
     YoutubeDL = None  # type: ignore
+
+# Optional: SyncedLyrics aggregator
+try:  # optional
+    import syncedlyrics  # type: ignore
+except Exception:  # pragma: no cover - optional
+    syncedlyrics = None  # type: ignore
 
 
 @dataclass
@@ -75,6 +82,13 @@ class Lyrics:
 LRCLIB_BASE = "https://lrclib.net/api"
 
 
+def _log(msg: str) -> None:
+    try:
+        print(f"[LYRICS] {msg}")
+    except Exception:
+        pass
+
+
 def _http_json(url: str, timeout: float = 10.0) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": "chart-hero/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
@@ -91,13 +105,20 @@ def fetch_lrclib_by_spotify_id(spotify_id: str) -> Optional[str]:
         return None
     url = f"{LRCLIB_BASE}/get?spotifyId={urllib.parse.quote(spotify_id)}"
     try:
+        _log(f"LRCLIB get by Spotify ID: {spotify_id}")
         js = _http_json(url)
         if isinstance(js, dict):
             # API usually exposes 'syncedLyrics' (string, may be empty)
             lrc = js.get("syncedLyrics") or js.get("synced_lyrics")
             if isinstance(lrc, str) and lrc.strip():
+                _log("LRCLIB returned synced lyrics by Spotify ID.")
                 return lrc
-    except Exception:
+            _log("LRCLIB had no synced lyrics for Spotify ID.")
+    except Exception as e:
+        _log(
+            "LRCLIB request by Spotify ID failed: "
+            + f"error={e.__class__.__name__}: {str(e)}"
+        )
         return None
     return None
 
@@ -107,44 +128,69 @@ def fetch_lrclib_search(
 ) -> Optional[str]:
     """Search LRCLIB by metadata and return synced LRC if a confident match exists.
 
-    The API supports /search with query params: track_name, artist_name, album_name, duration.
-    We pick the first item that has synced lyrics and matches within ~2.5s duration when given.
+    Tries progressively looser queries: title+artist+album+duration, then drop album, then drop duration, then title only.
+    Duration tolerance widened to 5 seconds to accommodate minor mismatches.
     """
-    params = {"track_name": track}
-    if artist:
-        params["artist_name"] = artist
-    if album:
-        params["album_name"] = album
-    if duration is not None and duration > 0:
-        params["duration"] = str(int(round(duration)))
-    url = f"{LRCLIB_BASE}/search?{urllib.parse.urlencode(params)}"
-    try:
-        js = _http_json(url)
-        if isinstance(js, list):
-            best = None
-            for it in js:
-                if not isinstance(it, dict):
-                    continue
-                lrc = it.get("syncedLyrics") or it.get("synced_lyrics")
-                if not (isinstance(lrc, str) and lrc.strip()):
-                    continue
-                if duration is not None and duration > 0:
-                    d = it.get("duration") or it.get("durationMs")
-                    if isinstance(d, (int, float)):
-                        if abs(float(d) - float(duration)) > 2.5:
-                            continue
-                    elif isinstance(d, str):
+
+    def _search(params: dict[str, str]) -> Optional[str]:
+        url = f"{LRCLIB_BASE}/search?{urllib.parse.urlencode(params)}"
+        try:
+            _log("LRCLIB search: " + json.dumps(params, ensure_ascii=False))
+            js = _http_json(url)
+            if isinstance(js, list):
+                _log(f"LRCLIB search returned {len(js)} candidate(s).")
+                for it in js:
+                    if not isinstance(it, dict):
+                        continue
+                    lrc = it.get("syncedLyrics") or it.get("synced_lyrics")
+                    if not (isinstance(lrc, str) and lrc.strip()):
+                        continue
+                    if duration is not None and duration > 0:
+                        d = it.get("duration") or it.get("durationMs")
                         try:
-                            if abs(float(d) - float(duration)) > 2.5:
+                            d_val = float(d) if not isinstance(d, str) else float(d)
+                            if abs(d_val - float(duration)) > 5.0:
+                                _log(
+                                    f"Skip candidate: duration mismatch ({d} vs {duration})."
+                                )
                                 continue
                         except Exception:
                             pass
-                best = lrc
-                break
-            return best
-    except Exception:
+                    return lrc
+        except Exception as e:
+            _log(
+                "LRCLIB search request failed: "
+                + json.dumps(params, ensure_ascii=False)
+                + f"; error={e.__class__.__name__}: {str(e)}"
+            )
+            return None
         return None
-    return None
+
+    params_base: dict[str, str] = {"track_name": track}
+    if artist:
+        params_base["artist_name"] = artist
+    if album:
+        params_base["album_name"] = album
+    if duration is not None and duration > 0:
+        params_base["duration"] = str(int(round(duration)))
+
+    # Try with full params
+    lrc = _search(params_base)
+    if lrc:
+        return lrc
+    # Try without album
+    params_wo_album = {k: v for k, v in params_base.items() if k != "album_name"}
+    lrc = _search(params_wo_album)
+    if lrc:
+        return lrc
+    # Try without duration
+    params_wo_dur = {k: v for k, v in params_wo_album.items() if k != "duration"}
+    lrc = _search(params_wo_dur)
+    if lrc:
+        return lrc
+    # Try title only
+    lrc = _search({"track_name": track})
+    return lrc
 
 
 # ---- YouTube captions fallback --------------------------------------------
@@ -158,6 +204,7 @@ def fetch_youtube_captions(
     Prefers manually provided subtitles, falls back to automatic captions.
     """
     if YoutubeDL is None:
+        _log("yt_dlp not available; skipping YouTube captions.")
         return None
     try:
         with YoutubeDL({"quiet": True, "writesubtitles": True}) as ydl:
@@ -169,6 +216,7 @@ def fetch_youtube_captions(
             subs = info.get(field) or {}
             if not isinstance(subs, dict):
                 continue
+            _log(f"YouTube {field} languages: {sorted(list(subs.keys()))}")
             # find best language
             for lang in lang_pref:
                 tracks = subs.get(lang)
@@ -186,11 +234,16 @@ def fetch_youtube_captions(
                     try:
                         text = _http_json(url)  # not JSON, returns text
                         if isinstance(text, str) and text.strip():
+                            _log(
+                                f"Fetched YouTube captions from lang={lang} ({field})."
+                            )
                             return text
                     except Exception:
+                        _log("Failed to download YouTube captions text.")
                         continue
         return None
     except Exception:
+        _log("yt_dlp extract_info failed.")
         return None
 
 
@@ -428,23 +481,146 @@ def get_synced_lyrics(
                     source="lrclib", confidence=0.95, lines=lines, raw_lrc=lrc
                 )
 
-    # 2) LRCLIB textual search
-    if title:
-        lrc = fetch_lrclib_search(
-            track=title, artist=artist, album=album, duration=duration
-        )
-        if isinstance(lrc, str) and lrc.strip():
-            lines = parse_lrc(lrc)
-            if lines:
-                return Lyrics(source="lrclib", confidence=0.8, lines=lines, raw_lrc=lrc)
+    # 2) LRCLIB textual search (try as-is, then a normalized title without qualifiers)
+    def _normalize_title(t: str) -> str:
+        # remove bracketed qualifiers and trailing dashes
+        t2 = re.sub(r"\s*\([^)]*\)", "", t)
+        t2 = re.sub(r"\s*\[[^\]]*\]", "", t2)
+        t2 = re.sub(r"\s*-\s*[^-]+$", "", t2).strip()
+        return t2 or t
 
-    # 3) YouTube captions fallback
+    if title:
+        tried_titles = [title]
+        norm = _normalize_title(title)
+        if norm != title:
+            tried_titles.append(norm)
+        for t in tried_titles:
+            if t != title:
+                _log(f"LRCLIB retry with normalized title: '{t}'")
+            lrc = fetch_lrclib_search(
+                track=t, artist=artist, album=album, duration=duration
+            )
+            if isinstance(lrc, str) and lrc.strip():
+                lines = parse_lrc(lrc)
+                if lines:
+                    return Lyrics(
+                        source="lrclib", confidence=0.8, lines=lines, raw_lrc=lrc
+                    )
+
+    # 3) SyncedLyrics (optional aggregator)
+    try:
+        use_sl = (syncedlyrics is not None) and (
+            os.environ.get("USE_SYNCEDLYRICS", "1") != "0"
+        )
+        if use_sl and title:
+            _log(
+                "SyncedLyrics search: "
+                + json.dumps(
+                    {
+                        "title": title,
+                        "artist": artist,
+                        "duration": duration,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            lrc_sl: Optional[str] = None
+            # Try common call patterns
+            try:
+                if hasattr(syncedlyrics, "search"):
+                    # Prefer explicit fields if supported
+                    try:
+                        lrc_sl = syncedlyrics.search(
+                            song=title,
+                            artist=artist or "",
+                            providers=None,
+                            debug=False,
+                        )
+                    except TypeError:
+                        # Fallback to single-query signature
+                        q = f"{artist} - {title}" if artist else title
+                        lrc_sl = syncedlyrics.search(q)
+            except Exception:
+                lrc_sl = None
+            if isinstance(lrc_sl, str) and lrc_sl.strip():
+                lines = parse_lrc(lrc_sl)
+                if lines:
+                    return Lyrics(
+                        source="syncedlyrics",
+                        confidence=0.9,
+                        lines=lines,
+                        raw_lrc=lrc_sl,
+                    )
+            _log("SyncedLyrics returned no usable LRC.")
+    except Exception as e:
+        _log(f"SyncedLyrics attempt failed: error={e.__class__.__name__}: {str(e)}")
+
+    # 4) YouTube captions fallback
     if link:
         vtt = fetch_youtube_captions(link)
         if isinstance(vtt, str) and vtt.strip():
             lines = parse_vtt(vtt)
             if lines:
                 return Lyrics(source="youtube_captions", confidence=0.5, lines=lines)
+
+    # 5) AudD unsynced lyrics fallback (heuristic timing)
+    try:
+        api_token = os.environ.get("AUDD_API_TOKEN")
+        if api_token and title:
+            _log(
+                "AudD unsynced fallback: findLyrics; "
+                + json.dumps(
+                    {
+                        "title": title,
+                        "artist": artist,
+                        "duration": duration,
+                        "spotify_id_present": bool(spotify_id),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            txt = fetch_audd_unsynced_lyrics(
+                title=title, artist=artist, api_token=api_token
+            )
+            if isinstance(txt, str) and txt.strip():
+                if duration and duration > 0:
+                    lines = time_unsynced_lyrics(txt, duration)
+                else:
+                    # Assume ~3s per line when duration unknown
+                    est_dur = 3.0 * max(
+                        1, len([ln for ln in txt.splitlines() if ln.strip()])
+                    )
+                    lines = time_unsynced_lyrics(txt, est_dur)
+                if lines:
+                    return Lyrics(source="unsynced", confidence=0.3, lines=lines)
+            # If findLyrics had no results, try /lyrics endpoint
+            _log(
+                "AudD unsynced fallback: lyrics; "
+                + json.dumps(
+                    {
+                        "title": title,
+                        "artist": artist,
+                        "duration": duration,
+                        "spotify_id_present": bool(spotify_id),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            txt2 = fetch_audd_lyrics_query(
+                title=title, artist=artist, api_token=api_token
+            )
+            if isinstance(txt2, str) and txt2.strip():
+                if duration and duration > 0:
+                    lines = time_unsynced_lyrics(txt2, duration)
+                else:
+                    est_dur = 3.0 * max(
+                        1, len([ln for ln in txt2.splitlines() if ln.strip()])
+                    )
+                    lines = time_unsynced_lyrics(txt2, est_dur)
+                if lines:
+                    return Lyrics(source="unsynced", confidence=0.3, lines=lines)
+    except Exception:
+        pass
 
     return None
 
@@ -464,3 +640,136 @@ def to_rb_tokens(lines: Iterable[Line]) -> List[tuple[Syllable, str]]:
                     tok = tok + "-"
                 out.append((syl, tok))
     return out
+
+
+# ---- AudD unsynced lyrics + heuristic timing ------------------------------
+
+
+def fetch_audd_unsynced_lyrics(
+    *, title: str, artist: Optional[str], api_token: str
+) -> Optional[str]:
+    q = title if not artist else f"{artist} - {title}"
+    url = "https://api.audd.io/findLyrics/?" + urllib.parse.urlencode(
+        {"q": q, "api_token": api_token}
+    )
+    try:
+        _log("AudD findLyrics query: " + q)
+        js = _http_json(url)
+        if isinstance(js, dict):
+            res = js.get("result")
+            if isinstance(res, list) and res:
+                # pick the first result that has lyrics text
+                text_hits = 0
+                preview: list[str] = []
+                for it in res:
+                    if isinstance(it, dict):
+                        lyr = it.get("lyrics") or it.get("text")
+                        if isinstance(lyr, str) and lyr.strip():
+                            text_hits += 1
+                            # keep first text for return and collect preview list
+                            if not preview:
+                                # Return the first text hit immediately after logging preview
+                                # but first build preview of candidates for visibility
+                                pass
+
+                    # build preview line for this candidate
+                    try:
+                        cand_title = None
+                        if isinstance(it, dict):
+                            cand_title = it.get("title") or it.get("song_title") or None
+                            cand_artist = (
+                                it.get("artist") or it.get("artist_name") or None
+                            )
+                            snippet = (it.get("lyrics") or it.get("text") or "")[
+                                :40
+                            ].replace("\n", " ")
+                            pv = f"{cand_artist or '?'} - {cand_title or '?'} | len={len(it.get('lyrics') or it.get('text') or '')} | {snippet}"
+                            preview.append(pv)
+                    except Exception:
+                        pass
+                # log summary of candidates
+                _log(
+                    "AudD findLyrics candidates: "
+                    + json.dumps(preview[:5], ensure_ascii=False)
+                    + (" …" if len(preview) > 5 else "")
+                )
+                # return first text hit if any
+                for it in res:
+                    if isinstance(it, dict):
+                        lyr = it.get("lyrics") or it.get("text")
+                        if isinstance(lyr, str) and lyr.strip():
+                            _log("AudD findLyrics returned text.")
+                            return lyr
+        count = len(res) if isinstance(res, list) else 0
+        _log(f"AudD findLyrics had no usable results (candidates={count}).")
+        return None
+    except Exception as e:
+        _log(f"AudD findLyrics request failed: error={e.__class__.__name__}: {str(e)}")
+        return None
+
+
+def time_unsynced_lyrics(text: str, duration: float) -> List[Line]:
+    """Heuristically assign timings to plain-text lyrics.
+
+    Splits by non-empty lines; distributes duration proportionally by line length.
+    Within a line, words split evenly across the line span and syllabified.
+    """
+    raw_lines = [ln.strip() for ln in text.splitlines()]
+    lines_txt = [ln for ln in raw_lines if ln]
+    if not lines_txt:
+        return []
+    # weight by character length to give longer lines more time, with min weight
+    weights = [max(len(ln), 10) for ln in lines_txt]
+    total_w = float(sum(weights))
+    t_cursor = 0.0
+    out: List[Line] = []
+    for ln, w in zip(lines_txt, weights):
+        span = duration * (w / total_w)
+        t0 = t_cursor
+        t1 = t0 + max(span, 0.75)
+        t_cursor = t1
+        words: List[Word] = []
+        toks = [tok for tok in re.split(r"\s+", ln) if tok]
+        if not toks:
+            out.append(Line(text=ln, t0=t0, t1=t1, words=[]))
+            continue
+        per = max((t1 - t0) / len(toks), 0.15)
+        cur = t0
+        for tok in toks:
+            w0, w1 = cur, cur + per
+            cur = w1
+            sylls = _syllabify_to_slices(tok, w0, w1)
+            words.append(Word(text=tok, t0=w0, t1=w1, syllables=sylls))
+        out.append(Line(text=ln, t0=t0, t1=t1, words=words))
+    return out
+
+
+def fetch_audd_lyrics_query(
+    *, title: str, artist: Optional[str], api_token: str
+) -> Optional[str]:
+    """AudD lyrics endpoint; often returns a single best match object.
+
+    API docs indicate /lyrics may return {result: {lyrics: "..."}} or a similar shape.
+    """
+    q = title if not artist else f"{artist} - {title}"
+    url = "https://api.audd.io/lyrics/?" + urllib.parse.urlencode(
+        {"q": q, "api_token": api_token}
+    )
+    try:
+        js = _http_json(url)
+        if isinstance(js, dict):
+            res = js.get("result")
+            if isinstance(res, dict):
+                lyr = res.get("lyrics") or res.get("text")
+                if isinstance(lyr, str) and lyr.strip():
+                    _log("AudD lyrics returned text.")
+                    return lyr
+        try:
+            keys = list(res.keys()) if isinstance(res, dict) else []
+        except Exception:
+            keys = []
+        _log("AudD lyrics had no usable results." + (f" keys={keys}" if keys else ""))
+        return None
+    except Exception as e:
+        _log(f"AudD lyrics request failed: error={e.__class__.__name__}: {str(e)}")
+        return None
