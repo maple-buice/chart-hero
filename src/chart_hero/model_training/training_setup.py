@@ -63,6 +63,8 @@ def setup_arg_parser() -> argparse.ArgumentParser:
             "cloud",
             "auto",
             "overnight_default",
+            "local_highres",
+            "local_micro",
         ],
         help="Configuration to use",
     )
@@ -127,6 +129,11 @@ def setup_arg_parser() -> argparse.ArgumentParser:
         type=int,
         help="Hard cap on number of files per split",
     )
+    parser.add_argument(
+        "--max-audio-length",
+        type=float,
+        help="Override max audio segment length in seconds for training windows",
+    )
     return parser
 
 
@@ -174,6 +181,11 @@ def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
         config.max_files_per_split = int(args.max_files_per_split)
     if getattr(args, "log_media", False):
         config.enable_media_logging = True
+    if getattr(args, "max_audio_length", None) is not None:
+        try:
+            config.max_audio_length = float(args.max_audio_length)
+        except Exception:
+            pass
 
 
 def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callback]:

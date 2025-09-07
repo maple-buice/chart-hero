@@ -200,3 +200,4 @@ CloneHero/
 
 .env*
 artifacts/
+datasets/

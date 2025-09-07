@@ -11,6 +11,7 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
+import torch.multiprocessing as mp
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
@@ -31,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    # In restricted environments, avoid torch_shm_manager by using file_descriptor sharing
+    try:
+        mp.set_sharing_strategy("file_descriptor")
+    except Exception:
+        pass
     logger.info("Starting training script.")
     parser = setup_arg_parser()
     args = parser.parse_args()
@@ -255,29 +261,33 @@ def main() -> None:
                 )
             except Exception as e:
                 msg = str(e)
+                # Common sandbox/macOS issues: shm manager, file sharing; also catch MPS NDArray failures
                 if any(
                     s in msg
                     for s in (
                         "torch_shm_manager",
                         "_share_filename_cpu_",
                         "Operation not permitted",
+                        "MPSNDArray",
+                        "NDArray dimension length",
                     )
                 ):
                     logger.warning(
-                        "Trainer.fit failed due to multiprocessing/shm error (%s). Retrying with num_workers=0.",
+                        "Trainer.fit failed (%s). Retrying with safer settings (num_workers=0%s).",
                         e,
+                        ", CPU fallback" if config.device == "mps" else "",
                     )
                     setattr(config, "num_workers", 0)
                     setattr(config, "persistent_workers", False)
+                    # If on MPS, fall back to CPU for stability
+                    if config.device == "mps":
+                        config.device = "cpu"
+                        trainer_kwargs["accelerator"] = "cpu"
                     train_loader, val_loader, test_loader = create_data_loaders(
                         config=config, data_dir=config.data_dir, with_lengths=True
                     )
-                    # Rebuild the trainer to clear any dataloader-worker state
-                    try:
-                        trainer = pl.Trainer(**trainer_kwargs)
-                    except Exception:
-                        trainer_kwargs["accelerator"] = "cpu"
-                        trainer = pl.Trainer(**trainer_kwargs)
+                    # Rebuild the trainer to clear any state
+                    trainer = pl.Trainer(**trainer_kwargs)
                     trainer.fit(
                         model,
                         train_dataloaders=train_loader,

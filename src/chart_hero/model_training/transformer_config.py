@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import torch
 
@@ -350,8 +350,8 @@ class LocalHighResConfig(LocalConfig):
     # Class imbalance handling
     pos_weight_cap: float = 10.0  # cap auto pos_weight
 
-    # Sequence length can get large with stride=1; constrain audio length
-    max_audio_length: float = 4.0
+    # Sequence length can get large with stride=1; prefer 8s windows on stable MPS
+    max_audio_length: float = 45.0
 
     # Batching tuned down for the higher sequence length
     train_batch_size: int = 2

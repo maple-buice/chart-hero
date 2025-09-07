@@ -137,6 +137,26 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                 T = int(getattr(self.config, "max_seq_len", 1))
             label_matrix = torch.zeros((T, num_classes), dtype=torch.float32)
 
+        # Optional windowing to enforce max_audio_length
+        seg_frames = int(
+            round(
+                (getattr(self.config, "max_audio_length", 0.0) or 0.0)
+                * self.config.sample_rate
+                / max(1, int(self.config.hop_length))
+            )
+        )
+        if seg_frames > 0 and spectrogram.dim() >= 2:
+            T = int(spectrogram.shape[-1])
+            if T > seg_frames:
+                if self.mode == "train":
+                    start = int(torch.randint(0, T - seg_frames + 1, (1,)).item())
+                else:
+                    # Center crop for val/test
+                    start = max(0, (T - seg_frames) // 2)
+                end = start + seg_frames
+                spectrogram = spectrogram[..., start:end]
+                label_matrix = label_matrix[start:end, :]
+
         # Ensure tensor is (1, freq, time)
         if spectrogram.dim() == 2:
             spectrogram = spectrogram.unsqueeze(0)
