@@ -123,12 +123,16 @@ def _add_drums_track(
         tick = seconds_to_ticks(t_sec, bpm, ppq)
 
         # Determine desired cymbal state per pad at this tick
+        # Correct color mapping:
+        #  - Yellow pad (2): hi-hat (67) vs hi-tom (2)
+        #  - Blue pad (3): ride (68) vs mid-tom (3)
+        #  - Green pad (4): crash (66) vs low-tom (4)
         desired: dict[int, Optional[bool]] = {2: None, 3: None, 4: None}
-        if int(row.get("66", 0)) == 1:
-            desired[2] = True
         if int(row.get("67", 0)) == 1:
-            desired[3] = True
+            desired[2] = True
         if int(row.get("68", 0)) == 1:
+            desired[3] = True
+        if int(row.get("66", 0)) == 1:
             desired[4] = True
         if int(row.get("2", 0)) == 1:
             desired[2] = False if desired[2] is None else desired[2]
@@ -159,13 +163,13 @@ def _add_drums_track(
             lanes.append(0)
         if int(row.get("1", 0)) == 1:
             lanes.append(1)
-        # Pad 2/3/4 depending on tom vs cym
-        if int(row.get("66", 0)) == 1 or int(row.get("2", 0)) == 1:
-            lanes.append(2)
-        if int(row.get("67", 0)) == 1 or int(row.get("3", 0)) == 1:
-            lanes.append(3)
-        if int(row.get("68", 0)) == 1 or int(row.get("4", 0)) == 1:
-            lanes.append(4)
+        # Pad 2/3/4 depending on tom vs cym with corrected mapping
+        if int(row.get("67", 0)) == 1 or int(row.get("2", 0)) == 1:
+            lanes.append(2)  # Yellow
+        if int(row.get("68", 0)) == 1 or int(row.get("3", 0)) == 1:
+            lanes.append(3)  # Blue
+        if int(row.get("66", 0)) == 1 or int(row.get("4", 0)) == 1:
+            lanes.append(4)  # Green
 
         seen = set()
         for pad in lanes:

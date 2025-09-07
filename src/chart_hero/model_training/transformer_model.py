@@ -14,21 +14,30 @@ from .transformer_config import BaseConfig
 
 
 class PatchEmbedding(nn.Module):
-    """Convert 1D spectrogram patches to embeddings."""
+    """Convert 1D spectrogram patches to embeddings.
+
+    Supports a stride smaller than the patch size to increase temporal
+    resolution at inference without changing learned weights.
+    """
 
     def __init__(
         self,
         patch_size: int = 16,
+        patch_stride: int | None = None,
         in_channels: int = 128,  # n_mels
         embed_dim: int = 768,
     ):
         super().__init__()
         self.patch_size = patch_size
         self.embed_dim = embed_dim
+        self.patch_stride = patch_stride if patch_stride is not None else patch_size
 
         # Use conv1d to extract patches and project to embedding dimension
         self.projection = nn.Conv1d(
-            in_channels, embed_dim, kernel_size=patch_size, stride=patch_size
+            in_channels,
+            embed_dim,
+            kernel_size=patch_size,
+            stride=self.patch_stride,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -185,6 +194,7 @@ class DrumTranscriptionTransformer(nn.Module):
         # Patch embedding
         self.patch_embed = PatchEmbedding(
             patch_size=config.patch_size[0],
+            patch_stride=getattr(config, "patch_stride", config.patch_size[0]),
             in_channels=config.n_mels,
             embed_dim=config.hidden_size,
         )

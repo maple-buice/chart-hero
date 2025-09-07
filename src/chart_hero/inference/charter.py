@@ -5,6 +5,7 @@ import librosa
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from music21 import chord, meter, note, stream
 from numpy.typing import NDArray
 
@@ -21,6 +22,22 @@ class Charter:
             str(model_path), config=config
         )
         self.model.eval()
+        # Try to load calibrated per-class thresholds saved during training
+        # Only if not already provided on the config
+        if not getattr(self.config, "class_thresholds", None):
+            try:
+                import json
+                from pathlib import Path
+
+                thr_path = Path(model_path).parent / "class_thresholds.json"
+                if thr_path.exists():
+                    with open(thr_path, "r") as f:
+                        data = json.load(f)
+                    thrs = data.get("class_thresholds")
+                    if isinstance(thrs, list) and thrs:
+                        self.config.class_thresholds = [float(x) for x in thrs]
+            except Exception:
+                pass
 
     from typing import Sequence
 
@@ -48,6 +65,14 @@ class Charter:
         self.model.to(device)
 
         patch = int(self.config.patch_size[0])
+        # Actual step between logits along time may be smaller if the model uses
+        # an overlap stride; infer it from the conv stride when available.
+        try:
+            stride_frames = int(
+                getattr(self.model.model.patch_embed.projection, "stride", (patch,))[0]
+            )
+        except Exception:
+            stride_frames = patch
         hop = int(self.config.hop_length)
         classes = get_drum_hits()
         rows: list[PredictionRow] = []
@@ -134,44 +159,133 @@ class Charter:
                 logits = out["logits"].cpu()  # [B, T_patches, C]
                 probs = torch.sigmoid(logits)
 
+                # Apply optional per-class gains to re-calibrate probabilities
+                if getattr(self.config, "class_gains", None):
+                    gains = self.config.class_gains
+                    if isinstance(gains, (list, tuple)) and len(gains) == len(classes):
+                        g = torch.tensor(gains, dtype=probs.dtype).view(1, 1, -1)
+                        probs = torch.clamp(probs * g, 0.0, 1.0)
+
                 # Thresholds
                 thr = self.config.prediction_threshold
                 thr_vec = None
                 if getattr(self.config, "class_thresholds", None):
                     ct = self.config.class_thresholds
                     if isinstance(ct, (list, tuple)) and len(ct) == len(classes):
-                        thr_vec = torch.tensor(ct).view(1, 1, -1)
+                        # shape [1, C] to broadcast against [T, C]
+                        thr_vec = torch.tensor(ct).view(1, -1).to(probs.device)
 
                 for b_idx, seg in enumerate(batch):
                     seg_probs = probs[b_idx]  # [T_patches, C]
-                    if thr_vec is not None:
-                        active = (seg_probs >= thr_vec).to(torch.bool)
-                    else:
-                        active = (seg_probs >= thr).to(torch.bool)
-                    if active.numel() == 0:
-                        continue
-                    # Map each patch t to a representative frame
                     T_p = seg_probs.shape[0]
+                    # Build thresholds vector [C]
+                    if thr_vec is not None:
+                        thr_row = thr_vec.squeeze(0)
+                    else:
+                        thr_row = torch.full(
+                            (seg_probs.shape[1],), thr, device=seg_probs.device
+                        )
+
+                    # Label names -> indices
+                    idx = {lab: i for i, lab in enumerate(classes)}
+
+                    # Optional per-class NMS along time to reduce duplicate hits
+                    k = max(1, int(getattr(self.config, "event_nms_kernel_patches", 3)))
+                    if k > 1 and T_p > 1:
+                        # seg_probs: [T,C] -> [1,C,T] for pooling
+                        p_ct = seg_probs.transpose(0, 1).unsqueeze(0)
+                        pooled = F.max_pool1d(
+                            p_ct, kernel_size=k, stride=1, padding=k // 2
+                        )
+                        # keep only local maxima
+                        keep_mask = (p_ct >= pooled).squeeze(0).transpose(0, 1)  # [T,C]
+                    else:
+                        keep_mask = torch.ones_like(seg_probs, dtype=torch.bool)
+
                     for t in range(T_p):
-                        cls_mask = active[t]  # [C]
-                        if not cls_mask.any():
+                        p_t = seg_probs[t]  # [C]
+                        km_t = keep_mask[t]
+                        # Binary activations by threshold
+                        act = (p_t >= thr_row) & km_t
+
+                        # Optional activity gate: if nothing is strong enough, skip whole tick
+                        gate = getattr(self.config, "activity_gate", None)
+                        if gate is not None:
+                            if float(p_t.max().item()) < float(gate):
+                                continue
+
+                        # Pairwise arbitration per color (prefer higher prob when both fire)
+                        # Yellow: tom '2' vs hat '67'
+                        y_tom = idx.get("2")
+                        y_cym = idx.get("67")
+                        b_tom = idx.get("3")
+                        b_cym = idx.get("68")
+                        g_tom = idx.get("4")
+                        g_cym = idx.get("66")
+
+                        margin = float(getattr(self.config, "cymbal_margin", 0.1))
+                        tom_margin = float(
+                            getattr(self.config, "tom_over_cymbal_margin", 0.35)
+                        )
+
+                        def choose_pair(
+                            tom_i: int | None, cym_i: int | None
+                        ) -> tuple[int, int]:
+                            if tom_i is None or cym_i is None:
+                                # Fallback: nothing to arbitrate
+                                return (
+                                    int(act[tom_i].item()) if tom_i is not None else 0,
+                                    int(act[cym_i].item()) if cym_i is not None else 0,
+                                )
+                            a_t = bool(act[tom_i].item())
+                            a_c = bool(act[cym_i].item())
+                            if a_t and a_c:
+                                pt = float(p_t[tom_i].item())
+                                pc = float(p_t[cym_i].item())
+                                # Selection policy:
+                                # - If cymbal within margin of tom, choose cymbal
+                                # - Else require tom to exceed cymbal by a larger margin to choose tom
+                                if (pc + margin) >= pt:
+                                    return (0, 1)
+                                if pt >= (pc + tom_margin):
+                                    return (1, 0)
+                                # Otherwise still prefer cymbal
+                                return (0, 1)
+                            return (int(a_t), int(a_c))
+
+                        y_t, y_c = choose_pair(y_tom, y_cym)
+                        b_t, b_c = choose_pair(b_tom, b_cym)
+                        g_t, g_c = choose_pair(g_tom, g_cym)
+
+                        # If nothing active on any class, skip
+                        i0 = idx.get("0")
+                        i1 = idx.get("1")
+                        has_kick = bool(act[i0].item()) if i0 is not None else False
+                        has_snare = bool(act[i1].item()) if i1 is not None else False
+                        if not (
+                            has_kick
+                            or has_snare
+                            or (y_t or y_c or b_t or b_c or g_t or g_c)
+                        ):
                             continue
-                        # Map to frame center within this patch
-                        frame_idx = seg["start_frame"] + t * patch + patch // 2
+
+                        # Map to frame center using kernel size and stride
+                        frame_idx = (
+                            seg["start_frame"] + t * stride_frames + (patch // 2)
+                        )
                         peak_sample = int(frame_idx * hop)
+
                         row: PredictionRow = {
                             "peak_sample": peak_sample,
-                            "0": 0,
-                            "1": 0,
-                            "2": 0,
-                            "3": 0,
-                            "4": 0,
-                            "66": 0,
-                            "67": 0,
-                            "68": 0,
+                            "0": int(act[i0].item()) if i0 is not None else 0,
+                            "1": int(act[i1].item()) if i1 is not None else 0,
+                            "2": y_t,
+                            "3": b_t,
+                            "4": g_t,
+                            "66": g_c,
+                            "67": y_c,
+                            "68": b_c,
                         }
-                        for ci, lab in enumerate(classes):
-                            row[lab] = int(cls_mask[ci].item())
                         rows.append(row)
 
         if not rows:

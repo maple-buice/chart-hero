@@ -119,6 +119,9 @@ class BaseConfig:
 
     # Transformer input
     patch_size: Tuple[int, int] = (16, 16)  # (time, frequency)
+    # New: allow inference stride smaller than patch_size[0] for higher time resolution
+    # During training this can remain equal to patch_size[0].
+    patch_stride: int = 16
     max_seq_len: int = 1024
 
     # Training
@@ -132,6 +135,16 @@ class BaseConfig:
     deterministic_training: bool = True
     prediction_threshold: float = 0.5
     class_thresholds: list[float] | None = None  # optional per-class thresholds
+    # Optional per-class probability gains (multiplies raw sigmoid probs before thresholding)
+    class_gains: list[float] | None = None
+    # Optional global activity gate: drop ticks whose max prob < gate
+    activity_gate: float | None = None
+    # Event non-maximum suppression window (in patch steps) to curb duplicates
+    event_nms_kernel_patches: int = 3
+    # Tom vs cymbal arbitration margin; require cymbal prob >= tom + margin
+    cymbal_margin: float = 0.1
+    # Require tom prob exceed cymbal by this margin to choose tom over cymbal
+    tom_over_cymbal_margin: float = 0.35
 
     # Data
     train_batch_size: int = 32

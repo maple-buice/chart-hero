@@ -168,6 +168,54 @@ def main() -> None:
         default=None,
         help="Override BPM (skips estimation/API)",
     )
+    parser.add_argument(
+        "--patch-stride",
+        type=int,
+        default=None,
+        help="Conv stride (frames) for inference; smaller than patch_size yields higher timing resolution",
+    )
+    parser.add_argument(
+        "--nms-k",
+        type=int,
+        default=None,
+        help="Per-class NMS window in patches (odd number like 3/5)",
+    )
+    parser.add_argument(
+        "--activity-gate",
+        type=float,
+        default=None,
+        help="Drop ticks whose max prob < gate (0..1)",
+    )
+    parser.add_argument(
+        "--cymbal-margin",
+        type=float,
+        default=None,
+        help="Prefer cymbal if pc + margin >= pt; tom wins only if pt >= pc + tom_over_cymbal_margin",
+    )
+    parser.add_argument(
+        "--tom-over-cymbal-margin",
+        type=float,
+        default=None,
+        help="Require tom prob exceed cymbal by this margin to choose tom",
+    )
+    parser.add_argument(
+        "--class-thresholds",
+        type=str,
+        default=None,
+        help="Per-class thresholds '0=0.55,...,68=0.9'",
+    )
+    parser.add_argument(
+        "--class-gains",
+        type=str,
+        default=None,
+        help="Per-class probability multipliers '2=0.5,3=0.5,4=0.5,67=1.1'",
+    )
+    parser.add_argument(
+        "--clonehero-root",
+        type=str,
+        default=None,
+        help="Clone Hero install root directory (contains 'Songs')",
+    )
 
     args = parser.parse_args()
 
@@ -232,6 +280,103 @@ def main() -> None:
 
     # Process the audio file to get the spectrogram tensors
     config = get_config("local")
+    # Apply balanced inference defaults unless overridden by CLI
+    try:
+        if getattr(config, "activity_gate", None) is None:
+            config.activity_gate = 0.50
+        # Strengthen per-class NMS for fewer duplicates
+        config.event_nms_kernel_patches = int(
+            max(1, getattr(config, "event_nms_kernel_patches", 3))
+        )
+        if config.event_nms_kernel_patches < 9:
+            config.event_nms_kernel_patches = 9
+        if getattr(config, "cymbal_margin", None) is None:
+            config.cymbal_margin = 0.30
+        if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
+            config.tom_over_cymbal_margin = 0.45
+        # Set per-class thresholds/gains if not already set
+        if getattr(config, "class_thresholds", None) is None:
+            from chart_hero.model_training.transformer_config import get_drum_hits
+
+            thr_map = {
+                "0": 0.55,
+                "1": 0.62,
+                "2": 0.60,
+                "3": 0.60,
+                "4": 0.65,
+                "66": 0.86,
+                "67": 0.88,
+                "68": 0.92,
+            }
+            classes = get_drum_hits()
+            config.class_thresholds = [
+                float(thr_map.get(c, config.prediction_threshold)) for c in classes
+            ]
+        if getattr(config, "class_gains", None) is None:
+            from chart_hero.model_training.transformer_config import get_drum_hits
+
+            gn_map = {
+                "0": 1.00,
+                "1": 1.02,
+                "2": 1.10,
+                "3": 1.10,
+                "4": 1.05,
+                "66": 1.04,
+                "67": 1.06,
+                "68": 0.92,
+            }
+            classes = get_drum_hits()
+            config.class_gains = [float(gn_map.get(c, 1.0)) for c in classes]
+    except Exception:
+        pass
+    if args.patch_stride is not None and args.patch_stride > 0:
+        try:
+            config.patch_stride = int(args.patch_stride)
+        except Exception:
+            pass
+    if args.nms_k is not None:
+        config.event_nms_kernel_patches = int(args.nms_k)
+    if args.activity_gate is not None:
+        config.activity_gate = float(args.activity_gate)
+    if args.cymbal_margin is not None:
+        config.cymbal_margin = float(args.cymbal_margin)
+    if args.tom_over_cymbal_margin is not None:
+        config.tom_over_cymbal_margin = float(args.tom_over_cymbal_margin)
+    # Parse per-class thresholds and gains
+    if args.class_thresholds:
+        from chart_hero.model_training.transformer_config import get_drum_hits
+
+        mapping = {}
+        for kv in args.class_thresholds.split(","):
+            kv = kv.strip()
+            if not kv or "=" not in kv:
+                continue
+            k, v = kv.split("=", 1)
+            try:
+                mapping[str(k.strip())] = float(v)
+            except Exception:
+                pass
+        if mapping:
+            classes = get_drum_hits()
+            config.class_thresholds = [
+                float(mapping.get(c, config.prediction_threshold)) for c in classes
+            ]
+    if args.class_gains:
+        from chart_hero.model_training.transformer_config import get_drum_hits
+
+        mapping = {}
+        for kv in args.class_gains.split(","):
+            kv = kv.strip()
+            if not kv or "=" not in kv:
+                continue
+            k, v = kv.split("=", 1)
+            try:
+                mapping[str(k.strip())] = float(v)
+            except Exception:
+                pass
+        if mapping:
+            classes = get_drum_hits()
+            config.class_gains = [float(mapping.get(c, 1.0)) for c in classes]
     spectrogram_segments = audio_to_tensors(f_path, config)
     if not spectrogram_segments:
         print("Could not process audio file.")
@@ -268,8 +413,10 @@ def main() -> None:
             except Exception:
                 pass
 
-        # Determine CH root relative to project
-        ch_root = Path("/Users/maple/Clone Hero")
+        # Determine CH root relative to project or override via CLI
+        ch_root = (
+            Path(args.clonehero_root) if args.clonehero_root else Path("CloneHero")
+        )
         # Coerce DataFrame rows into strictly-typed PredictionRow entries
         pred_rows: list[PredictionRow] = []
         for raw in chart_generator.df.to_dict(orient="records"):
