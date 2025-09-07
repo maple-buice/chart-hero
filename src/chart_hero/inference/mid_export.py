@@ -188,7 +188,14 @@ def _add_drums_track(
 
     # Sort and emit deltas
     type_order = {"note_on": 0, "note_off": 1}
-    events.sort(key=lambda x: (x[0], type_order.get(x[1].type, 99), x[1].note))
+
+    def sort_key(item: tuple[int, mido.Message]) -> tuple[int, int, int, int]:
+        tick, msg = item
+        # Ensure pro-cymbal toggles (notes 110+) precede gem hits at the same tick
+        toggle_pri = 0 if (msg.type == "note_on" and getattr(msg, "note", 0) >= 110) else 1
+        return (tick, toggle_pri, type_order.get(msg.type, 99), getattr(msg, "note", 0))
+
+    events.sort(key=sort_key)
     last = 0
     for t, msg in events:
         delta = t - last

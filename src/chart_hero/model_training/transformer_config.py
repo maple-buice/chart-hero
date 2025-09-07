@@ -280,7 +280,10 @@ class LocalConfig(BaseConfig):
     max_seq_len: int = 512  # Reduced from 768
 
     def __post_init__(self) -> None:
-        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        """Select default device preferring MPS, then CUDA, otherwise CPU."""
+        # `torch.backends.mps.is_built` is not consistently available across builds;
+        # checking only `is_available` keeps logic simple and testable.
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             self.device = "mps"
         elif torch.cuda.is_available():
             self.device = "cuda"

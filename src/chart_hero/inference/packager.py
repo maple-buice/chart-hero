@@ -164,4 +164,3 @@ def package_clonehero_song(
         pass
 
     return out_dir
-    return out_dir
