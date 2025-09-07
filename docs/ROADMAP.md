@@ -83,6 +83,31 @@ YouTube Music Premium Cookies
 - Class-threshold sweeps & reports
   - Implement sweeps with plots; persist best thresholds to config/ckpt
 
+## High-Resolution Drum Model (v1)
+- [ ] (R-101) Add IOI/subdivision metrics to evaluator
+  - Per-class IOI-binned recall/precision and subdivision recall (16th/32nd/64th/128th)
+  - Export CSV + human-readable summary
+- [ ] (R-102) Add per-class offset calibration + application in evaluator
+  - Learn constant offsets on dev; apply during evaluation and export
+- [ ] (R-103) New `local_highres` config (hop=128, patch_size=(8,16), stride=1)
+  - label_dilation_frames=3, event_tolerance_patches=3, focal loss on
+  - cap auto pos_weight <= 10
+- [ ] (R-104) Dataset builder from Clone Hero JSON
+  - Read `artifacts/clonehero_charts_json/**.midi.json`; resolve audio from `doc.path`
+  - Audio priority: drums.ogg → stems → song.ogg → Demucs (optional)
+  - Compute global offset via onset-envelope xcorr; write frame labels with ± dilation
+  - Shard dataset; stratified splits by artist/title/charter
+- [ ] (R-105) Model heads: onset auxiliary (+ optional offset regression)
+  - Train Stage A (onset) then Stage B (onset+classes); hard-negative mining for cymbal/tom confusions
+- [ ] (R-106) Inference decode revamp
+  - Gate class logits by onset; NMS + min inter-onset spacing; apply offset corrections
+- [ ] (R-107) Calibration & presets
+  - Export per-class thresholds/temperatures; conservative/aggressive hi-res presets in CLI
+- [ ] (R-108) Acceptance criteria gates
+  - Kick/Snare F1 ≥ 0.70; 32nd/64th recall targets; tom precision/recall targets; |median offset| < 5 ms
+
+See detailed plan: `docs/plans/high_resolution_drum_model.md`.
+
 ## Attribution & Licensing
 - Moonscraper BSD‑3‑Clause
   - DONE: `THIRD_PARTY_NOTICES.md`; behavior ported, no direct code copied
