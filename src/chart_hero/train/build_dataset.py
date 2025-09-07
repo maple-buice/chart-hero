@@ -37,7 +37,6 @@ from chart_hero.model_training.transformer_config import (
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 
-
 AUDIO_EXTS = (".ogg", ".mp3", ".wav", ".flac", ".m4a")
 
 
@@ -103,11 +102,33 @@ def parse_song_ini(song_dir: Path) -> dict[str, str]:
                 k, v = line.split("=", 1)
                 k = k.strip().lower()
                 v = v.strip()
-                if k in ("artist", "name", "charter"):
+                if k in ("artist", "name", "charter", "genre"):
                     info[k] = v
     except Exception:
         pass
     return info
+
+
+def _pack_name_for(song_dir: Path, roots: Sequence[str | os.PathLike[str]]) -> str:
+    """Best-effort guess of the pack name that contains this song.
+
+    Typically, Clone Hero layouts are <root>/Songs/<Pack>/<Song>/..., but we
+    simply take the first path segment beneath the matching root. Falls back to
+    the immediate parent directory name.
+    """
+    try:
+        rp = song_dir.resolve()
+    except Exception:
+        rp = song_dir
+    for raw in roots:
+        try:
+            base = Path(raw).resolve()
+            rel = rp.relative_to(base)
+            if len(rel.parts) > 0:
+                return rel.parts[0]
+        except Exception:
+            continue
+    return song_dir.parent.name
 
 
 def load_audio_for_training(
@@ -433,6 +454,30 @@ def main() -> None:
         default=None,
         help="Pick at most this many candidate songs using simple heuristics (prefer MIDI + stems).",
     )
+    ap.add_argument(
+        "--max-per-pack",
+        type=int,
+        default=None,
+        help="Cap selected songs per pack (default ≈ limit/5).",
+    )
+    ap.add_argument(
+        "--max-per-artist",
+        type=int,
+        default=2,
+        help="Cap selected songs per artist (default 2).",
+    )
+    ap.add_argument(
+        "--prefer-non-rbgh",
+        type=float,
+        default=0.3,
+        help="Bonus weight for non Rock Band/Guitar Hero sources (0..1 recommended).",
+    )
+    ap.add_argument(
+        "--bonus-pack-keywords",
+        type=str,
+        default="J-Rock,jrock,J-Pop,Anime,Alt Quest,Villainess",
+        help="Comma-separated pack keywords to boost (case-insensitive).",
+    )
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument(
         "--discovery-cache",
@@ -552,11 +597,33 @@ def main() -> None:
                 break
     # If requested, choose a limited number of songs guided by simple audio/chart heuristics
     if args.limit_songs is not None and len(recs) > args.limit_songs:
+        # Diversity-aware scoring and sampling
+        kw = [
+            k.strip().lower()
+            for k in (args.bonus_pack_keywords or "").split(",")
+            if k.strip()
+        ]
 
-        def _score_record(r: Record) -> int:
-            score = 0
+        def _meta(r: Record) -> dict[str, str]:
+            m = parse_song_ini(r.song_dir)
+            # Derive artist/name from folder if missing
+            if not m.get("artist") or not m.get("name"):
+                base = r.song_dir.name
+                if " - " in base:
+                    parts = base.split(" - ", 1)
+                    if not m.get("artist"):
+                        m["artist"] = parts[0]
+                    if not m.get("name"):
+                        m["name"] = parts[1]
+            m.setdefault("artist", "?")
+            m.setdefault("name", r.song_dir.name)
+            m.setdefault("genre", "")
+            return m
+
+        def _score_record(r: Record) -> float:
+            score = 0.0
             if r.source == "midi":
-                score += 2
+                score += 2.0
             stems = list_stems(r.song_dir)
             drum_keys = [k for k in stems.keys() if "drum" in k]
             other_keys = [
@@ -568,31 +635,106 @@ def main() -> None:
                 )
             ]
             if drum_keys and other_keys:
-                score += 3
+                score += 3.0
             elif drum_keys:
-                score += 1
+                score += 1.0
             # Prefer Expert when detectable from path/name
             pstr = str(r.notes_path).lower()
             if "expert" in pstr:
-                score += 1
+                score += 0.5
             # Penalize if no obvious audio (rare)
             if choose_audio_path(r.song_dir) is None and not drum_keys:
-                score -= 2
+                score -= 2.0
+            # Non RB/GH bonus
+            path_l = str(r.song_dir).lower()
+            is_rbgh = ("rock band" in path_l) or ("guitar hero" in path_l)
+            if not is_rbgh:
+                score += float(args.prefer_non_rbgh or 0.0)
+            else:
+                score -= 0.1
+            # Pack/genre bonuses
+            pack = _pack_name_for(r.song_dir, args.roots)
+            pack_l = pack.lower()
+            if any(k in pack_l for k in kw):
+                score += 0.7
+            # Genre diversity nudge
+            genre = _meta(r).get("genre", "").lower()
+            if genre:
+                if any(g in genre for g in ("j-rock", "jrock", "j-pop", "anime")):
+                    score += 0.6
+                elif any(g in genre for g in ("pop", "electro", "edm", "hip", "dance")):
+                    score += 0.2
             return score
 
-        scored: list[tuple[Record, int]] = [(r, _score_record(r)) for r in recs]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        # Bias selection to the top tier but keep diversity using RNG
-        topK = max(args.limit_songs * 3, args.limit_songs)
-        top = scored[: min(len(scored), topK)]
+        # Compute weights and metadata
+        infos = []
+        for r in recs:
+            m = _meta(r)
+            pack = _pack_name_for(r.song_dir, args.roots)
+            w = max(0.01, _score_record(r))
+            infos.append((r, w, pack, m.get("artist", "?")))
+
+        # Weighted sampling with diversity caps
         rng = np.random.default_rng(seed=args.seed)
-        if len(top) > args.limit_songs:
-            sel = sorted(
-                rng.choice(len(top), size=args.limit_songs, replace=False).tolist()
+        weights = np.array([x[1] for x in infos], dtype=np.float64)
+        probs = weights / weights.sum()
+        order = rng.choice(len(infos), size=len(infos), replace=False, p=probs)
+
+        max_per_pack = (
+            int(args.max_per_pack)
+            if args.max_per_pack is not None
+            else max(1, int(round((args.limit_songs or 25) / 5)))
+        )
+        max_per_artist = int(args.max_per_artist or 2)
+        by_pack: dict[str, int] = {}
+        by_artist: dict[str, int] = {}
+        chosen: List[Record] = []
+
+        for idx in order:
+            r, _w, pack, artist = infos[idx]
+            if by_pack.get(pack, 0) >= max_per_pack:
+                continue
+            if by_artist.get(artist, 0) >= max_per_artist:
+                continue
+            chosen.append(r)
+            by_pack[pack] = by_pack.get(pack, 0) + 1
+            by_artist[artist] = by_artist.get(artist, 0) + 1
+            if len(chosen) >= int(args.limit_songs):
+                break
+        # Fallback to fill if caps were too strict
+        if len(chosen) < int(args.limit_songs):
+            for idx in order:
+                if len(chosen) >= int(args.limit_songs):
+                    break
+                r, _w, pack, artist = infos[idx]
+                if r in chosen:
+                    continue
+                chosen.append(r)
+        recs = chosen
+
+        # Print a short summary grouped by pack → artist → song
+        try:
+            from collections import defaultdict
+
+            tree: dict[str, dict[str, list[str]]] = defaultdict(
+                lambda: defaultdict(list)
             )
-            recs = [top[i][0] for i in sel]
-        else:
-            recs = [r for r, _ in top]
+            for r in recs:
+                meta = parse_song_ini(r.song_dir)
+                artist = meta.get("artist", r.song_dir.parent.name)
+                name = meta.get("name", r.song_dir.name)
+                pack = _pack_name_for(r.song_dir, args.roots)
+                tree[pack][artist].append(name)
+            print("Selected songs (pack → artist → song):")
+            for pack in sorted(tree.keys()):
+                print(f"- {pack} ({len(tree[pack])} artists)")
+                for artist in sorted(tree[pack].keys()):
+                    songs = ", ".join(sorted(tree[pack][artist])[:5])
+                    extra = len(tree[pack][artist]) - 5
+                    tail = f" (+{extra})" if extra > 0 else ""
+                    print(f"    · {artist}: {songs}{tail}")
+        except Exception:
+            pass
 
     if not recs:
         print("No usable charts found (notes.mid / notes.chart / notes.txt).")

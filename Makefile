@@ -9,7 +9,7 @@ RUFF := $(VENV)/bin/ruff
 # Defaults for dataset building (can be overridden on the command line)
 ROOT ?= /Volumes/Media/CloneHero
 OUT ?= datasets/processed_highres
-LIMIT ?= 50
+LIMIT ?= 25
 INDEX_DIR ?= artifacts/clonehero_charts_json
 
 # Training/inference convenience variables
