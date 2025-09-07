@@ -68,17 +68,16 @@ class RbMidiProcessor:
                 events.append((t, msg))
         events.sort(key=lambda x: x[0])
 
-        # Pick highest present difficulty
+        # Only use Expert difficulty (96..101). Lower difficulties omit notes and
+        # would create contradictory labels for the same audio.
         diff_start = {"Expert": 96, "Hard": 84, "Medium": 72, "Easy": 60}
         counts = {k: 0 for k in diff_start}
         for _, msg in events:
             if msg.type == "note_on" and msg.velocity > 0:
-                for d, s in diff_start.items():
-                    if s <= msg.note <= s + 5:
-                        counts[d] += 1
-        active = next(
-            (d for d in ["Expert", "Hard", "Medium", "Easy"] if counts[d] > 0), None
-        )
+                s = diff_start["Expert"]
+                if s <= msg.note <= s + 5:
+                    counts["Expert"] += 1
+        active = "Expert" if counts["Expert"] > 0 else None
 
         label = torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
         if active is None:
@@ -135,8 +134,9 @@ class RbMidiProcessor:
                     tr_name = msg.name
                     break
             names.append(((tr_name or "").lower(), tr))
-        preferred = ["part drums"]
-        fallbacks = ["part real_drums_ps", "drums", "part_drums"]
+        # Prefer pro/real drums style tracks when present, otherwise PART DRUMS.
+        preferred = ["part real_drums_ps", "real drums", "pro drums", "part drums"]
+        fallbacks = ["drums", "part_drums", "real_drums", "part real_drums"]
         out: List[mido.MidiTrack] = []
         for p in preferred:
             out = [tr for n, tr in names if n == p]

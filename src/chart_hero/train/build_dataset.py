@@ -7,7 +7,8 @@ Scans one or more Clone Hero roots, parses Rock Band-style drum charts from
 writes spectrogram + frame label shards suitable for transformer training.
 
 Initial prototype focuses on MIDI + single full mix selection. Stems mixing and
-advanced alignment are left as TODOs.
+advanced alignment are left as TODOs. Uses Expert-only drum charts and prefers
+pro_drums-capable charts/tracks when available.
 
 Usage:
   python -m chart_hero.train.build_dataset \
@@ -85,8 +86,17 @@ def list_stems(song_dir: Path) -> dict[str, Path]:
     return stems
 
 
+def _parse_bool_like(v: str) -> Optional[bool]:
+    s = v.strip().lower()
+    if s in {"1", "true", "yes", "y", "on"}:
+        return True
+    if s in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
 def parse_song_ini(song_dir: Path) -> dict[str, str]:
-    """Parse song.ini for simple metadata (artist, name, charter)."""
+    """Parse song.ini for simple metadata (artist, name, charter, pro_drums)."""
     ini_path = song_dir / "song.ini"
     info: dict[str, str] = {}
     if not ini_path.exists():
@@ -104,6 +114,10 @@ def parse_song_ini(song_dir: Path) -> dict[str, str]:
                 v = v.strip()
                 if k in ("artist", "name", "charter", "genre"):
                     info[k] = v
+                elif k == "pro_drums":
+                    b = _parse_bool_like(v)
+                    # keep original string if not a clear boolean; downstream may still inspect
+                    info[k] = str(b) if b is not None else v
     except Exception:
         pass
     return info
@@ -276,14 +290,9 @@ def build_labels_from_chart(
     obj = _load_chart_obj(chart_path)
     if not obj:
         return None
-    # Choose difficulty track (prefer Expert)
-    order = ["ExpertDrums", "HardDrums", "MediumDrums", "EasyDrums"]
-    events: list[dict] = []
-    for dname in order:
-        evs = obj.get("tracks", {}).get(dname, [])
-        if evs:
-            events = evs
-            break
+    # Only use Expert drums. Lower diffs omit notes, which conflicts with the
+    # same audio waveform.
+    events: list[dict] = obj.get("tracks", {}).get("ExpertDrums", [])
     if not events:
         return None
     resolution = int(obj.get("song", {}).get("Resolution") or 192)
@@ -583,18 +592,33 @@ def main() -> None:
         folders = [folders[int(i)] for i in sorted(idx)]
     print(f"Found {len(folders)} candidate song folders")
 
-    # Collect records (.mid preferred; else .chart/.txt)
+    # Collect records (prefer pro_drums charts when appropriate; Expert-only later)
     recs: List[Record] = []
     for d in folders:
         midi = d / "notes.mid"
+        chart = d / "notes.chart"
+        txt = d / "notes.txt"
+        meta = parse_song_ini(d)
+        pro_drums_flag = meta.get("pro_drums", "").strip().lower() in {
+            "true",
+            "1",
+            "yes",
+            "y",
+            "on",
+        }
+        # If a chart exists and pro_drums is indicated, prefer the chart; otherwise prefer MIDI
+        if chart.exists() and pro_drums_flag:
+            recs.append(Record(song_dir=d, notes_path=chart, source="chart"))
+            continue
         if midi.exists():
             recs.append(Record(song_dir=d, notes_path=midi, source="midi"))
             continue
-        for base in ("notes.chart", "notes.txt"):
-            p = d / base
-            if p.exists():
-                recs.append(Record(song_dir=d, notes_path=p, source="chart"))
-                break
+        # Fallback to chart/txt if present
+        if chart.exists():
+            recs.append(Record(song_dir=d, notes_path=chart, source="chart"))
+            continue
+        if txt.exists():
+            recs.append(Record(song_dir=d, notes_path=txt, source="chart"))
     # If requested, choose a limited number of songs guided by simple audio/chart heuristics
     if args.limit_songs is not None and len(recs) > args.limit_songs:
         # Diversity-aware scoring and sampling
@@ -642,6 +666,16 @@ def main() -> None:
             pstr = str(r.notes_path).lower()
             if "expert" in pstr:
                 score += 0.5
+            # Prefer charts with explicit pro_drums flag in song.ini
+            meta_r = _meta(r)
+            if meta_r.get("pro_drums", "").strip().lower() in {
+                "true",
+                "1",
+                "yes",
+                "y",
+                "on",
+            }:
+                score += 0.75
             # Penalize if no obvious audio (rare)
             if choose_audio_path(r.song_dir) is None and not drum_keys:
                 score -= 2.0
