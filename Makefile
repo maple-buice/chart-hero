@@ -8,8 +8,9 @@ RUFF := $(VENV)/bin/ruff
 
 # Defaults for dataset building (can be overridden on the command line)
 ROOT ?= /Volumes/Media/CloneHero
-OUT ?= datasets/processed_highres
-LIMIT ?= 25
+DEV_SET_ROOT ?= CloneHero/KnownGoodSongs
+DATASET_OUT ?= datasets/processed_highres
+DATASET_SONG_LIMIT ?= 25
 INDEX_DIR ?= artifacts/clonehero_charts_json
 
 # Training/inference convenience variables
@@ -33,6 +34,8 @@ PRESET ?=
 # Build flag only when PRESET is non-empty
 PRESET_FLAG := $(if $(strip $(PRESET)),--preset $(PRESET),)
 
+PATCH_STRIDE ?= 1
+
 .PHONY: help
 help:
 	@echo "Common targets:"
@@ -43,7 +46,7 @@ help:
 	@echo "  make lint           # Ruff lint"
 	@echo "  make format         # Ruff format"
 	@echo "  make train-quick    # Quick sanity training run"
-	@echo "  make dataset-highres ROOT=/Volumes/Media/CloneHero LIMIT=50 OUT=datasets/processed_highres  # Build hi-res dataset subset"
+	@echo "  make dataset-highres ROOT=/Volumes/Media/CloneHero DATASET_SONG_LIMIT=50 DATASET_OUT=datasets/processed_highres  # Build hi-res dataset subset"
 	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
 	@echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
 
@@ -81,22 +84,22 @@ train-quick:
 		--config local \
 		--no-wandb \
 		--quick-test \
-		--data-dir ./tests/assets/dummy_data/processed \
-		--experiment-tag dev_quick
+		--data-dir "$(DATASET_OUT)"" \
+		--experiment-tag "quick_$(TAG)"
 
 # Build a high-resolution dataset from Clone Hero folders.
 # Variables:
 # - ROOT: Clone Hero songs root (default /Volumes/Media/CloneHero)
-# - OUT:  output dataset directory (default datasets/processed_highres)
-# - LIMIT: number of songs to select (default 50)
+# - DATASET_OUT:  output dataset directory (default datasets/processed_highres)
+# - DATASET_SONG_LIMIT: number of songs to select (default 50)
 .PHONY: dataset-highres
 dataset-highres:
 	$(PY) -m chart_hero.train.build_dataset \
 		--roots "$(ROOT)" \
-		--out-dir "$(OUT)" \
+		--out-dir "$(DATASET_OUT)" \
 		--config local_highres \
 		--json-index-dir "$(INDEX_DIR)" \
-		--limit-songs $(LIMIT) \
+		--limit-songs $(DATASET_SONG_LIMIT) \
 		--min-align-score 0.05 \
 		--dedupe
 
@@ -117,6 +120,17 @@ infer:
 			--model-path="$(INFER_MODEL)" \
 			$(PRESET_FLAG) || exit $$?; \
 	done
+
+.PHONY: calibrate-highres
+calibrate-highres:
+	$(PY) scripts/calibrate_thresholds.py \
+		--roots "$(ROOT)" \
+		--model "$(INFER_MODEL)" \
+		--grid 0.5,0.55,0.6,0.65,0.7 \
+		--nms-k 9 \
+		--activity-gate 0.45 \
+		--patch-stride $(PATCH_STRIDE) \
+		--tol-ms 45
 
 # Basic evaluation against a known-good notes.mid
 # Required vars: AUDIO=/path/to/song.ogg MID=/path/to/notes.mid
