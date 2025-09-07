@@ -24,7 +24,6 @@ Unit Testing TODOs (new features)
 - main integration: lyrics → notes.mid
   - Integration flow with/without AudD; missing metadata; local/linked audio.
   - No crash if lyrics unavailable; still exports chart.
-
 - main.py: BPM estimation with `librosa.feature.rhythm.tempo`
   - Regression vs previous alias on small corpus within tolerance; hop_length impact.
 - inference/input_transform.py + training/data_preparation.py
