@@ -139,6 +139,26 @@ def load_audio_for_training(
     return np.zeros(0, dtype=np.float32), "unknown"
 
 
+def normalize_loudness_rms(y: np.ndarray, target_dbfs: float = -14.0) -> np.ndarray:
+    """Approximate loudness normalization via RMS to a target dBFS.
+
+    Not EBU R128 LUFS, but stabilizes dynamics across charts for training.
+    Applies conservative gain with clipping prevention.
+    """
+    if y.size == 0:
+        return y
+    rms = float(np.sqrt(np.mean(np.square(y), dtype=np.float64)))
+    if not np.isfinite(rms) or rms <= 1e-8:
+        return y
+    target = 10.0 ** (target_dbfs / 20.0)
+    gain = target / rms
+    # Prevent clipping
+    peak = float(np.max(np.abs(y))) if y.size else 1.0
+    if peak * gain > 0.99:
+        gain = 0.99 / max(peak, 1e-6)
+    return (y * gain).astype(np.float32)
+
+
 def build_labels_from_midi(
     midi_path: Path, num_time_frames: int, config: BaseConfig
 ) -> Optional[torch.Tensor]:
@@ -429,7 +449,9 @@ def main() -> None:
             if y.size == 0:
                 skipped += 1
                 continue
-            y_t = torch.from_numpy(y).float().unsqueeze(0)
+            # Loudness normalize to target
+            y_norm = normalize_loudness_rms(y, target_dbfs=-14.0)
+            y_t = torch.from_numpy(y_norm).float().unsqueeze(0)
             spec = processor.audio_to_spectrogram(y_t)
             if spec.shape[1] != config.n_mels:
                 spec = spec.transpose(1, 2)  # (1,T,F) -> (1,F,T)

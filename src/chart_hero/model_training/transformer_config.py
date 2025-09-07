@@ -145,6 +145,11 @@ class BaseConfig:
     cymbal_margin: float = 0.1
     # Require tom prob exceed cymbal by this margin to choose tom over cymbal
     tom_over_cymbal_margin: float = 0.35
+    # Optional decode min spacing controls (ms). If map provided, per-class wins over default.
+    min_spacing_ms_default: float | None = None
+    min_spacing_ms_map: dict[str, float] | None = None
+    # Optional per-class time offset (ms) applied to predicted events at decode
+    class_time_offsets_ms: list[float] | None = None
 
     # Data
     train_batch_size: int = 32
@@ -355,6 +360,14 @@ class LocalHighResConfig(LocalConfig):
     # Improve dataloader stability locally
     num_workers: int = 2
     persistent_workers: bool = False
+    # Conservative decode min spacing defaults (ms)
+    min_spacing_ms_map: dict[str, float] | None = None
+
+    def __post_init__(self) -> None:  # type: ignore[override]
+        super().__post_init__()
+        # Set default min spacing for kick/snare if not provided
+        if self.min_spacing_ms_map is None:
+            self.min_spacing_ms_map = {"0": 30.0, "1": 30.0}
 
 
 @dataclass

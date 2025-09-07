@@ -180,6 +180,17 @@ class Charter:
                         # shape [1, C] to broadcast against [T, C]
                         thr_vec = torch.tensor(ct).view(1, -1).to(probs.device)
 
+                # Optional decode min spacing control (ms)
+                min_default = getattr(self.config, "min_spacing_ms_default", None)
+                min_map = getattr(self.config, "min_spacing_ms_map", None) or {}
+                last_time_ms: dict[str, float] = {}
+
+                # Optional per-class time offset corrections (ms)
+                class_time_offsets_ms = getattr(
+                    self.config, "class_time_offsets_ms", None
+                )
+                classes_list = classes
+
                 for b_idx, seg in enumerate(batch):
                     seg_probs = probs[b_idx]  # [T_patches, C]
                     T_p = seg_probs.shape[0]
@@ -288,7 +299,35 @@ class Charter:
                         frame_idx = (
                             seg["start_frame"] + t * stride_frames + (patch // 2)
                         )
-                        peak_sample = int(frame_idx * hop)
+                        # Apply per-class time offsets by shifting sample position
+                        # Use the largest offset among active classes to avoid splitting events
+                        add_ms = 0.0
+                        if isinstance(class_time_offsets_ms, (list, tuple)) and len(
+                            class_time_offsets_ms
+                        ) == len(classes_list):
+                            # Determine active classes indices
+                            active_indices: list[int] = []
+                            for name, idx_i in [
+                                ("0", idx.get("0")),
+                                ("1", idx.get("1")),
+                                ("2", idx.get("2")),
+                                ("3", idx.get("3")),
+                                ("4", idx.get("4")),
+                                ("66", idx.get("66")),
+                                ("67", idx.get("67")),
+                                ("68", idx.get("68")),
+                            ]:
+                                if idx_i is not None and bool(act[idx_i].item()):
+                                    active_indices.append(idx_i)
+                            if active_indices:
+                                add_ms = -max(
+                                    float(class_time_offsets_ms[i])
+                                    for i in active_indices
+                                )
+                        peak_sample = int(
+                            (frame_idx * hop)
+                            + (add_ms * self.config.sample_rate / 1000.0)
+                        )
 
                         row: PredictionRow = {
                             "peak_sample": peak_sample,
@@ -301,6 +340,34 @@ class Charter:
                             "67": y_c,
                             "68": b_c,
                         }
+
+                        # Optional min spacing per class (skip if within limit)
+                        def _ms_from_sample(samp: int) -> float:
+                            return float(samp) * 1000.0 / float(self.config.sample_rate)
+
+                        now_ms = _ms_from_sample(peak_sample)
+                        keep = True
+                        for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
+                            if row.get(lab, 0) != 1:
+                                continue
+                            last_ms = last_time_ms.get(lab)
+                            limit = (
+                                min_map.get(lab, min_default)
+                                if min_default is not None
+                                else min_map.get(lab)
+                            )
+                            if (
+                                last_ms is not None
+                                and limit is not None
+                                and (now_ms - last_ms) < float(limit)
+                            ):
+                                keep = False
+                                break
+                        if not keep:
+                            continue
+                        for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
+                            if row.get(lab, 0) == 1:
+                                last_time_ms[lab] = now_ms
                         rows.append(row)
 
         if not rows:

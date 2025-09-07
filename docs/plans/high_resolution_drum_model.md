@@ -144,7 +144,7 @@ Implementation Tasks
   - [ ] Frame label writer with dilation and onset_any channel; shard writer.
   - [ ] Train/val/test splitting utilities (by artist/title/charter).
 - Preparation & Data Quality
-  - [ ] Loudness normalize audio to a reference (e.g., -14 LUFS) before feature extraction for stable dynamics across charts.
+  - [x] Loudness normalize audio to a reference (approximate -14 dBFS RMS) before feature extraction for stable dynamics across charts.
   - [ ] Detect/skip desynced charts: residual MAE > 30 ms after offset; flag tempo anomalies; optional DTW alignment for borderline cases.
   - [ ] Duplicate/near‑duplicate detection using audio hashes; dedupe across difficulty variants from the same source.
   - [ ] Domain balancing with explicit sampling ratios favoring FMID; log realized ratios per epoch.
@@ -155,10 +155,10 @@ Domain Robustness
 - Dual calibration: maintain per‑domain threshold/temperature sets (FMID vs drums_only), pick at inference based on detected domain; default to FMID.
 - Augment SNR: simulate bleed by mixing low‑level band‑limited noise or backing instruments; random crowd/reverb at low SNR to toughen the classifier on real songs.
 - Training
-  - [ ] Training entry (`chart_hero.model_training.train_highres`) with staged training and checkpoints.
+  - [x] Training entry (`scripts/train_highres.py`) with local_highres preset and passthrough args.
   - [x] Calibration export (`class_thresholds.json`) and validator that prints the IOI/subdivision dashboard.
 - Inference
-  - [ ] Decode using onset gating + min spacing; apply offset corrections.
+  - [x] Decode using onset gating + min spacing; apply offset corrections.
   - [x] Two presets (conservative/aggressive) and CLI flags.
 
 Additional Training Enhancements
@@ -198,8 +198,8 @@ Adversarial Stem Mixing (FP Suppression)
 - Optional auxiliary loss: add a lightweight binary “drum presence” head trained on decoy negatives to reduce class activations when drumness is low (can be the onset head itself).
 
 Calibration & Thresholding
-- Learn per‑class temperatures/thresholds on a dev set; save to checkpoint (`class_thresholds.json`) and apply at decode.
-- Learn constant per‑class offset corrections on dev; apply during inference to keep medians near 0 ms.
+- [x] Learn per‑class temperatures/thresholds on a dev set; save to checkpoint (`class_thresholds.json`) and apply at decode.
+- [x] Learn constant per‑class offset corrections on dev; apply during inference to keep medians near 0 ms.
 
 Compute on a Laptop
 - Smaller hidden size/heads, gradient checkpointing, chunked sequences (`max_audio_length` shorter), and aggressive accumulation to keep VRAM/CPU RAM within limits.

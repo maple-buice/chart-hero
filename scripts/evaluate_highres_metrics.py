@@ -82,6 +82,7 @@ def evaluate_song(
     model: Optional[torch.nn.Module],
     processor: SpectrogramProcessor,
     tol_patches: int,
+    apply_offsets_ms: Optional[Dict[str, float]] = None,
 ) -> dict:
     """Evaluate a single song, returning detailed per-class metrics and offsets."""
     # Load audio and build spectrogram
@@ -192,6 +193,11 @@ def evaluate_song(
 
     for c_idx, c in enumerate(classes):
         p_events = series_to_events(preds[:, c_idx])
+        # Apply per-class constant offset (ms) to predictions before matching
+        if apply_offsets_ms and c in apply_offsets_ms and apply_offsets_ms[c] != 0:
+            shift = int(round(float(apply_offsets_ms[c]) / ms_per_patch))
+            if shift != 0:
+                p_events = [max(0, p - shift) for p in p_events]
         t_events = series_to_events(lab_p[:, c_idx])
         tp, fp, fn, mapping = greedy_match(p_events, t_events, tol_patches)
         # Compute offsets (pred - true) in ms for matched pairs
@@ -294,6 +300,23 @@ def main() -> None:
     )
     ap.add_argument("--max-songs", type=int, default=20)
     ap.add_argument("--out-csv", type=str, default=None)
+    ap.add_argument(
+        "--offsets-json",
+        type=str,
+        default=None,
+        help="Path to per-class offsets (ms) JSON to apply during eval",
+    )
+    ap.add_argument(
+        "--learn-offsets",
+        action="store_true",
+        help="Learn per-class constant offsets (median) from matched events",
+    )
+    ap.add_argument(
+        "--save-offsets",
+        type=str,
+        default=None,
+        help="Write learned offsets JSON to this path",
+    )
     args = ap.parse_args()
 
     config = get_config(args.config)
@@ -370,14 +393,54 @@ def main() -> None:
 
     # CSV rows: song,class,metric,bin_label,support,hits,bin_recall,precision,recall,f1
     rows: List[List[str | float | int]] = []
+
+    # Offsets to apply (if provided)
+    apply_offsets: Optional[Dict[str, float]] = None
+    if args.offsets_json:
+        try:
+            with open(args.offsets_json, "r") as f:
+                data = json.load(f)
+            # accept list or map
+            classes = get_drum_hits()
+            if isinstance(data, dict) and "offsets_ms" in data:
+                m = data["offsets_ms"]
+            else:
+                m = data
+            if isinstance(m, dict):
+                apply_offsets = {str(k): float(v) for k, v in m.items()}
+            elif isinstance(m, list):
+                apply_offsets = {
+                    classes[i]: float(v) for i, v in enumerate(m) if i < len(classes)
+                }
+        except Exception:
+            apply_offsets = None
+
+    # Accumulate offsets when learning
+    offsets_samples: Dict[str, List[float]] = {c: [] for c in classes}
     for midi, audio in songs:
         try:
-            res = evaluate_song(midi, audio, config, model, processor, args.tol_patches)
+            res = evaluate_song(
+                midi,
+                audio,
+                config,
+                model,
+                processor,
+                args.tol_patches,
+                apply_offsets_ms=apply_offsets,
+            )
         except Exception as e:
             print(f"ERR evaluating {midi}: {e}")
             continue
         base = f"{midi.parent.name}"
         for c, d in res["per_class"].items():
+            # Collect offsets if learning
+            if args.learn_offsets:
+                try:
+                    offsets_samples[c].extend(
+                        [float(x) for x in d.get("offsets_ms", [])]
+                    )
+                except Exception:
+                    pass
             agg_tp[c] += int(d["tp"])  # type: ignore[arg-type]
             agg_fp[c] += int(d["fp"])  # type: ignore[arg-type]
             agg_fn[c] += int(d["fn"])  # type: ignore[arg-type]
@@ -468,6 +531,22 @@ def main() -> None:
             for row in rows:
                 w.writerow(row)
         print(f"CSV written: {outp}")
+
+    # Learn and optionally save offsets
+    if args.learn_offsets:
+        learned: Dict[str, float] = {}
+        for c in classes:
+            vals = offsets_samples[c]
+            if vals:
+                learned[c] = float(np.median(np.array(vals, dtype=np.float32)))
+        print("\nLearned per-class offsets (ms):", json.dumps(learned, indent=2))
+        if args.save_offsets:
+            payload = {"offsets_ms": learned, "classes": classes}
+            outp = Path(args.save_offsets)
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            with outp.open("w") as f:
+                json.dump(payload, f, indent=2)
+            print(f"Offsets JSON written to {outp}")
 
 
 if __name__ == "__main__":

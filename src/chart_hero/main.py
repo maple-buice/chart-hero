@@ -211,11 +211,23 @@ def main() -> None:
         help="Per-class probability multipliers '2=0.5,3=0.5,4=0.5,67=1.1'",
     )
     parser.add_argument(
+        "--offsets-json",
+        type=str,
+        default=None,
+        help="JSON with per-class time offsets (ms) to apply at decode",
+    )
+    parser.add_argument(
         "--preset",
         type=str,
         default=None,
         choices=["conservative", "aggressive"],
         help="Decode preset: conservative (fewer FPs) or aggressive (higher recall)",
+    )
+    parser.add_argument(
+        "--onset-gate",
+        type=float,
+        default=None,
+        help="Aux onset gate threshold (0..1) if model has onset head",
     )
     parser.add_argument(
         "--clonehero-root",
@@ -384,6 +396,8 @@ def main() -> None:
         config.cymbal_margin = float(args.cymbal_margin)
     if args.tom_over_cymbal_margin is not None:
         config.tom_over_cymbal_margin = float(args.tom_over_cymbal_margin)
+    if args.onset_gate is not None:
+        config.onset_gate_threshold = float(args.onset_gate)
     # Parse per-class thresholds and gains
     if args.class_thresholds:
         from chart_hero.model_training.transformer_config import get_drum_hits
@@ -419,6 +433,26 @@ def main() -> None:
         if mapping:
             classes = get_drum_hits()
             config.class_gains = [float(mapping.get(c, 1.0)) for c in classes]
+    # Load per-class time offsets (ms) if provided
+    if args.offsets_json:
+        try:
+            import json as _json
+            from chart_hero.model_training.transformer_config import get_drum_hits
+
+            with open(args.offsets_json, "r") as f:
+                payload = _json.load(f)
+            classes = get_drum_hits()
+            m = payload.get("offsets_ms", payload)
+            if isinstance(m, dict):
+                lst = [float(m.get(c, 0.0)) for c in classes]
+            elif isinstance(m, list):
+                lst = [float(x) for x in m][: len(classes)]
+            else:
+                lst = None
+            if lst and len(lst) == len(classes):
+                config.class_time_offsets_ms = lst
+        except Exception:
+            pass
     spectrogram_segments = audio_to_tensors(f_path, config)
     if not spectrogram_segments:
         print("Could not process audio file.")
