@@ -439,6 +439,7 @@ def compute_class_pos_weights(
     num_classes: int,
     split: str = "train",
     max_files: Optional[int] = None,
+    cap: float | None = None,
 ) -> torch.Tensor:
     """Compute BCEWithLogits pos_weight per class from label .npy files.
 
@@ -469,5 +470,6 @@ def compute_class_pos_weights(
     neg_np = np.maximum(0.0, total_frames - pos_np)
     pw_np = (neg_np / (pos_np + eps)).astype(np.float32)
     # Bound pos_weight to reasonable range to avoid extreme gradients
-    pw_np = np.clip(pw_np, 0.5, 50.0)
+    upper = float(cap) if (cap is not None and cap > 0) else 50.0
+    pw_np = np.clip(pw_np, 0.5, upper)
     return torch.from_numpy(pw_np)

@@ -188,6 +188,8 @@ class BaseConfig:
     pos_weight_strategy: str = "auto"  # one of: 'auto', 'constant'
     class_pos_weight: tuple[float, ...] | None = None
     pos_weight_max_files: int | None = None
+    # Cap for auto-computed pos_weight to avoid extreme gradients
+    pos_weight_cap: float = 50.0
 
     # Advanced loss/label settings
     use_focal_loss: bool = False
@@ -311,6 +313,46 @@ class OvernightConfig(LocalConfig):  # Inherits from LocalConfig for MPS setting
 
 
 @dataclass
+class LocalHighResConfig(LocalConfig):
+    """High-resolution baseline config for drum transcription.
+
+    Targets ~5.8 ms frame step with tighter event tolerance and focal loss.
+    Optimized for local development; reduce batch sizes if memory constrained.
+    """
+
+    # Audio processing (higher temporal resolution)
+    n_fft: int = 1024  # ~46 ms window to reduce temporal smearing
+    hop_length: int = 128  # ~5.8 ms per frame @ 22.05 kHz
+
+    # Patching (increase temporal resolution of logits)
+    patch_size: Tuple[int, int] = (8, 16)
+    patch_stride: int = 1  # 1-frame stride for ~frame-level logits
+
+    # Training tolerances
+    event_tolerance_patches: int = 3
+    label_dilation_frames: int = 3
+
+    # Loss settings
+    use_focal_loss: bool = True
+    focal_alpha: float = 0.25
+    focal_gamma: float = 2.0
+
+    # Class imbalance handling
+    pos_weight_cap: float = 10.0  # cap auto pos_weight
+
+    # Sequence length can get large with stride=1; constrain audio length
+    max_audio_length: float = 4.0
+
+    # Batching tuned down for the higher sequence length
+    train_batch_size: int = 2
+    val_batch_size: int = 4
+
+    # Improve dataloader stability locally
+    num_workers: int = 2
+    persistent_workers: bool = False
+
+
+@dataclass
 class CloudConfig(BaseConfig):
     """Configuration optimized for Google Colab with GPU."""
 
@@ -361,6 +403,8 @@ def get_config(config_type: str = "local") -> BaseConfig:
         return CloudConfig()
     elif config_type_lower == "overnight_default":  # Added new config type
         return OvernightConfig()
+    elif config_type_lower == "local_highres":
+        return LocalHighResConfig()
     else:
         raise ValueError(
             f"Unknown config type: {config_type}. Use 'local', 'cloud', or 'overnight_default'."
