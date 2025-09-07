@@ -2,7 +2,7 @@ High‑Resolution Drum Transcription Plan (v1)
 ===========================================
 
 Owner: chart‑hero
-Status: Proposed (ready to execute)
+Status: In Progress (partially implemented)
 Last updated: [auto]
 
 Goals
@@ -47,19 +47,20 @@ Data Sources (live scan)
 
 Milestones & Deliverables
 1) Metrics & Evaluator upgrades (deliverable: evaluator reports)
-   - IOI‑binned recall/precision: compute per‑class recall vs inter‑onset‑interval buckets (≤10, ≤20, ≤30, … ms).
-   - Subdivision recall: using the song BPM/tempo map, compute recall at target subdivisions (16th/32nd/64th/128th windows).
-   - Constant per‑class offset correction learned on dev; apply during evaluation.
-   - Output CSV and pretty summary; keep current summary for continuity.
+   - [x] IOI‑binned recall/precision: compute per‑class recall vs inter‑onset‑interval buckets (≤10, ≤20, ≤30, … ms).
+   - [x] Subdivision recall: using the song BPM/tempo map, compute recall at target subdivisions (16th/32nd/64th/128th windows).
+   - [ ] Constant per‑class offset correction learned on dev; apply during evaluation.
+   - [x] Output CSV and pretty summary; keep current summary for continuity.
 
 2) High‑Resolution Config & Inference (deliverable: config + CLI)
-   - New config `local_highres`:
+   - [x] New config `local_highres`:
      - `hop_length=128` (≈5.8 ms), `patch_size=(8,16)`, `patch_stride=1`, `event_tolerance_patches=3`, `label_dilation_frames=3`.
      - `use_focal_loss=True`, `focal_alpha=0.25`, `focal_gamma=2.0`.
-     - Cap auto `pos_weight` to e.g., ≤10.
-   - Inference presets:
-     - conservative: strong NMS, higher activity gate, higher cym/ride thresholds.
-     - aggressive: lower gate/thresholds for editing assistance.
+     - [x] Cap auto `pos_weight` to e.g., ≤10.
+   - [x] Inference presets:
+     - [x] conservative: strong NMS, higher activity gate, higher cym/ride thresholds.
+     - [x] aggressive: lower gate/thresholds for editing assistance.
+   - [x] Micro mode config `local_micro` for extreme passages (hop=64, stride=1).
 
 3) Dataset Builder (deliverable: `python -m chart_hero.train.build_dataset`)
    - Inputs: one or more Clone Hero roots (scan live folders only; no JSON required).
@@ -155,10 +156,10 @@ Domain Robustness
 - Augment SNR: simulate bleed by mixing low‑level band‑limited noise or backing instruments; random crowd/reverb at low SNR to toughen the classifier on real songs.
 - Training
   - [ ] Training entry (`chart_hero.model_training.train_highres`) with staged training and checkpoints.
-  - [ ] Calibration export (`class_thresholds.json`) and validator that prints the IOI/subdivision dashboard.
+  - [x] Calibration export (`class_thresholds.json`) and validator that prints the IOI/subdivision dashboard.
 - Inference
   - [ ] Decode using onset gating + min spacing; apply offset corrections.
-  - [ ] Two presets (conservative/aggressive) and CLI flags.
+  - [x] Two presets (conservative/aggressive) and CLI flags.
 
 Additional Training Enhancements
 --------------------------------

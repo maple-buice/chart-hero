@@ -158,6 +158,11 @@ class Charter:
                 out = self.model(x)
                 logits = out["logits"].cpu()  # [B, T_patches, C]
                 probs = torch.sigmoid(logits)
+                # Optional onset gating from auxiliary head
+                onset_thr = getattr(self.config, "onset_gate_threshold", None)
+                onset_probs: torch.Tensor | None = None
+                if onset_thr is not None and "onset_logits" in out:
+                    onset_probs = torch.sigmoid(out["onset_logits"]).cpu()  # [B, T]
 
                 # Apply optional per-class gains to re-calibrate probabilities
                 if getattr(self.config, "class_gains", None):
@@ -207,6 +212,16 @@ class Charter:
                         km_t = keep_mask[t]
                         # Binary activations by threshold
                         act = (p_t >= thr_row) & km_t
+
+                        # Optional onset gate: require onset probability >= threshold
+                        if onset_probs is not None:
+                            try:
+                                if float(onset_probs[b_idx, t].item()) < float(
+                                    onset_thr
+                                ):
+                                    continue
+                            except Exception:
+                                pass
 
                         # Optional activity gate: if nothing is strong enough, skip whole tick
                         gate = getattr(self.config, "activity_gate", None)

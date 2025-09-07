@@ -88,6 +88,9 @@ class DrumTranscriptionModule(pl.LightningModule):
             lengths = None
         outputs = self.model(spectrograms)
         logits = outputs["logits"]  # [B, T_patches, C]
+        onset_logits = (
+            outputs.get("onset_logits") if isinstance(outputs, dict) else None
+        )
 
         # Pool labels to patch-level to align with logits (robust to non-contiguous tensors)
         # Labels expected shape: [B, T_frames_or_patches, C]
@@ -167,6 +170,29 @@ class DrumTranscriptionModule(pl.LightningModule):
                 loss = per_el[mask_flat].mean() if mask_flat.any() else per_el.mean()
             else:
                 loss = per_el.mean()
+
+        # Optional onset auxiliary loss (binary any-drum over time)
+        if onset_logits is not None and getattr(
+            self.config, "enable_onset_head", False
+        ):
+            # onset_logits: [B, T]
+            onset_labels = (labels > 0.0).any(dim=2).float()  # [B, T]
+            on_logits = onset_logits
+            if on_logits.dim() == 1:
+                on_logits = on_logits.unsqueeze(0)
+            if patch_mask is not None:
+                mask_flat_T = patch_mask > 0
+                on_loss = F.binary_cross_entropy_with_logits(
+                    on_logits[mask_flat_T], onset_labels[mask_flat_T], reduction="mean"
+                )
+            else:
+                on_loss = F.binary_cross_entropy_with_logits(
+                    on_logits, onset_labels, reduction="mean"
+                )
+            loss = (
+                loss
+                + float(getattr(self.config, "onset_loss_weight", 0.3) or 0.0) * on_loss
+            )
 
         # Thresholds (global or per-class)
         cls_thresh = getattr(self.config, "class_thresholds", None)

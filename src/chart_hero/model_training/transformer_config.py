@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Optional
 
 import torch
 
@@ -226,6 +226,11 @@ class BaseConfig:
     dataset_fraction: float = 1.0  # 0 < fraction <= 1.0
     max_files_per_split: int | None = None
 
+    # Onset auxiliary head
+    enable_onset_head: bool = False
+    onset_loss_weight: float = 0.3
+    onset_gate_threshold: Optional[float] = None
+
 
 @dataclass
 class LocalConfig(BaseConfig):
@@ -353,6 +358,26 @@ class LocalHighResConfig(LocalConfig):
 
 
 @dataclass
+class LocalMicroConfig(LocalConfig):
+    """Extreme micro-resolution config for very fast passages.
+
+    hop_length=64 (~2.9 ms), patch_stride=1; keep model small for memory.
+    """
+
+    n_fft: int = 512
+    hop_length: int = 64
+    patch_size: Tuple[int, int] = (8, 16)
+    patch_stride: int = 1
+    event_tolerance_patches: int = 5
+    label_dilation_frames: int = 4
+    max_audio_length: float = 3.0
+    train_batch_size: int = 2
+    val_batch_size: int = 4
+    num_workers: int = 2
+    persistent_workers: bool = False
+
+
+@dataclass
 class CloudConfig(BaseConfig):
     """Configuration optimized for Google Colab with GPU."""
 
@@ -405,6 +430,8 @@ def get_config(config_type: str = "local") -> BaseConfig:
         return OvernightConfig()
     elif config_type_lower == "local_highres":
         return LocalHighResConfig()
+    elif config_type_lower == "local_micro":
+        return LocalMicroConfig()
     else:
         raise ValueError(
             f"Unknown config type: {config_type}. Use 'local', 'cloud', or 'overnight_default'."

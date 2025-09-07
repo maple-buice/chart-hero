@@ -235,6 +235,10 @@ class DrumTranscriptionTransformer(nn.Module):
 
         # Classification head
         self.classifier = nn.Linear(config.hidden_size, config.num_drum_classes)
+        # Optional onset auxiliary head (binary any-drum)
+        self.enable_onset_head = bool(getattr(config, "enable_onset_head", False))
+        if self.enable_onset_head:
+            self.onset_head = nn.Linear(config.hidden_size, 1)
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, (nn.Linear, nn.Conv2d)):
@@ -283,8 +287,11 @@ class DrumTranscriptionTransformer(nn.Module):
         cls_embedding = x[:, 0, :]
         x = x[:, 1:, :]
         logits = self.classifier(x)
-
         output = {"logits": logits}
+        if self.enable_onset_head:
+            onset_logits = self.onset_head(x).squeeze(-1)  # [B, T]
+            output["onset_logits"] = onset_logits
+
         if return_embeddings:
             output["layer_embeddings"] = layer_embeddings
             output["final_embedding"] = x
