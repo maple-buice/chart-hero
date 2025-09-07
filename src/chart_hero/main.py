@@ -211,6 +211,13 @@ def main() -> None:
         help="Per-class probability multipliers '2=0.5,3=0.5,4=0.5,67=1.1'",
     )
     parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        choices=["conservative", "aggressive"],
+        help="Decode preset: conservative (fewer FPs) or aggressive (higher recall)",
+    )
+    parser.add_argument(
         "--clonehero-root",
         type=str,
         default=None,
@@ -327,6 +334,41 @@ def main() -> None:
             }
             classes = get_drum_hits()
             config.class_gains = [float(gn_map.get(c, 1.0)) for c in classes]
+        # Apply preset overrides if requested
+        if args.preset:
+            if args.preset == "conservative":
+                config.activity_gate = max(
+                    0.65, float(getattr(config, "activity_gate", 0.5) or 0.5)
+                )
+                config.event_nms_kernel_patches = max(
+                    11, int(getattr(config, "event_nms_kernel_patches", 9))
+                )
+                # Harden cymbal thresholds slightly if present
+                if getattr(config, "class_thresholds", None):
+                    lab = get_drum_hits()
+                    thr = list(config.class_thresholds)
+                    idx_map = {k: i for i, k in enumerate(lab)}
+                    for k, v in {"66": 0.90, "67": 0.92, "68": 0.94}.items():
+                        i = idx_map.get(k)
+                        if i is not None:
+                            thr[i] = max(thr[i], v)
+                    config.class_thresholds = thr
+            elif args.preset == "aggressive":
+                config.activity_gate = min(
+                    0.45, float(getattr(config, "activity_gate", 0.5) or 0.5)
+                )
+                config.event_nms_kernel_patches = min(
+                    7, int(getattr(config, "event_nms_kernel_patches", 9))
+                )
+                if getattr(config, "class_thresholds", None):
+                    lab = get_drum_hits()
+                    thr = list(config.class_thresholds)
+                    idx_map = {k: i for i, k in enumerate(lab)}
+                    for k, v in {"66": 0.82, "67": 0.84, "68": 0.90}.items():
+                        i = idx_map.get(k)
+                        if i is not None:
+                            thr[i] = min(thr[i], v)
+                    config.class_thresholds = thr
     except Exception:
         pass
     if args.patch_stride is not None and args.patch_stride > 0:
