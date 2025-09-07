@@ -27,6 +27,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import librosa
 import numpy as np
 import torch
+import mido
 
 from chart_hero.model_training.transformer_config import (
     get_config,
@@ -141,6 +142,54 @@ def evaluate_song(
     default_bins = [10, 20, 30, 40, 60, 80, 120, 160, 240]
 
     results: dict = {"per_class": {}, "offsets": {}}
+
+    # Build tempo map in seconds for subdivision recall
+    def _tempo_map_sec(mp: Path) -> List[Tuple[float, int]]:
+        try:
+            try:
+                mf = mido.MidiFile(mp, clip=True)  # type: ignore[call-arg]
+            except TypeError:
+                mf = mido.MidiFile(mp)
+        except Exception:
+            return [(0.0, 500000)]
+        tpq = mf.ticks_per_beat or 480
+        # Collect tempo changes as (tick, us_per_beat)
+        changes: List[Tuple[int, int]] = []
+        for tr in mf.tracks:
+            t = 0
+            for msg in tr:
+                t += msg.time
+                if msg.is_meta and msg.type == "set_tempo":
+                    changes.append((int(t), int(msg.tempo)))
+        if not changes or changes[0][0] != 0:
+            changes.insert(0, (0, 500000))
+        changes.sort(key=lambda x: x[0])
+        # Convert ticks to absolute seconds
+        out: List[Tuple[float, int]] = []
+        sec = 0.0
+        last_tick = 0
+        last_us = 500000
+        for tick, us in changes:
+            if tick > last_tick:
+                sec += (tick - last_tick) * (last_us / 1_000_000.0) / tpq
+                last_tick = tick
+            out.append((float(sec), int(us)))
+            last_us = us
+        return out or [(0.0, 500000)]
+
+    tempo_sec = _tempo_map_sec(midi_path)
+
+    def _spb_at(t_sec: float) -> float:
+        # seconds per beat at given absolute time
+        prev = 0.0
+        us = 500000
+        for ts, u in tempo_sec:
+            if ts > t_sec:
+                break
+            prev = ts
+            us = u
+        return float(us) / 1_000_000.0
+
     for c_idx, c in enumerate(classes):
         p_events = series_to_events(preds[:, c_idx])
         t_events = series_to_events(lab_p[:, c_idx])
@@ -157,6 +206,14 @@ def evaluate_song(
         # Assign true events to IOI bins (index by the event index i>=1)
         bin_totals = {b: 0 for b in default_bins}
         bin_hits = {b: 0 for b in default_bins}
+        # Subdivision bins (focus on 1/16, 1/32, 1/64, 1/128)
+        subdiv_keys = ["1/16", "1/32", "1/64", "1/128"]
+        subdiv_vals = [1.0 / 16.0, 1.0 / 32.0, 1.0 / 64.0, 1.0 / 128.0]
+        sub_totals = {k: 0 for k in subdiv_keys}
+        sub_hits = {k: 0 for k in subdiv_keys}
+        sub_tol = 0.2  # +/-20% tolerance around ideal subdivision
+        # event times in seconds for true events
+        t_times = [te * ms_per_patch / 1000.0 for te in t_events]
         for i in range(1, len(t_events)):
             ioi = ioi_ms[i - 1]
             # Find first bin >= ioi
@@ -170,6 +227,21 @@ def evaluate_song(
             bin_totals[b_sel] += 1
             if i in mapping:  # the i-th true event is matched
                 bin_hits[b_sel] += 1
+            # Subdivision assignment (based on local tempo at event i)
+            spb = _spb_at(t_times[i])  # seconds per beat
+            beats = (ioi / 1000.0) / spb if spb > 0 else 0.0
+            # choose nearest among target subdivisions
+            best_k = None
+            best_err = 1e9
+            for k, v in zip(subdiv_keys, subdiv_vals):
+                err = abs(beats - v) / max(v, 1e-6)
+                if err < best_err:
+                    best_err = err
+                    best_k = k
+            if best_k is not None and best_err <= sub_tol:
+                sub_totals[best_k] += 1
+                if i in mapping:
+                    sub_hits[best_k] += 1
 
         prec = tp / max(1, tp + fp)
         rec = tp / max(1, tp + fn)
@@ -191,6 +263,16 @@ def evaluate_song(
                     else None,
                 }
                 for b in default_bins
+            },
+            "subdiv_bins": {
+                k: {
+                    "total": sub_totals[k],
+                    "hits": sub_hits[k],
+                    "recall": (sub_hits[k] / sub_totals[k])
+                    if sub_totals[k] > 0
+                    else None,
+                }
+                for k in subdiv_keys
             },
         }
         results["offsets"][c] = offsets_ms
@@ -268,6 +350,7 @@ def main() -> None:
 
     classes = get_drum_hits()
     agg_bins = [10, 20, 30, 40, 60, 80, 120, 160, 240]
+    agg_sub_keys = ["1/16", "1/32", "1/64", "1/128"]
     # Aggregates
     agg_counts: Dict[str, Dict[str, int]] = {
         c: {str(b): 0 for b in agg_bins} for c in classes
@@ -275,10 +358,17 @@ def main() -> None:
     agg_hits: Dict[str, Dict[str, int]] = {
         c: {str(b): 0 for b in agg_bins} for c in classes
     }
+    agg_sub_counts: Dict[str, Dict[str, int]] = {
+        c: {k: 0 for k in agg_sub_keys} for c in classes
+    }
+    agg_sub_hits: Dict[str, Dict[str, int]] = {
+        c: {k: 0 for k in agg_sub_keys} for c in classes
+    }
     agg_tp: Dict[str, int] = {c: 0 for c in classes}
     agg_fp: Dict[str, int] = {c: 0 for c in classes}
     agg_fn: Dict[str, int] = {c: 0 for c in classes}
 
+    # CSV rows: song,class,metric,bin_label,support,hits,bin_recall,precision,recall,f1
     rows: List[List[str | float | int]] = []
     for midi, audio in songs:
         try:
@@ -298,7 +388,26 @@ def main() -> None:
                     [
                         base,
                         c,
-                        int(b),
+                        "ioi",
+                        str(int(b)),
+                        int(vals["total"] or 0),
+                        int(vals["hits"] or 0),
+                        float(vals["recall"]) if vals["total"] else None,
+                        float(d["precision"]),
+                        float(d["recall"]),
+                        float(d["f1"]),
+                    ]
+                )
+            # Subdivision rows
+            for k, vals in d.get("subdiv_bins", {}).items():
+                agg_sub_counts[c][k] += int(vals["total"] or 0)
+                agg_sub_hits[c][k] += int(vals["hits"] or 0)
+                rows.append(
+                    [
+                        base,
+                        c,
+                        "subdiv",
+                        k,
                         int(vals["total"] or 0),
                         int(vals["hits"] or 0),
                         float(vals["recall"]) if vals["total"] else None,
@@ -326,6 +435,16 @@ def main() -> None:
         f1 = 0.0 if (prec + rec) == 0 else 2 * prec * rec / (prec + rec)
         print(f"  {c}: P={prec:.3f} R={rec:.3f} F1={f1:.3f}")
 
+    print("\nAggregate subdivision recall:")
+    for c in classes:
+        parts = [c]
+        for k in agg_sub_keys:
+            total = agg_sub_counts[c][k]
+            hits = agg_sub_hits[c][k]
+            rec = hits / total if total > 0 else None
+            parts.append(f"{k}:{rec:.3f}" if rec is not None else f"{k}:n/a")
+        print("  ".join(parts))
+
     # Optional CSV export
     if args.out_csv:
         outp = Path(args.out_csv)
@@ -336,7 +455,8 @@ def main() -> None:
                 [
                     "song",
                     "class",
-                    "ioi_bin_ms",
+                    "metric",
+                    "bin_label",
                     "support",
                     "hits",
                     "bin_recall",
