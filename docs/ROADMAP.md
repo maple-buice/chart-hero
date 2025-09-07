@@ -92,9 +92,9 @@ YouTube Music Premium Cookies
 - [ ] (R-103) New `local_highres` config (hop=128, patch_size=(8,16), stride=1)
   - label_dilation_frames=3, event_tolerance_patches=3, focal loss on
   - cap auto pos_weight <= 10
-- [ ] (R-104) Dataset builder from Clone Hero JSON
-  - Read `artifacts/clonehero_charts_json/**.midi.json`; resolve audio from `doc.path`
-  - Audio priority: drums.ogg → stems → song.ogg → Demucs (optional)
+- [ ] (R-104) Dataset builder (live scan only)
+  - Scan Clone Hero song folders (notes.chart/.txt/.mid + audio); no JSON stage in the pipeline
+  - Audio priority & FMID logic (see plan); resolve audio from the song directory
   - Compute global offset via onset-envelope xcorr; write frame labels with ± dilation
   - Shard dataset; stratified splits by artist/title/charter
 - [ ] (R-104a) FMID selection & detection
