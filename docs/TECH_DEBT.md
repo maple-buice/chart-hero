@@ -17,8 +17,6 @@ Unit Testing TODOs (new features)
 - lyrics.py: LRCLIB integration
   - Mock HTTP for /get (spotifyId) and /search; duration windowing logic.
   - Ensure graceful fallback on network/API errors.
-- lyrics.py: to_rb_tokens
-  - Trailing '-' on non-final syllables only; punctuation preserved.
 - mid_vocals.py: write_vocals_midi
   - Generates PART VOCALS track with lyric meta + talky notes.
   - Phrase markers ordering and boundaries; tempo/ticks math sanity.
@@ -28,7 +26,6 @@ Unit Testing TODOs (new features)
   - No crash if lyrics unavailable; still exports chart.
 
 - audio_io.py: ffmpeg-based loader + duration helper
-  - Mocked runs with/without ffmpeg/ffprobe in PATH; fallback to librosa.
   - Decode mono/stereo; resample to requested `sr`; dtype/shape invariants.
   - get_duration cross-check vs librosa within tolerance; error paths on non-audio files.
 - main.py: BPM estimation with `librosa.feature.rhythm.tempo`
