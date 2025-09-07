@@ -6,7 +6,7 @@ folders on disk (no archive traversal).
 
 Usage:
   python scripts/export_clonehero_drums_archives.py \
-    --songs-root CloneHero/Songs \
+    --songs-root /Volumes/Media/CloneHero \
     --out-dir artifacts/clonehero_charts_json
 """
 
