@@ -63,3 +63,53 @@ def test_write_notes_mid_drums_and_vocals(tmp_path: Path):
                 break
     assert any("PART DRUMS" in n for n in names)
     assert any("PART VOCALS" in n for n in names)
+
+
+def test_pro_cymbal_toggles_order(tmp_path: Path) -> None:
+    """Pro-cymbal toggles should precede gems and emit only on state change."""
+    sr = 22050
+    rows = [
+        {"peak_sample": 0, "67": 1},  # cymbal: no toggle at start
+        {"peak_sample": sr // 2, "2": 1},  # tom: toggle OFF
+        {"peak_sample": sr, "67": 1},  # cymbal: toggle back ON
+    ]
+
+    out = write_notes_mid(
+        out_dir=tmp_path,
+        bpm=120.0,
+        ppq=480,
+        sr=sr,
+        prediction_rows=rows,
+    )
+
+    mf = mido.MidiFile(out)
+    drum_track = next(
+        tr
+        for tr in mf.tracks
+        if any(msg.type == "track_name" and msg.name == "PART DRUMS" for msg in tr)
+    )
+
+    time = 0
+    events: list[tuple[int, str, int]] = []
+    for msg in drum_track:
+        time += msg.time
+        if msg.type in ("note_on", "note_off"):
+            events.append((time, msg.type, msg.note))
+
+    events_by_time: dict[int, list[tuple[str, int]]] = {}
+    for t, typ, note in events:
+        events_by_time.setdefault(t, []).append((typ, note))
+
+    toggle_times = [
+        t
+        for t, entries in events_by_time.items()
+        for typ, n in entries
+        if typ == "note_on" and n == 110
+    ]
+
+    assert toggle_times == [480, 960]  # only two toggles, at tom then cymbal return
+    assert all(n != 110 for typ, n in events_by_time.get(0, []))  # default ON
+
+    for t in toggle_times:
+        notes = [n for typ, n in events_by_time[t] if typ == "note_on"]
+        assert notes[:2] == [110, 98]  # toggle precedes gem
