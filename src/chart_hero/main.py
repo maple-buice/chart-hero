@@ -517,6 +517,28 @@ def main() -> None:
             config.cymbal_margin = 0.30
         if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
             config.tom_over_cymbal_margin = 0.45
+        # Mild per-class min spacing to reduce accidental doubles without hurting recall
+        try:
+            base_map = getattr(config, "min_spacing_ms_map", None) or {}
+            mild_map = {
+                "0": 28.0,  # Kick
+                "1": 26.0,  # Snare
+                "2": 24.0,  # HiTom
+                "3": 26.0,  # MidTom
+                "4": 28.0,  # LowTom
+                "66": 22.0,  # Crash
+                "67": 24.0,  # HiHat
+                "68": 24.0,  # Ride
+            }
+            # Only fill where not set already
+            for k, v in mild_map.items():
+                if k not in base_map:
+                    base_map[k] = v
+            config.min_spacing_ms_map = base_map
+            if getattr(config, "min_spacing_ms_default", None) is None:
+                config.min_spacing_ms_default = 22.0
+        except Exception:
+            pass
         # Set per-class thresholds only if no checkpoint calibration file is present.
         # Charter will automatically load class_thresholds.json when available.
         if getattr(config, "class_thresholds", None) is None:

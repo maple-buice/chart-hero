@@ -27,7 +27,11 @@ CRUEL_SUMMER ?= https://youtu.be/SU8Jx80fCmg?si=LGzRTq-vx6xsylmZ
 REDWINE_SUPERNOVA ?= https://youtu.be/KSbwHJMPq8w?si=zKQSXmGtMWH8n1DU
 # Optional: provide multiple links separated by spaces
 LINKS ?= $(CRUEL_SUMMER) $(REDWINE_SUPERNOVA)
-PRESET ?= conservative
+# Optional inference preset; leave empty by default.
+# Set PRESET=conservative or PRESET=aggressive when desired.
+PRESET ?=
+# Build flag only when PRESET is non-empty
+PRESET_FLAG := $(if $(strip $(PRESET)),--preset $(PRESET),)
 
 .PHONY: help
 help:
@@ -111,5 +115,27 @@ infer:
 			--to-clonehero \
 			-l "$$L" \
 			--model-path="$(INFER_MODEL)" \
-			--preset $(PRESET) || exit $$?; \
+			$(PRESET_FLAG) || exit $$?; \
 	done
+
+# Basic evaluation against a known-good notes.mid
+# Required vars: AUDIO=/path/to/song.ogg MID=/path/to/notes.mid
+# Optional: NMS=11 AG=0.55 HF=0.32 THR= (global threshold) DISABLE_CALIB=1
+.PHONY: eval
+eval:
+	@if [ -z "$(AUDIO)" ] || [ -z "$(MID)" ]; then \
+		echo "Usage: make eval AUDIO=/path/song.ogg MID=/path/notes.mid [NMS=11 AG=0.55 HF=0.32]"; \
+		exit 2; \
+	fi
+	@echo "Evaluating $(AUDIO) vs $(MID) using model $(INFER_MODEL)";
+	$(PY) -m chart_hero.eval.evaluate_chart \
+		--audio "$(AUDIO)" \
+		--mid "$(MID)" \
+		--model "$(INFER_MODEL)" \
+		--patch-stride 1 \
+		$(if $(strip $(NMS)),--nms-k $(NMS),) \
+		$(if $(strip $(AG)),--activity-gate $(AG),) \
+		$(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
+		$(if $(strip $(THR)),--threshold $(THR),) \
+		$(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
+		|| true

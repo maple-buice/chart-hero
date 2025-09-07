@@ -165,6 +165,27 @@ def predict_events(
         # Make tom win require clearly higher prob than cymbal
         if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
             config.tom_over_cymbal_margin = 0.45
+        # Mild per-class min spacing by default (unless provided)
+        try:
+            base_map = getattr(config, "min_spacing_ms_map", None) or {}
+            mild_map = {
+                "0": 28.0,
+                "1": 26.0,
+                "2": 24.0,
+                "3": 26.0,
+                "4": 28.0,
+                "66": 22.0,
+                "67": 24.0,
+                "68": 24.0,
+            }
+            for k, v in mild_map.items():
+                if k not in base_map:
+                    base_map[k] = v
+            config.min_spacing_ms_map = base_map
+            if getattr(config, "min_spacing_ms_default", None) is None:
+                config.min_spacing_ms_default = 22.0
+        except Exception:
+            pass
         # Per-class thresholds default only if no checkpoint calibration file
         if (
             getattr(config, "class_thresholds", None) is None
@@ -222,8 +243,6 @@ def predict_events(
         ch.config.prediction_threshold = float(threshold)
     if class_thresholds is not None:
         # Only apply if same length as classes
-        from chart_hero.model_training.transformer_config import get_drum_hits
-
         classes = get_drum_hits()
         if len(class_thresholds) == len(classes):
             ch.config.class_thresholds = [
@@ -231,8 +250,6 @@ def predict_events(
                 for x in class_thresholds
             ]
     if class_gains is not None:
-        from chart_hero.model_training.transformer_config import get_drum_hits
-
         classes = get_drum_hits()
         if len(class_gains) == len(classes):
             ch.config.class_gains = [float(max(0.0, g)) for g in class_gains]
@@ -505,8 +522,6 @@ def main() -> None:
 
     # Optional per-class thresholds
     if args.class_thresholds:
-        from chart_hero.model_training.transformer_config import get_drum_hits
-
         thr_map = {}
         for kv in args.class_thresholds.split(","):
             kv = kv.strip()
@@ -531,8 +546,6 @@ def main() -> None:
 
     # Parse class gains if provided
     if args.class_gains:
-        from chart_hero.model_training.transformer_config import get_drum_hits
-
         gn_map = {}
         for kv in args.class_gains.split(","):
             kv = kv.strip()
