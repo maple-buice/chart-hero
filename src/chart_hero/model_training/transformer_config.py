@@ -363,15 +363,15 @@ class LocalHighResConfig(LocalConfig):
     audio_dir: str = "datasets/processed_highres"
 
     # Sequence length can get large with stride=1; prefer shorter segments for stability
-    max_audio_length: float = 45.0
+    max_audio_length: float = 30.0
 
     # Batching tuned down for the higher sequence length
-    train_batch_size: int = 2
-    val_batch_size: int = 4
+    train_batch_size: int = 8
+    val_batch_size: int = 12
 
     # Improve dataloader stability locally
-    num_workers: int = 2
-    persistent_workers: bool = False
+    num_workers: int = 8
+    persistent_workers: bool = True
     # Conservative decode min spacing defaults (ms)
     min_spacing_ms_map: dict[str, float] | None = None
 
