@@ -55,7 +55,7 @@ def load_audio(
             proc = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
             audio = np.frombuffer(proc.stdout, dtype=np.float32)
             if channels > 1:
-                audio = audio.reshape(-1)
+                audio = audio.reshape(-1, channels).T
             return audio, target_sr
         except Exception:
             # Fall through to librosa
@@ -66,26 +66,44 @@ def load_audio(
     return y, int(s)
 
 
-def get_duration(path: str | Path) -> float:
+def get_duration(path: str | Path, tol: float = 1e-2) -> float:
     """
-    Get duration in seconds. Prefer ffprobe when available; fallback to librosa.get_duration.
+    Get duration in seconds. Prefer ffprobe when available; cross-check against librosa
+    within ``tol`` seconds. Falls back to librosa if ffprobe is unavailable or fails.
+
+    Raises ``RuntimeError`` if duration cannot be determined (e.g., non-audio files) or
+    when ffprobe and librosa disagree beyond ``tol``.
     """
     path_str = str(path)
+    ffprobe_dur: Optional[float] = None
     if has_ffprobe():
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            path_str,
+        ]
         try:
-            cmd = [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=nw=1:nk=1",
-                path_str,
-            ]
             out = subprocess.check_output(cmd, text=True).strip()
-            return float(out)
+            ffprobe_dur = float(out)
         except Exception:
-            pass
-    # Fallback
-    return float(librosa.get_duration(path=path_str))
+            ffprobe_dur = None
+        if ffprobe_dur is not None:
+            try:
+                librosa_dur = float(librosa.get_duration(path=path_str))
+            except Exception:
+                return ffprobe_dur
+            if abs(ffprobe_dur - librosa_dur) > tol:
+                raise RuntimeError(
+                    f"Duration mismatch: ffprobe={ffprobe_dur} vs librosa={librosa_dur}"
+                )
+            return ffprobe_dur
+
+    try:
+        return float(librosa.get_duration(path=path_str))
+    except Exception as e:
+        raise RuntimeError(f"Could not determine duration for {path_str}") from e
