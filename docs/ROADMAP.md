@@ -97,6 +97,10 @@ YouTube Music Premium Cookies
   - Audio priority: drums.ogg → stems → song.ogg → Demucs (optional)
   - Compute global offset via onset-envelope xcorr; write frame labels with ± dilation
   - Shard dataset; stratified splits by artist/title/charter
+- [ ] (R-104a) FMID selection & detection
+  - Detect whether `song.ogg` contains drums; if not, synthesize full mix with drums (FMID) from stems with LUFS normalization and headroom
+- [ ] (R-104b) Adversarial stem mixing
+  - Generate decoy negatives (non-drum stems only), confuser mixes (non-drum SNR > drums), and positive mixes across SNR sweeps; oversample windows with strong non-drum onsets and no drum labels
 - [ ] (R-105) Model heads: onset auxiliary (+ optional offset regression)
   - Train Stage A (onset) then Stage B (onset+classes); hard-negative mining for cymbal/tom confusions
 - [ ] (R-106) Inference decode revamp
@@ -105,6 +109,7 @@ YouTube Music Premium Cookies
   - Export per-class thresholds/temperatures; conservative/aggressive hi-res presets in CLI
 - [ ] (R-108) Acceptance criteria gates
   - Kick/Snare F1 ≥ 0.70; 32nd/64th recall targets; tom precision/recall targets; |median offset| < 5 ms
+  - FP/min targets on decoy windows below thresholds per class (e.g., kick/snare < 0.2/min, toms < 0.3/min, cymbals < 0.6/min)
 
 See detailed plan: `docs/plans/high_resolution_drum_model.md`.
 
