@@ -207,7 +207,7 @@ Compute on a Laptop
 
 
 Notes on Existing Export Script
-- We will learn from `scripts/export_clonehero_drums_archives.py` (mapping, normalization rules), but we will not rely on its JSON outputs in this pipeline.
+- We will learn from `scripts/export_clonehero_drums.py` (mapping, normalization rules), but we will not rely on its JSON outputs in this pipeline.
 
 Timeline (rough)
 - Week 1: Metrics, high‑res config, dataset builder prototype on ~300 songs; quick pilot train.

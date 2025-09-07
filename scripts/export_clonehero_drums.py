@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
 Export Clone Hero drum charts (.chart/.txt and notes.mid) to a normalized JSON
-format and produce an inventory/summary.
+format and produce an inventory/summary. This script scans extracted song
+folders on disk (no archive traversal).
 
 Usage:
-  python scripts/export_clonehero_drums.py \
-    --songs-root CloneHero/Songs \
+  python scripts/export_clonehero_drums_archives.py \
+    --songs-root /Volumes/Media/CloneHero \
     --out-dir artifacts/clonehero_charts_json
-
-Outputs one JSON per song per difficulty per source (chart/midi).
 """
 
 from __future__ import annotations
@@ -17,15 +16,11 @@ import argparse
 import json
 import os
 import re
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Iterable, Tuple
-import shutil
-import subprocess
-import tempfile
+from typing import Any, List, Optional
 
-from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 from chart_hero.model_training.transformer_config import get_config
 
 # Reuse/align with discover_clonehero constants
@@ -81,9 +76,40 @@ def parse_song_ini(path: Path) -> dict[str, Optional[str]]:
     return meta
 
 
+def parse_song_ini_content(text: str) -> dict[str, Optional[str]]:
+    meta: dict[str, Optional[str]] = {
+        "title": None,
+        "artist": None,
+        "album": None,
+        "charter": None,
+    }
+    in_song = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_song = line.lower() == "[song]"
+            continue
+        if not in_song:
+            continue
+        if "=" in line:
+            k, v = line.split("=", 1)
+            key = k.strip().lower()
+            val = v.strip()
+            if key == "name":
+                meta["title"] = val
+            elif key == "artist":
+                meta["artist"] = val
+            elif key == "album":
+                meta["album"] = val
+            elif key == "charter":
+                meta["charter"] = val
+    return meta
+
+
 def load_chart(path: Path) -> dict[str, Any] | None:
     """Use the parser from scripts/discover_clonehero.py to read .chart/.txt."""
-    # Local import to avoid a heavy import cost at module import time
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -102,11 +128,6 @@ def load_chart(path: Path) -> dict[str, Any] | None:
 
 
 def chart_sync_to_tempos(sync_track: List[dict[str, Any]]) -> dict[str, Any]:
-    """Convert SyncTrack entries into a tempo structure.
-
-    We keep chart's B values as-is (likely BPM*1000) to avoid mis-scaling; consumers
-    can normalize later.
-    """
     tempos_b = [
         {"tick": int(x["tick"]), "bpm_x1000": int(x["value"])}
         for x in sync_track
@@ -120,9 +141,45 @@ def chart_sync_to_tempos(sync_track: List[dict[str, Any]]) -> dict[str, Any]:
     return {"tempos_bpm_x1000": tempos_b, "time_signatures": ts}
 
 
+def _chart_tempos_us_per_beat(
+    tempos_bpm_x1000: List[dict[str, int]],
+) -> list[tuple[int, int]]:
+    """Convert chart tempo entries (bpm_x1000) to (tick, us_per_beat) tuples.
+
+    Ensures an entry exists at tick 0 (120 BPM default) and returns a sorted list.
+    """
+    changes: list[tuple[int, int]] = []
+    for t in tempos_bpm_x1000:
+        tick = int(t.get("tick", 0))
+        bpm_x1000 = int(t.get("bpm_x1000", 120000))
+        bpm = max(1.0, bpm_x1000 / 1000.0)
+        us_per_beat = int(round(60_000_000.0 / bpm))
+        changes.append((tick, us_per_beat))
+    if not changes or changes[0][0] != 0:
+        changes.append((0, 500000))
+    changes.sort(key=lambda x: x[0])
+    return changes
+
+
+def _chart_tick_to_seconds(
+    tick: int, tempo_changes: list[tuple[int, int]], resolution: int
+) -> float:
+    sec = 0.0
+    last_tick = 0
+    last_us = 500000
+    for t_tick, us_per_beat in tempo_changes:
+        if t_tick > tick:
+            break
+        if t_tick > last_tick:
+            sec += (t_tick - last_tick) * (last_us / 1_000_000.0) / max(1, resolution)
+            last_tick = t_tick
+        last_us = us_per_beat
+    if tick > last_tick:
+        sec += (tick - last_tick) * (last_us / 1_000_000.0) / max(1, resolution)
+    return float(sec)
+
+
 def chart_events_to_normalized(events: List[dict[str, Any]]) -> List[dict[str, Any]]:
-    """Merge flags and map lanes to normalized 8-class hits for a drum track."""
-    # Group by tick
     by_tick: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for ev in events:
         if ev.get("kind") not in ("N", "S"):
@@ -166,9 +223,7 @@ def chart_events_to_normalized(events: List[dict[str, Any]]) -> List[dict[str, A
             and (e["code"] - INSTRUMENT_PLUS_OFFSET) in ALLOWED_DRUM_NOTE_BASE
         }
 
-        # Build one event per base lane
         for lane in sorted(base_lanes):
-            # Map to 8-class hit
             if lane == 0:
                 hit = "0"
             elif lane == 1:
@@ -178,10 +233,9 @@ def chart_events_to_normalized(events: List[dict[str, Any]]) -> List[dict[str, A
                     hit = {2: "66", 3: "67", 4: "68"}[lane]
                 else:
                     hit = {2: "2", 3: "3", 4: "4"}[lane]
-            else:  # lane == 5 -> map to LowTom
+            else:
                 hit = "4"
 
-            # Length: use first matching base event's length at this tick/lane
             len_ticks = 0
             for e in bucket:
                 if e["kind"] == "N" and e["code"] == lane:
@@ -198,7 +252,7 @@ def chart_events_to_normalized(events: List[dict[str, Any]]) -> List[dict[str, A
             out.append(
                 {
                     "tick": int(tick),
-                    "time_sec": None,  # left None for .chart to avoid bpm unit ambiguity
+                    "time_sec": None,
                     "lane": int(lane),
                     "hit": hit,
                     "flags": flags,
@@ -215,7 +269,7 @@ class ExportResult:
 
 
 def export_song_folder(
-    songs_root: Path, song_dir: Path, out_dir: Path, config: Any
+    song_dir: Path, out_dir: Path, config: Any, root: Optional[Path] = None
 ) -> ExportResult:
     out_paths: list[Path] = []
     stats_acc = {
@@ -226,12 +280,13 @@ def export_song_folder(
     }
 
     meta = parse_song_ini(song_dir / "song.ini")
-    # Fallback: infer title/artist from path
     title = meta.get("title") or song_dir.name
     artist = meta.get("artist") or song_dir.parent.name
     base_slug = f"{slugify(artist)}-{slugify(title)}"
 
-    # .chart / .txt
+    # Destination base directory organized by artist/title (normalized)
+    dest_base_dir = out_dir / slugify(artist) / slugify(title)
+
     chart_path = None
     for base in ("notes.chart", "notes.txt"):
         p = song_dir / base
@@ -243,7 +298,6 @@ def export_song_folder(
         if obj:
             resolution = int(obj.get("song", {}).get("Resolution") or 192)
             timing = chart_sync_to_tempos(obj.get("sync_track", []))
-            # Map difficulty names to compact labels
             diff_map = {
                 "EasyDrums": "Easy",
                 "MediumDrums": "Medium",
@@ -255,7 +309,13 @@ def export_song_folder(
                 if not evs:
                     continue
                 norm_events = chart_events_to_normalized(evs)
-                # Update stats
+                tempo_changes = _chart_tempos_us_per_beat(
+                    timing.get("tempos_bpm_x1000", [])
+                )
+                for e in norm_events:
+                    e["time_sec"] = _chart_tick_to_seconds(
+                        int(e["tick"]), tempo_changes, resolution
+                    )
                 stats_acc["sources"].update(["chart"])
                 stats_acc["difficulties"].update([f"chart:{norm_diff}"])
                 stats_acc["class_hist"].update([e["hit"] for e in norm_events])
@@ -272,29 +332,44 @@ def export_song_folder(
                     },
                     "timing": {
                         "unit": "tick",
-                        "resolution": resolution,
-                        **timing,
+                        "tpq": int(resolution),
+                        "tempos": [
+                            {"tick": int(t), "us_per_beat": int(us)}
+                            for (t, us) in tempo_changes
+                        ],
+                        **(
+                            {"time_signatures": timing.get("time_signatures")}
+                            if timing.get("time_signatures")
+                            else {}
+                        ),
                     },
                     "difficulties": {norm_diff: {"events": norm_events}},
                 }
 
-                # Write file
                 out_name = f"{base_slug}.{norm_diff}.chart.json"
-                dest = out_dir / out_name
+                dest_dir = dest_base_dir
+                dest = dest_dir / out_name
                 i = 1
                 while dest.exists():
-                    dest = out_dir / f"{base_slug}.{norm_diff}.chart.{i}.json"
+                    dest = dest_dir / f"{base_slug}.{norm_diff}.chart.{i}.json"
                     i += 1
-                out_dir.mkdir(parents=True, exist_ok=True)
+                dest_dir.mkdir(parents=True, exist_ok=True)
                 with dest.open("w", encoding="utf-8") as f:
-                    json.dump(doc, f)
+                    json.dump(doc, f, indent=2)
                 out_paths.append(dest)
 
-    # notes.mid
     midi_path = song_dir / "notes.mid"
     if midi_path.exists():
-        proc = RbMidiProcessor(config)
-        evdoc = proc.extract_events_per_difficulty(midi_path)
+        try:
+            from chart_hero.utils.rb_midi_utils import (
+                RbMidiProcessor,
+            )  # lazy import to avoid hard dep if mido missing
+        except Exception as e:
+            print(f"WARN: Skipping MIDI parsing (RbMidiProcessor import failed): {e}")
+            evdoc = None
+        else:
+            proc = RbMidiProcessor(config)
+            evdoc = proc.extract_events_per_difficulty(midi_path)
         if evdoc:
             for diff in ("Easy", "Medium", "Hard", "Expert"):
                 events = evdoc["difficulties"].get(diff, {}).get("events", [])
@@ -323,26 +398,51 @@ def export_song_folder(
                 }
 
                 out_name = f"{base_slug}.{diff}.midi.json"
-                dest = out_dir / out_name
+                dest_dir = dest_base_dir
+                dest = dest_dir / out_name
                 i = 1
                 while dest.exists():
-                    dest = out_dir / f"{base_slug}.{diff}.midi.{i}.json"
+                    dest = dest_dir / f"{base_slug}.{diff}.midi.{i}.json"
                     i += 1
-                out_dir.mkdir(parents=True, exist_ok=True)
+                dest_dir.mkdir(parents=True, exist_ok=True)
                 with dest.open("w", encoding="utf-8") as f:
-                    json.dump(doc, f)
+                    json.dump(doc, f, indent=2)
                 out_paths.append(dest)
 
     return ExportResult(out_paths=out_paths, stats=stats_acc)
 
 
+# Archive handling removed
+
+
+# Archive discovery removed
+
+
+# Archive streaming removed
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Export Clone Hero drum charts to JSON")
-    ap.add_argument("--songs-root", type=str, default="CloneHero/Songs")
+    ap.add_argument(
+        "--songs-root",
+        type=str,
+        nargs="+",
+        default=["CloneHero/Songs"],
+        help="One or more roots (local dirs, mounted network shares, or archives)",
+    )
     ap.add_argument("--out-dir", type=str, default="artifacts/clonehero_charts_json")
+    # Archive handling flags removed; this script expects extracted folders.
     args = ap.parse_args()
 
-    songs_root = Path(args.songs_root)
+    # Basic handling for network-share URIs: require they be mounted (e.g., /Volumes/Share)
+    roots: List[Path] = []
+    for raw in args.songs_root:
+        if "://" in raw:
+            print(
+                f"WARN: '{raw}' looks like a URI. Please mount the share and pass the mounted path."
+            )
+            continue
+        roots.append(Path(raw))
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -357,24 +457,27 @@ def main() -> None:
         "files_written": 0,
     }
 
-    # Iterate song folders (two-level structure Artist/Song/)
-    for dirpath, dirnames, filenames in os.walk(songs_root):
-        dirpath_p = Path(dirpath)
-        # Heuristic: treat folders containing song.ini as song root
-        if "song.ini" in filenames:
-            total_stats["songs"] += 1
-            res = export_song_folder(songs_root, dirpath_p, out_dir, config)
-            total_stats["files_written"] += len(res.out_paths)
-            # merge counters
-            total_stats["sources"].update(res.stats["sources"])  # type: ignore[arg-type]
-            total_stats["difficulties"].update(res.stats["difficulties"])  # type: ignore[arg-type]
-            total_stats["class_hist"].update(res.stats["class_hist"])  # type: ignore[arg-type]
-            total_stats["errors"].extend(res.stats["errors"])  # type: ignore[arg-type]
+    # Process roots: directories only (archives unsupported)
+    for r in roots:
+        if r.is_dir():
+            # Process filesystem tree
+            for dirpath, dirnames, filenames in os.walk(r):
+                dirpath_p = Path(dirpath)
+                if "song.ini" in filenames or any(
+                    n in filenames for n in ("notes.chart", "notes.txt", "notes.mid")
+                ):
+                    total_stats["songs"] += 1
+                    res = export_song_folder(dirpath_p, out_dir, config, root=r)
+                    total_stats["files_written"] += len(res.out_paths)
+                    total_stats["sources"].update(res.stats["sources"])  # type: ignore[arg-type]
+                    total_stats["difficulties"].update(res.stats["difficulties"])  # type: ignore[arg-type]
+                    total_stats["class_hist"].update(res.stats["class_hist"])  # type: ignore[arg-type]
+                    total_stats["errors"].extend(res.stats["errors"])  # type: ignore[arg-type]
+        else:
+            continue
 
-    # Write summaries
     summary_json = out_dir / "summary.json"
     with summary_json.open("w", encoding="utf-8") as f:
-        # Convert Counters to normal dicts for JSON
         dumpable = {
             **{
                 k: v
