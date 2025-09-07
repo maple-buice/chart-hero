@@ -19,20 +19,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import os
+from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-import numpy as np
-
+from chart_hero.eval.evaluate_chart import Event, load_truth_from_mid, match_events
 from chart_hero.inference.charter import Charter
 from chart_hero.inference.input_transform import audio_to_tensors
 from chart_hero.model_training.transformer_config import get_config, get_drum_hits
-from chart_hero.eval.evaluate_chart import (
-    load_truth_from_mid,
-    match_events,
-    Event,
-)
 
 
 def _discover_songs(roots: Sequence[str]) -> List[Tuple[Path, Path]]:
@@ -132,8 +126,6 @@ def main() -> None:
         pass
 
     # Discover songs
-    import os
-
     songs = _discover_songs(args.roots)
     if not songs:
         print("No songs with notes.mid + audio found under:", ", ".join(args.roots))

@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import mido
+import numpy as np
+import pandas as pd
+
+from chart_hero.inference.charter import Charter
+from chart_hero.inference.input_transform import audio_to_tensors
+from chart_hero.model_training.transformer_config import get_config, get_drum_hits
+from chart_hero.utils.audio_io import load_audio
+
 """
 Evaluate inference against a known-good PART DRUMS MIDI.
 
@@ -18,21 +31,6 @@ Additions:
 - Optional per-class constant offset application from JSON.
 - Optional metrics CSV export (IOI and subdivision bins).
 """
-
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
-
-import mido
-import numpy as np
-import pandas as pd
-
-from chart_hero.inference.input_transform import audio_to_tensors
-from chart_hero.utils.audio_io import load_audio
-from chart_hero.inference.charter import Charter
-from chart_hero.model_training.transformer_config import get_config, get_drum_hits
-from chart_hero.inference.types import PredictionRow
-
 
 # Mapping for PART DRUMS Expert gems
 EXPERT_BASE = 96
@@ -60,7 +58,7 @@ class Event:
 
 
 def load_truth_from_mid(mid_path: Path) -> List[Event]:
-    mid = mido.MidiFile(mid_path)
+    mid = mido.MidiFile(mid_path, clip=True)
     # find PART DRUMS track
     tr = None
     for track in mid.tracks:
@@ -113,8 +111,8 @@ def _maybe_mix_audio(paths: Sequence[str], target_sr: int) -> Tuple[str, float]:
 
     Returns a filesystem path and sample rate. Writes under output/_eval_mix.wav.
     """
-    import soundfile as sf
     import numpy as np
+    import soundfile as sf
 
     if len(paths) == 1:
         return paths[0], float(target_sr)

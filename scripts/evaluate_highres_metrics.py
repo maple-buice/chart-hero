@@ -22,19 +22,16 @@ import csv
 import json
 import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import librosa
+import mido
 import numpy as np
 import torch
-import mido
 
-from chart_hero.model_training.transformer_config import (
-    get_config,
-    get_drum_hits,
-)
-from chart_hero.model_training.transformer_model import create_model
+from chart_hero.model_training.transformer_config import get_config, get_drum_hits
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
+from chart_hero.model_training.transformer_model import create_model
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 
 

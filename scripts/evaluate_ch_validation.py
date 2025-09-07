@@ -21,12 +21,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import librosa
-import numpy as np
 import torch
 
 from chart_hero.model_training.transformer_config import get_config
-from chart_hero.model_training.transformer_model import create_model
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
+from chart_hero.model_training.transformer_model import create_model
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 
 

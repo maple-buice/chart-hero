@@ -23,8 +23,8 @@ Notes:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import os
+from pathlib import Path
 from typing import Iterable, Tuple
 
 
@@ -183,9 +183,9 @@ def main() -> None:
     apply = args.apply or args.overwrite
 
     try:
-        import mido  # type: ignore
+        import mido
     except Exception:
-        mido = None  # type: ignore
+        mido = None
 
     total = 0
     repaired = 0
@@ -198,7 +198,7 @@ def main() -> None:
         if mido is not None:
             try:
                 try:
-                    mido.MidiFile(midi_path, clip=True)  # type: ignore[call-arg]
+                    mido.MidiFile(midi_path, clip=True)
                 except TypeError:
                     mido.MidiFile(midi_path)
                 ok = True
@@ -233,7 +233,7 @@ def main() -> None:
 
                 bio = BytesIO(fixed)
                 try:
-                    mido.MidiFile(file=bio, clip=True)  # type: ignore[call-arg]
+                    mido.MidiFile(file=bio, clip=True)
                 except TypeError:
                     mido.MidiFile(file=bio)
                 reparsed_ok = True

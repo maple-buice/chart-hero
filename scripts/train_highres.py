@@ -11,7 +11,6 @@ This forwards all arguments to the standard trainer with --config local_highres.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from shutil import which
