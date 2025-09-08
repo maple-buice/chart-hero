@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -164,6 +165,28 @@ def _pack_name_for(song_dir: Path, roots: Sequence[str | os.PathLike[str]]) -> s
         except Exception:
             continue
     return song_dir.parent.name
+
+
+def _slugify(text: str) -> str:
+    s = text.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "untitled"
+
+
+def json_index_has_song(
+    song_dir: Path, roots: Sequence[str | os.PathLike[str]], json_root: Path
+) -> bool:
+    """Return True if the song directory is present in the JSON cache."""
+    meta = parse_song_ini(song_dir)
+    artist = meta.get("artist") or song_dir.parent.name
+    name = meta.get("name") or song_dir.name
+    pack = _pack_name_for(song_dir, roots)
+    idx_dir = json_root / _slugify(pack) / _slugify(artist) / _slugify(name)
+    try:
+        return idx_dir.exists() and any(idx_dir.glob("*.json"))
+    except Exception:
+        return False
 
 
 def load_audio_for_training(
@@ -601,22 +624,9 @@ def main() -> None:
     if args.json_index_dir:
         json_root = Path(args.json_index_dir)
         if json_root.exists():
-            json_dirs: set[Path] = set()
-            for jp in json_root.rglob("*.json"):
-                try:
-                    import json as _json
-
-                    with jp.open("r") as f:
-                        payload = _json.load(f)
-                    path_str = payload.get("path") or payload.get("notes")
-                    if isinstance(path_str, str) and path_str:
-                        p = Path(path_str)
-                        if p.exists():
-                            json_dirs.add(p.parent)
-                except Exception:
-                    continue
-            if json_dirs:
-                folders = [d for d in folders if d in json_dirs]
+            folders = [
+                d for d in folders if json_index_has_song(d, args.roots, json_root)
+            ]
     if args.max_files is not None and len(folders) > args.max_files:
         rng = np.random.default_rng(seed=args.seed)
         idx = rng.choice(len(folders), size=args.max_files, replace=False)
