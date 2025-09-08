@@ -173,6 +173,16 @@ def main() -> None:
             "limit_val_batches": 1.0,
         }
 
+        # On Apple Silicon, Lightning's default mixed precision plugin targets CUDA and
+        # emits a warning.  Use a custom plugin that wraps ``torch.autocast`` with
+        # ``device_type='mps'`` instead.
+        if config.device == "mps" and config.precision in ("16-mixed", "bf16-mixed"):
+            from chart_hero.model_training.mps_precision import MPSPrecisionPlugin
+
+            trainer_kwargs.setdefault("plugins", []).append(
+                MPSPrecisionPlugin(config.precision)
+            )
+
         # Make --quick-test actually quick regardless of dataset size
         if args.quick_test:
             # Lightning built-in: runs 1 train/val/test batch and short-circuits heavy work
