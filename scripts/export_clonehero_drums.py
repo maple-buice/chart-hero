@@ -5,8 +5,8 @@ format and produce an inventory/summary. This script scans extracted song
 folders on disk (no archive traversal).
 
 Usage:
-  python scripts/export_clonehero_drums_archives.py \
-    --songs-root /Volumes/Media/CloneHero \
+  python scripts/export_clonehero_drums.py \
+    --songs-root /Users/maple/CloneHeroSongs/CloneHero \
     --out-dir artifacts/clonehero_charts_json
 """
 
@@ -362,8 +362,8 @@ def export_song_folder(
     if midi_path.exists():
         try:
             from chart_hero.utils.rb_midi_utils import (
-                RbMidiProcessor,
-            )  # lazy import to avoid hard dep if mido missing
+                RbMidiProcessor,  # lazy import to avoid hard dep if mido missing
+            )
         except Exception as e:
             print(f"WARN: Skipping MIDI parsing (RbMidiProcessor import failed): {e}")
             evdoc = None
