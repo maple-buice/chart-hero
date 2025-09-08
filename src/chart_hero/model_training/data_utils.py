@@ -1,6 +1,7 @@
 from typing import List, Tuple
 
 from torch import Tensor
+import torch
 from torch.nn.utils.rnn import pad_sequence
 
 
@@ -48,6 +49,6 @@ def collate_with_lengths(
     labels_padded = pad_sequence(labels, batch_first=True, padding_value=0.0)
 
     # Return lengths as a 1D tensor [batch]
-    lengths_tensor = Tensor(lengths).to(dtype=spectrograms_padded.dtype)
+    lengths_tensor = torch.tensor(lengths, dtype=torch.long)
 
     return spectrograms_padded, labels_padded, lengths_tensor

@@ -70,8 +70,14 @@ class DrumTranscriptionModule(pl.LightningModule):
             task="multilabel", num_labels=config.num_drum_classes
         )
 
-        self.validation_step_outputs: list[dict[str, torch.Tensor]] = []
         self.test_step_outputs: list[dict[str, torch.Tensor]] = []
+        self._val_sample_limit = int(
+            getattr(config, "val_sample_limit", 10000)
+        )
+        self._val_sample_count = 0
+        self._val_pred_samples: list[torch.Tensor] = []
+        self._val_label_samples: list[torch.Tensor] = []
+        self._val_prob_samples: list[torch.Tensor] = []
 
     def forward(self, spectrograms: torch.Tensor) -> Dict[str, torch.Tensor]:
         return cast(Dict[str, torch.Tensor], self.model(spectrograms))
@@ -243,9 +249,15 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
-        self.validation_step_outputs.append(
-            {"preds": preds, "labels": labels, "probs": probs}
-        )
+        if self._val_sample_count < self._val_sample_limit:
+            take = min(
+                preds.shape[0], self._val_sample_limit - self._val_sample_count
+            )
+            if take > 0:
+                self._val_pred_samples.append(preds[:take].detach().cpu())
+                self._val_label_samples.append(labels[:take].detach().cpu())
+                self._val_prob_samples.append(probs[:take].detach().cpu())
+                self._val_sample_count += take
         return loss
 
     def test_step(
@@ -264,12 +276,10 @@ class DrumTranscriptionModule(pl.LightningModule):
         return loss
 
     def on_validation_epoch_end(self) -> None:
-        if self.validation_step_outputs:
-            all_preds = torch.cat([x["preds"] for x in self.validation_step_outputs])
-            all_labels = torch.cat([x["labels"] for x in self.validation_step_outputs])
-            all_probs = torch.cat([x["probs"] for x in self.validation_step_outputs])
-            # Log base macro multilabel F1/Accuracy using current thresholds (always log to make it available
-            # for callbacks like ModelCheckpoint/EarlyStopping even when no external logger is configured)
+        if self._val_pred_samples:
+            all_preds = torch.cat(self._val_pred_samples)
+            all_labels = torch.cat(self._val_label_samples)
+            all_probs = torch.cat(self._val_prob_samples)
             base_f1 = torchmetrics.functional.f1_score(
                 all_preds.int(),
                 all_labels.int(),
@@ -290,13 +300,11 @@ class DrumTranscriptionModule(pl.LightningModule):
                         all_preds[:, i], all_labels[:, i], task="binary"
                     )
                     self.log(f"val_f1_class_{i}", class_f1)
-                # Event-level F1 (onset tolerance in patches)
                 tol = max(0, int(getattr(self.config, "event_tolerance_patches", 1)))
                 ev_p, ev_r, ev_f1 = self._event_level_prf(all_preds, all_labels, tol)
                 self.log("val_event_precision", ev_p)
                 self.log("val_event_recall", ev_r)
                 self.log("val_event_f1", ev_f1, prog_bar=True)
-                # Threshold calibration per class via simple grid search
                 thrs = torch.linspace(0.05, 0.95, steps=19, device=all_probs.device)
                 best_thrs: list[float] = []
                 for i in range(self.config.num_drum_classes):
@@ -319,10 +327,8 @@ class DrumTranscriptionModule(pl.LightningModule):
                     self.log(f"val_best_f1_class_{i}", best_f1)
                     best_thrs.append(float(best_thr.item()))
 
-                # Store thresholds for saving/applying
                 self.calibrated_thresholds = best_thrs
 
-                # Macro multilabel F1 using calibrated per-class thresholds
                 thr_vec = (
                     torch.tensor(best_thrs, device=all_probs.device)
                     .unsqueeze(0)
@@ -336,7 +342,6 @@ class DrumTranscriptionModule(pl.LightningModule):
                     num_labels=self.config.num_drum_classes,
                 )
                 self.log("val_f1_calibrated", cal_f1, prog_bar=True)
-            # Optional media logging to W&B (lightweight)
             if (
                 getattr(self.config, "enable_media_logging", False)
                 and self.trainer.logger
@@ -346,9 +351,7 @@ class DrumTranscriptionModule(pl.LightningModule):
                     import wandb as _wandb
 
                     max_cols = min(128, all_probs.shape[0])
-                    heat = (
-                        all_probs[:max_cols].detach().cpu().float().T
-                    )  # (C, max_cols)
+                    heat = all_probs[:max_cols].detach().cpu().float().T
                     img = _wandb.Image(
                         _np.array(heat), caption="val_probs_heatmap (C x samples)"
                     )
@@ -363,8 +366,10 @@ class DrumTranscriptionModule(pl.LightningModule):
                         )
                 except Exception:
                     pass
-        self.validation_step_outputs.clear()
-        # Apply calibrated thresholds to config for immediate downstream use
+        self._val_pred_samples.clear()
+        self._val_label_samples.clear()
+        self._val_prob_samples.clear()
+        self._val_sample_count = 0
         if hasattr(self, "calibrated_thresholds") and self.calibrated_thresholds:
             self.config.class_thresholds = self.calibrated_thresholds
 

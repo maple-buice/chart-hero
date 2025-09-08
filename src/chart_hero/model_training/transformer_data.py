@@ -119,10 +119,14 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         # Load data via numpy memmap for lower I/O overhead
         spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
         label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
-        # Use a writable Tensor for spectrogram to avoid warnings and allow augmentation
-        spectrogram = torch.tensor(spectrogram_np, dtype=torch.float32)
-        # Labels may be rolled/augmented downstream; ensure writable Tensor to avoid warnings
-        label_matrix = torch.tensor(label_np, dtype=torch.float32)
+        spectrogram = torch.from_numpy(
+            np.array(
+                spectrogram_np, dtype=np.float32, copy=self.mode == "train"
+            )
+        )
+        label_matrix = torch.from_numpy(
+            np.array(label_np, dtype=np.float32, copy=self.mode == "train")
+        )
 
         # Robustness: ensure labels have shape (T, C) with T>0 and correct C
         num_classes = self.config.num_drum_classes
@@ -138,18 +142,15 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             label_matrix = torch.zeros((T, num_classes), dtype=torch.float32)
 
         # Optional windowing to enforce maximum sequence length
-        # Prefer explicit max_seq_len if provided; fall back to max_audio_length (seconds).
         max_seq_len = int(getattr(self.config, "max_seq_len", 0) or 0)
-        if max_seq_len > 0:
-            seg_frames = max_seq_len
-        else:
-            seg_frames = int(
-                round(
-                    (getattr(self.config, "max_audio_length", 0.0) or 0.0)
-                    * self.config.sample_rate
-                    / max(1, int(self.config.hop_length))
-                )
+        max_audio_frames = int(
+            round(
+                (getattr(self.config, "max_audio_length", 0.0) or 0.0)
+                * self.config.sample_rate
+                / max(1, int(self.config.hop_length))
             )
+        )
+        seg_frames = max(max_seq_len, max_audio_frames)
 
         if seg_frames > 0 and spectrogram.dim() >= 2:
             T = int(spectrogram.shape[-1])
@@ -176,18 +177,18 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
 
         # Apply SpecAugment only during training
         if self.mode == "train" and self.config.enable_spec_augmentation:
-            spec_np = spectrogram.clone().squeeze(0).numpy()
-            spec_np = augment_spectrogram_time_masking(
-                spec_np,
+            spec = spectrogram.squeeze(0)
+            spec = augment_spectrogram_time_masking(
+                spec,
                 num_masks=self.config.spec_aug_num_time_masks,
                 max_mask_percentage=self.config.spec_aug_max_time_mask_percentage,
             )
-            spec_np = augment_spectrogram_frequency_masking(
-                spec_np,
+            spec = augment_spectrogram_frequency_masking(
+                spec,
                 num_masks=self.config.spec_aug_num_freq_masks,
                 max_mask_percentage=self.config.spec_aug_max_freq_mask_percentage,
             )
-            spectrogram = torch.from_numpy(spec_np).unsqueeze(0)
+            spectrogram = spec.unsqueeze(0)
 
         # Optional time-shift augmentation (circular) on training only
         if self.mode == "train" and getattr(
