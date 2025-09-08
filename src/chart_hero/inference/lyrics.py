@@ -690,7 +690,11 @@ def fetch_audd_unsynced_lyrics(
                     try:
                         cand_title = it.get("title") or it.get("song_title") or None
                         cand_artist = it.get("artist") or it.get("artist_name") or None
-                        snippet_src = lyr if isinstance(lyr, str) else (it.get("lyrics") or it.get("text") or "")
+                        snippet_src = (
+                            lyr
+                            if isinstance(lyr, str)
+                            else (it.get("lyrics") or it.get("text") or "")
+                        )
                         snippet = (snippet_src or "")[:40].replace("\n", " ")
                         pv = (
                             f"{cand_artist or '?'} - {cand_title or '?'} | "

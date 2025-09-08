@@ -7,7 +7,7 @@ PYTEST := $(VENV)/bin/pytest
 RUFF := $(VENV)/bin/ruff
 
 # Defaults for dataset building (can be overridden on the command line)
-ROOT ?= /Volumes/Media/CloneHero
+SONGS_ROOT ?= /Users/maple/CloneHeroSongs/CloneHero
 DEV_SET_ROOT ?= CloneHero/KnownGoodSongs
 DATASET_OUT ?= datasets/processed_highres
 DATASET_SONG_LIMIT ?= 25
@@ -46,7 +46,7 @@ help:
 	@echo "  make lint           # Ruff lint"
 	@echo "  make format         # Ruff format"
 	@echo "  make train-quick    # Quick sanity training run"
-	@echo "  make dataset-highres ROOT=/Volumes/Media/CloneHero DATASET_SONG_LIMIT=50 DATASET_OUT=datasets/processed_highres  # Build hi-res dataset subset"
+	@echo "  make dataset-highres SONGS_ROOT=/Volumes/Media/CloneHero DATASET_SONG_LIMIT=50 DATASET_OUT=datasets/processed_highres  # Build hi-res dataset subset"
 	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
 	@echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
 
@@ -89,13 +89,13 @@ train-quick:
 
 # Build a high-resolution dataset from Clone Hero folders.
 # Variables:
-# - ROOT: Clone Hero songs root (default /Volumes/Media/CloneHero)
+# - SONGS_ROOT: Clone Hero songs root (default /Volumes/Media/CloneHero)
 # - DATASET_OUT:  output dataset directory (default datasets/processed_highres)
 # - DATASET_SONG_LIMIT: number of songs to select (default 50)
 .PHONY: dataset-highres
 dataset-highres:
 	$(PY) -m chart_hero.train.build_dataset \
-		--roots "$(ROOT)" \
+		--roots "$(SONGS_ROOT)" \
 		--out-dir "$(DATASET_OUT)" \
 		--config local_highres \
 		--json-index-dir "$(INDEX_DIR)" \

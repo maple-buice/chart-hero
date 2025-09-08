@@ -191,14 +191,20 @@ class RbMidiProcessor:
         return ticks, secs, tempos
 
     def _tick_to_seconds(
-        self, tick: int, tempo_segments: Tuple[List[int], List[float], List[int]], tpq: int
+        self,
+        tick: int,
+        tempo_segments: Tuple[List[int], List[float], List[int]],
+        tpq: int,
     ) -> float:
         ticks, secs, tempos = tempo_segments
         idx = bisect_right(ticks, tick) - 1
         return secs[idx] + (tick - ticks[idx]) * (tempos[idx] / 1_000_000.0) / tpq
 
     def _tick_to_frame(
-        self, tick: int, tempo_segments: Tuple[List[int], List[float], List[int]], tpq: int
+        self,
+        tick: int,
+        tempo_segments: Tuple[List[int], List[float], List[int]],
+        tpq: int,
     ) -> int:
         sec = self._tick_to_seconds(tick, tempo_segments, tpq)
         return int(sec * self.config.sample_rate / self.config.hop_length)

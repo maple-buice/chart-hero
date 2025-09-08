@@ -120,9 +120,7 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
         label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
         spectrogram = torch.from_numpy(
-            np.array(
-                spectrogram_np, dtype=np.float32, copy=self.mode == "train"
-            )
+            np.array(spectrogram_np, dtype=np.float32, copy=self.mode == "train")
         )
         label_matrix = torch.from_numpy(
             np.array(label_np, dtype=np.float32, copy=self.mode == "train")

@@ -71,9 +71,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         )
 
         self.test_step_outputs: list[dict[str, torch.Tensor]] = []
-        self._val_sample_limit = int(
-            getattr(config, "val_sample_limit", 10000)
-        )
+        self._val_sample_limit = int(getattr(config, "val_sample_limit", 10000))
         self._val_sample_count = 0
         self._val_pred_samples: list[torch.Tensor] = []
         self._val_label_samples: list[torch.Tensor] = []
@@ -250,9 +248,7 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.log("val_f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val_acc", self.val_acc, on_step=False, on_epoch=True)
         if self._val_sample_count < self._val_sample_limit:
-            take = min(
-                preds.shape[0], self._val_sample_limit - self._val_sample_count
-            )
+            take = min(preds.shape[0], self._val_sample_limit - self._val_sample_count)
             if take > 0:
                 self._val_pred_samples.append(preds[:take].detach().cpu())
                 self._val_label_samples.append(labels[:take].detach().cpu())

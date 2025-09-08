@@ -20,9 +20,7 @@ def augment_spectrogram_time_masking(
         mask_width = int(torch.randint(1, max_mask_width + 1, (1,)).item())
         if num_time_steps - mask_width <= 0:
             continue
-        start_step = int(
-            torch.randint(0, num_time_steps - mask_width + 1, (1,)).item()
-        )
+        start_step = int(torch.randint(0, num_time_steps - mask_width + 1, (1,)).item())
         spec[:, start_step : start_step + mask_width] = mask_value
     return spec
 
