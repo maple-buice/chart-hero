@@ -10,7 +10,7 @@ constant BPM for now. Future extension can accept a tempo map.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 import mido
 
@@ -70,15 +70,18 @@ def write_vocals_midi(
     def add_abs(tick: int, msg: mido.Message) -> None:
         events.append((max(0, tick), msg))
 
+    syl_list = list(syllables)
+
     # Add syllables: lyric meta + talky note on/off
-    for syl in syllables:
+    for syl in syl_list:
         t0 = max(0.0, float(syl.t0))
         t1 = max(t0 + 0.01, float(syl.t1))
         start = seconds_to_ticks(t0, bpm, ppq)
         end = seconds_to_ticks(t1, bpm, ppq)
         dur = max(1, end - start)
         text = (syl.text or "").strip()
-        add_abs(start, mido.MetaMessage("lyrics", text=text, time=0))
+        if text:
+            add_abs(start, mido.MetaMessage("lyrics", text=text, time=0))
         add_abs(
             start,
             mido.Message("note_on", note=talkies_note, velocity=96, channel=0, time=0),
@@ -90,13 +93,19 @@ def write_vocals_midi(
 
     # Phrase markers
     if phrases:
-        for ph in phrases:
-            ps = seconds_to_ticks(max(0.0, float(ph.t0)), bpm, ppq)
-            pe = seconds_to_ticks(max(0.0, float(ph.t1)), bpm, ppq)
-            if pe <= ps:
-                pe = ps + 1
-            add_abs(ps, mido.MetaMessage("text", text="[phrase_start]", time=0))
-            add_abs(pe, mido.MetaMessage("text", text="[phrase_end]", time=0))
+        ph_list: Sequence[Phrase] = list(phrases)
+    else:
+        if syl_list:
+            ph_list = [Phrase(t0=syl_list[0].t0, t1=syl_list[-1].t1)]
+        else:
+            ph_list = []
+    for ph in ph_list:
+        ps = seconds_to_ticks(max(0.0, float(ph.t0)), bpm, ppq)
+        pe = seconds_to_ticks(max(0.0, float(ph.t1)), bpm, ppq)
+        if pe <= ps:
+            pe = ps + 1
+        add_abs(ps, mido.MetaMessage("text", text="[phrase_start]", time=0))
+        add_abs(pe, mido.MetaMessage("text", text="[phrase_end]", time=0))
 
     # Sort by absolute tick, then a stable message type order
     type_order = {"text": 0, "lyrics": 1, "note_on": 2, "note_off": 3}
