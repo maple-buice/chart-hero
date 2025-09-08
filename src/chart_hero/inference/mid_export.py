@@ -115,12 +115,13 @@ def _add_drums_track(
     gem_dur = max(1, int(round(ppq * 0.125)))  # ~1/8 note
     tog_dur = 1
 
+    samp_to_tick = (ppq * bpm / 60.0) / float(sr)
+
     for row in rows:
         peak = row.get("peak_sample")
         if peak is None:
             continue
-        t_sec = float(int(peak) / float(sr))
-        tick = seconds_to_ticks(t_sec, bpm, ppq)
+        tick = int(round(int(peak) * samp_to_tick))
 
         # Determine desired cymbal state per pad at this tick
         # Correct color mapping:
@@ -158,24 +159,19 @@ def _add_drums_track(
             cym_on[pad] = want
 
         # Emit gems (dedupe bases)
-        lanes: List[int] = []
+        lanes: set[int] = set()
         if int(row.get("0", 0)) == 1:
-            lanes.append(0)
+            lanes.add(0)
         if int(row.get("1", 0)) == 1:
-            lanes.append(1)
-        # Pad 2/3/4 depending on tom vs cym with corrected mapping
+            lanes.add(1)
         if int(row.get("67", 0)) == 1 or int(row.get("2", 0)) == 1:
-            lanes.append(2)  # Yellow
+            lanes.add(2)
         if int(row.get("68", 0)) == 1 or int(row.get("3", 0)) == 1:
-            lanes.append(3)  # Blue
+            lanes.add(3)
         if int(row.get("66", 0)) == 1 or int(row.get("4", 0)) == 1:
-            lanes.append(4)  # Green
+            lanes.add(4)
 
-        seen = set()
-        for pad in lanes:
-            if pad in seen:
-                continue
-            seen.add(pad)
+        for pad in sorted(lanes):
             note = GEM_NOTE[pad]
             add_abs(
                 tick,
@@ -234,7 +230,7 @@ def write_notes_mid(
     _add_drums_track(mid, prediction_rows, sr=sr, bpm=bpm, ppq=ppq)
 
     # Optional vocals
-    if vocals_syllables:
+    if vocals_syllables is not None:
         _add_vocals_track(mid, vocals_syllables, vocals_phrases, bpm=bpm, ppq=ppq)
 
     mid.save(path)

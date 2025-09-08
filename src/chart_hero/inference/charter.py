@@ -113,13 +113,18 @@ class Charter:
         if not segments:
             return pd.DataFrame(columns=["peak_sample"] + get_drum_hits())
 
-        device = torch.device(
-            self.config.device
-            if torch.cuda.is_available()
-            or getattr(torch.backends, "mps", None)
-            and torch.backends.mps.is_available()
-            else "cpu"
-        )
+        device_str = getattr(self.config, "device", None)
+        if device_str:
+            device = torch.device(device_str)
+        else:
+            has_cuda = torch.cuda.is_available()
+            has_mps = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
+            if has_cuda:
+                device = torch.device("cuda")
+            elif has_mps:
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
         self.model.to(device)
 
         patch = int(self.config.patch_size[0])
@@ -151,69 +156,49 @@ class Charter:
                     ten = seg.detach().cpu().float().squeeze()
                     if ten.dim() != 2:
                         continue
-                    if ten.shape[0] == self.config.n_mels:
-                        spec_np = ten.numpy()
-                    else:
-                        spec_np = ten.t().numpy()
-                    norm_segments.append(
-                        {
-                            "spec": spec_np,
-                            "start_frame": seg_idx * seg_len_frames,
-                            "end_frame": seg_idx * seg_len_frames + spec_np.shape[1],
-                            "total_frames": spec_np.shape[1],
-                        }
-                    )
+                    if ten.shape[0] != self.config.n_mels:
+                        ten = ten.t()
+                    spec_t = ten
+                    start_frame = seg_idx * seg_len_frames
+                    end_frame = start_frame + spec_t.shape[1]
+                    total_frames = spec_t.shape[1]
                 else:
                     spec = seg["spec"]
-                    arr = torch.from_numpy(spec).float().detach().cpu()
-                    if arr.dim() == 2:
-                        n0, _ = arr.shape
-                        spec_np = (
-                            arr.numpy() if n0 == self.config.n_mels else arr.t().numpy()
-                        )
-                    else:
-                        a = arr.squeeze()
-                        if a.dim() != 2:
-                            continue
-                        n0, _ = a.shape
-                        spec_np = (
-                            a.numpy() if n0 == self.config.n_mels else a.t().numpy()
-                        )
-                    norm_segments.append(
-                        {
-                            "spec": spec_np,
-                            "start_frame": int(
-                                seg.get("start_frame", seg_idx * seg_len_frames)
-                            ),
-                            "end_frame": int(
-                                seg.get(
-                                    "end_frame", seg_idx * seg_len_frames + spec_np.shape[1]
-                                )
-                            ),
-                            "total_frames": int(
-                                seg.get("total_frames", spec_np.shape[1])
-                            ),
-                        }
-                    )
+                    arr = (
+                        torch.from_numpy(spec).float()
+                        if isinstance(spec, np.ndarray)
+                        else torch.as_tensor(spec, dtype=torch.float32)
+                    ).squeeze()
+                    if arr.dim() != 2:
+                        continue
+                    if arr.shape[0] != self.config.n_mels:
+                        arr = arr.t()
+                    spec_t = arr
+                    start_frame = int(seg.get("start_frame", seg_idx * seg_len_frames))
+                    end_frame = int(seg.get("end_frame", start_frame + spec_t.shape[1]))
+                    total_frames = int(seg.get("total_frames", spec_t.shape[1]))
+                norm_segments.append(
+                    {
+                        "spec": spec_t,
+                        "start_frame": start_frame,
+                        "end_frame": end_frame,
+                        "total_frames": total_frames,
+                    }
+                )
 
             for i in range(0, len(norm_segments), batch_size):
                 batch = norm_segments[i : i + batch_size]
-                # Build tensor: [B, 1, n_mels, frames]
-                specs = [torch.from_numpy(b["spec"]).float() for b in batch]
-                # pad to max frames in batch to allow stacking
+                specs = [b["spec"].float() for b in batch]
                 max_f = max(s.shape[1] for s in specs)
-                padded = []
-                for s in specs:
-                    if s.shape[1] < max_f:
-                        pad_w = max_f - s.shape[1]
-                        fill = float(s.min().item()) if s.numel() > 0 else 0.0
-                        ps = torch.full(
-                            (s.shape[0], max_f), fill_value=fill, dtype=s.dtype
-                        )
-                        ps[:, : s.shape[1]] = s
-                        s = ps
-                    padded.append(s.unsqueeze(0).unsqueeze(0))  # -> [1,1,n_mels,frames]
-                x = torch.cat(padded, dim=0).to(device)
+                padded = [
+                    F.pad(
+                        s,
+                        (0, max_f - s.shape[1]),
+                        value=float(s.min().item()) if s.numel() > 0 else 0.0,
+                    )
+                    for s in specs
+                ]
+                x = torch.stack(padded, dim=0).unsqueeze(1).to(device)
                 out = self.model(x)
                 logits = out["logits"].cpu()  # [B, T_patches, C]
                 probs = torch.sigmoid(logits)
@@ -278,11 +263,11 @@ class Charter:
                     # seg["spec"] is log-mel (dB-ish) multiplied by an onset envelope.
                     # Convert to a positive scale that preserves relative band energy.
                     seg_spec = seg["spec"]
-                    if isinstance(seg_spec, np.ndarray):
-                        spec_pos = seg_spec - float(np.min(seg_spec)) + 1e-6
+                    if isinstance(seg_spec, torch.Tensor):
+                        seg_arr = seg_spec.numpy()
                     else:
-                        spec_pos = np.asarray(seg_spec)
-                        spec_pos = spec_pos - float(np.min(spec_pos)) + 1e-6
+                        seg_arr = np.asarray(seg_spec)
+                    spec_pos = seg_arr - float(seg_arr.min()) + 1e-6
 
                     # Cymbal gating knobs
                     hf_gate = getattr(self.config, "cymbal_highfreq_ratio_gate", None)
@@ -940,16 +925,13 @@ class ChartGenerator:
         pitch_mapping_df = self.df[["peak_sample"] + get_drum_hits()].set_index(
             "peak_sample"
         )
-        from typing import cast as _cast
-
-        mapping_dict = _cast(
-            dict[int, dict[str, int]], pitch_mapping_df.to_dict(orient="index")
+        samples = pitch_mapping_df.index.to_numpy()
+        times = np.round(
+            librosa.samples_to_time(samples, sr=self.sample_rate), 8
         )
+        records = pitch_mapping_df.to_dict(orient="records")
         pitch_dict: dict[float, list[int | str]] = {}
-        for p in mapping_dict.keys():
-            time = float(round(librosa.samples_to_time(int(p), sr=self.sample_rate), 8))
-            pitch_dict[time] = []
-            for hit_class, is_hit in mapping_dict[p].items():
-                if is_hit == 1:
-                    pitch_dict[time].append(class_to_midi[hit_class])
+        for t, rec in zip(times, records):
+            hits = [class_to_midi[k] for k, v in rec.items() if v == 1]
+            pitch_dict[float(t)] = hits
         return pitch_dict
