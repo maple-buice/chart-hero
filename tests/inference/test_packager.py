@@ -28,12 +28,6 @@ def test_convert_to_ogg_ffmpeg(monkeypatch, tmp_path):
 
     monkeypatch.setattr(packager.subprocess, "run", fake_run)
 
-    def fake_get_duration(path):
-        info = sf.info(path)
-        return info.frames / info.samplerate
-
-    monkeypatch.setattr(packager, "get_duration", fake_get_duration)
-
     out_path, dur = packager.convert_to_ogg(src, dst)
     info = sf.info(str(out_path))
     assert out_path == dst

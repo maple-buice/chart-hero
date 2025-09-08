@@ -54,8 +54,8 @@ def _load_env_local(path: Path) -> None:
                 v = v.strip().strip('"').strip("'")
                 if k and k not in os.environ:
                     os.environ[k] = v
-    except Exception:
-        pass
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"Failed to load env file {path}: {e}")
 
 
 def estimate_bpm(path: str, sr: int) -> Optional[float]:
@@ -177,11 +177,6 @@ def main() -> None:
         "--export-clonehero",
         action="store_true",
         help="Export a Clone Hero-ready folder with notes.mid and song.ini.",
-    )
-    parser.add_argument(
-        "--to-clonehero",
-        action="store_true",
-        help="Write directly into CloneHero/Songs/Chart Hero",
     )
     parser.add_argument(
         "--no-art",
@@ -762,7 +757,7 @@ def main() -> None:
     chart_generator.sheet.write("musicxml", fp=out_path / f"{title}.musicxml")
     print(f"Sheet music saved at {out_path}")
 
-    if args.export_clonehero or args.to_clonehero:
+    if args.export_clonehero:
         # Generate album/background art unless skipped
         album_path = None
         bg_path = None

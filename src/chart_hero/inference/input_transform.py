@@ -59,41 +59,39 @@ def audio_to_tensors(audio_path: str, config: TransformerConfig) -> list[Segment
         print(f"Error loading audio file: {e}")
         return []
 
-    # Create the full transient-enhanced spectrogram
-    full_spec = create_transient_enhanced_spectrogram(
-        y=y,
-        sr=sr,
-        n_fft=config.n_fft,
-        hop_length=config.hop_length,
-        n_mels=config.n_mels,
-    )
-
-    # Segment the spectrogram into chunks the model can handle
+    segment_length_samples = int(config.max_audio_length * sr)
     segment_length_frames = int(
         config.max_audio_length * config.sample_rate / config.hop_length
     )
 
     segments: list[Segment] = []
-    num_frames = full_spec.shape[1]
-    for i in range(0, num_frames, segment_length_frames):
-        end_frame = i + segment_length_frames
-        if end_frame > num_frames:
+    total_frames = int(np.ceil(len(y) / config.hop_length))
+    for i in range(0, len(y), segment_length_samples):
+        y_seg = y[i : i + segment_length_samples]
+        spec_segment = create_transient_enhanced_spectrogram(
+            y=y_seg,
+            sr=sr,
+            n_fft=config.n_fft,
+            hop_length=config.hop_length,
+            n_mels=config.n_mels,
+        )
+        if spec_segment.shape[1] < segment_length_frames:
             spec_segment = np.pad(
-                full_spec[:, i:],
-                ((0, 0), (0, end_frame - num_frames)),
+                spec_segment,
+                ((0, 0), (0, segment_length_frames - spec_segment.shape[1])),
                 mode="constant",
-                constant_values=np.min(full_spec),
+                constant_values=0.0,
             )
-        else:
-            spec_segment = full_spec[:, i:end_frame]
-
-        # Keep numpy for now; Charter.predict will convert to torch and batch
+        elif spec_segment.shape[1] > segment_length_frames:
+            spec_segment = spec_segment[:, :segment_length_frames]
+        start_frame = int(i / config.hop_length)
+        end_frame = start_frame + spec_segment.shape[1]
         segments.append(
             {
-                "spec": spec_segment,  # shape: (n_mels, frames)
-                "start_frame": i,
-                "end_frame": min(end_frame, num_frames),
-                "total_frames": num_frames,
+                "spec": spec_segment,
+                "start_frame": start_frame,
+                "end_frame": min(end_frame, total_frames),
+                "total_frames": total_frames,
             }
         )
 
@@ -133,16 +131,13 @@ def _cookies_opts_from_env() -> dict:
     - YTDLP_COOKIEFILE: path to a cookies.txt
     """
     opts: dict = {}
-    try:
-        cfb = os.environ.get("YTDLP_COOKIES_FROM_BROWSER")
-        if cfb:
-            # yt-dlp expects a tuple like ("chrome",)
-            opts["cookiesfrombrowser"] = (cfb.strip(),)
-        cfile = os.environ.get("YTDLP_COOKIEFILE")
-        if cfile:
-            opts["cookiefile"] = cfile.strip()
-    except Exception:
-        pass
+    cfb = os.environ.get("YTDLP_COOKIES_FROM_BROWSER")
+    if cfb:
+        # yt-dlp expects a tuple like ("chrome",)
+        opts["cookiesfrombrowser"] = (cfb.strip(),)
+    cfile = os.environ.get("YTDLP_COOKIEFILE")
+    if cfile:
+        opts["cookiefile"] = cfile.strip()
     return opts
 
 

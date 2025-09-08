@@ -159,6 +159,9 @@ class BaseConfig:
     # Fraction of mel bins considered "high" for the above ratio (0..1 of n_mels)
     cymbal_highfreq_cutoff_mel: float = 0.7
 
+    # Inference settings
+    inference_batch_size: int = 4
+
     # Data
     train_batch_size: int = 32
     val_batch_size: int = 32

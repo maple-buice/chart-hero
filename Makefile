@@ -113,9 +113,8 @@ train-highres:
 infer:
 	@for L in $(LINKS); do \
 		echo "Running inference for $$L with model $(INFER_MODEL)"; \
-		$(PY) ./src/chart_hero/ \
+		$(PY) -m chart_hero \
 			--export-clonehero \
-			--to-clonehero \
 			-l "$$L" \
 			--model-path="$(INFER_MODEL)" \
 			$(PRESET_FLAG) || exit $$?; \
