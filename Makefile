@@ -18,12 +18,16 @@
 	# Training/inference convenience variables
 	TAG ?= $(shell date "+%Y%m%d_%H%M%S")
 	WANDB ?= 0
+	RESUME_LATEST ?= 0
 	# Resolve W&B flag
 	WANDB_FLAG := $(if $(filter 1 yes true,$(WANDB)),--use-wandb,--no-wandb)
 	
 	MODELS_DIR := models/local_transformer_models
 	# Newest last.ckpt under timestamped subdirs
 	LATEST_LAST := $(shell ls -t $(MODELS_DIR)/*/last.ckpt 2>/dev/null | head -n 1)
+	LATEST_TAG := $(if $(LATEST_LAST),$(notdir $(patsubst %/,%,$(dir $(LATEST_LAST)))),)
+	RESUME_FLAG := $(if $(filter 1 yes true,$(RESUME_LATEST)),$(if $(LATEST_TAG),--resume,),)
+	TRAIN_TAG := $(if $(filter 1 yes true,$(RESUME_LATEST)),$(if $(LATEST_TAG),$(LATEST_TAG),$(TAG)),$(TAG))
 	DEFAULT_MODEL := $(if $(wildcard $(MODELS_DIR)/last.ckpt),$(MODELS_DIR)/last.ckpt,$(MODELS_DIR)/best_model.ckpt)
 	INFER_MODEL ?= $(if $(LATEST_LAST),$(LATEST_LAST),$(DEFAULT_MODEL))
 	CRUEL_SUMMER ?= https://youtu.be/SU8Jx80fCmg?si=LGzRTq-vx6xsylmZ
@@ -49,6 +53,7 @@ help:
 	@echo "  make train-quick    # Quick sanity training run"
 	@echo "  make dataset-highres SONGS_ROOT=/Volumes/Media/CloneHero DATASET_OUT=datasets/processed_highres  # Build hi-res dataset"
 	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
+	@echo "  make train-highres RESUME_LATEST=1  # Resume latest local_highres run"
 	@echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
 .PHONY: venv
 venv:
@@ -101,7 +106,8 @@ dataset-highres:
 train-highres:
 		$(PY) scripts/train_highres.py \
 			$(WANDB_FLAG) \
-			--experiment-tag $(TAG)
+			$(RESUME_FLAG) \
+			--experiment-tag $(TRAIN_TAG)
 .PHONY: infer
 infer:
 		@for L in $(LINKS); do \
