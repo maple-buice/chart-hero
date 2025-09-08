@@ -430,7 +430,7 @@ class LocalMicroConfig(LocalConfig):
 
 @dataclass
 class CloudConfig(BaseConfig):
-    """High-resolution configuration optimized for cloud GPUs/TPUs."""
+    """Configuration tuned for Google Colab's T4 High-RAM runtime."""
 
     # Device settings
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -454,15 +454,16 @@ class CloudConfig(BaseConfig):
     pos_weight_cap: float = 10.0  # cap auto pos_weight
 
     # GPU optimization
-    train_batch_size: int = 10
-    val_batch_size: int = 12
-    num_workers: int = 4  # Conservative for Colab
+    train_batch_size: int = 16
+    val_batch_size: int = 16
+    num_workers: int = 8  # Leverage Colab CPU quota
     pin_memory: bool = True
-    persistent_workers: bool = False
+    persistent_workers: bool = True
+    prefetch_factor: int = 4  # Boost dataloader throughput
 
     # Training settings
-    accumulate_grad_batches: int = 4  # Larger effective batch size
-    gradient_checkpointing: bool = False  # GPU has more memory
+    accumulate_grad_batches: int = 6  # Larger effective batch size
+    gradient_checkpointing: bool = True  # Balance memory on T4
 
     # Colab-specific paths (will be created if they don't exist)
     data_dir: str = "datasets/processed_highres"
