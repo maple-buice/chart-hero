@@ -61,8 +61,11 @@ class RbMidiProcessor:
 
         drum_tracks = self._find_drum_tracks(mf)
         if not drum_tracks:
-            # Fallback: last track
-            drum_tracks = [mf.tracks[-1]]
+            logging.warning("No drum track found in %s", midi_path)
+            # Return all-zero labels to indicate absence of drum content
+            return torch.zeros(
+                (num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32
+            )
 
         # Flatten events to absolute tick
         events: List[Tuple[int, mido.Message]] = []
@@ -244,8 +247,16 @@ class RbMidiProcessor:
         tempo_map = self._collect_tempo_changes(mf)
         tempo_segments = self._build_tempo_segments(tempo_map, tpq)
         drum_tracks = self._find_drum_tracks(mf)
+        diffs = {"Easy": 60, "Medium": 72, "Hard": 84, "Expert": 96}
         if not drum_tracks:
-            drum_tracks = [mf.tracks[-1]]
+            logging.warning("No drum track found in %s", midi_path)
+            return {
+                "tpq": int(tpq),
+                "tempos": [
+                    {"tick": int(t), "us_per_beat": int(us)} for (t, us) in tempo_map
+                ],
+                "difficulties": {d: {"events": []} for d in diffs},
+            }
 
         # Flatten messages with absolute tick
         events: list[tuple[int, mido.Message]] = []
@@ -256,7 +267,6 @@ class RbMidiProcessor:
                 events.append((t, msg))
         events.sort(key=lambda x: x[0])
 
-        diffs = {"Easy": 60, "Medium": 72, "Hard": 84, "Expert": 96}
         out: dict[str, dict[str, list[dict[str, Any]]]] = {
             d: {"events": []} for d in diffs
         }

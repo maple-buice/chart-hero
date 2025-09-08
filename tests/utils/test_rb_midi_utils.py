@@ -33,3 +33,22 @@ def test_rb_midi_processor_on_rb2_mid(config):
     assert labels.shape == (frames, config.num_drum_classes)
     # Expect some drum content
     assert torch.sum(labels) > 0
+
+
+def test_rb_midi_processor_no_drum_track(config):
+    """RbMidiProcessor should yield no events when a MIDI lacks a drum track."""
+    midi_path = Path(
+        "honest-bob-and-the-factory-to-dealer-incentives/soy-bomb/notes.mid"
+    )
+    if not midi_path.exists():
+        pytest.skip(f"Test MIDI not found at {midi_path}")
+
+    proc = RbMidiProcessor(config)
+    frames = 1000
+    labels = proc.create_label_matrix(midi_path, frames)
+    assert torch.sum(labels) == 0
+
+    evdoc = proc.extract_events_per_difficulty(midi_path)
+    assert evdoc is not None
+    for diff in ("Easy", "Medium", "Hard", "Expert"):
+        assert evdoc["difficulties"][diff]["events"] == []
