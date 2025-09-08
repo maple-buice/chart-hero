@@ -6,6 +6,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Iterable
 
+from chart_hero.utils.time_utils import seconds_to_ticks, ticks_to_seconds
+
 from .types import PredictionRow
 
 
@@ -31,13 +33,6 @@ class SongMeta:
     album: str | None = None
     year: str | int | None = None
     charter: str | None = "chart-hero"
-
-
-def seconds_to_ticks(seconds: float, bpm: float, resolution: int) -> int:
-    """Convert seconds to tick count using fractional math for precision."""
-    bpm_fraction = Fraction(str(bpm))
-    ticks_per_second = Fraction(resolution, 1) * bpm_fraction / 60
-    return round(Fraction(str(seconds)) * ticks_per_second)
 
 
 def write_chart(
@@ -117,7 +112,7 @@ def write_chart(
     track_lines.append("}")
 
     last_tick = max(tick_to_notes, default=0)
-    song_length_seconds = float(Fraction(last_tick, 1) / ticks_per_second)
+    song_length_seconds = ticks_to_seconds(last_tick, bpm, resolution)
 
     chart_text = "\n".join(song_lines + sync_lines + events_lines + track_lines) + "\n"
     (out_dir / "notes.chart").write_text(chart_text, encoding="utf-8")
