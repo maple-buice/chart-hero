@@ -67,6 +67,7 @@ def setup_arg_parser() -> argparse.ArgumentParser:
             "overnight_default",
             "local_highres",
             "local_micro",
+            "mps_mixed",
         ],
         help="Configuration to use",
     )
@@ -120,6 +121,11 @@ def setup_arg_parser() -> argparse.ArgumentParser:
         "--accumulate-grad-batches",
         type=int,
         help="Override gradient accumulation batches",
+    )
+    parser.add_argument(
+        "--precision",
+        type=str,
+        help="Override computation precision (e.g., 'bf16-mixed')",
     )
     parser.add_argument(
         "--dataset-fraction",
@@ -188,6 +194,10 @@ def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
             config.max_audio_length = float(args.max_audio_length)
         except Exception:
             pass
+    precision_arg = args.precision or os.environ.get("PRECISION")
+    if precision_arg:
+        config.precision = precision_arg
+        config.mixed_precision = precision_arg != "32"
 
 
 def setup_callbacks(config: "BaseConfig", use_logger: bool = True) -> list[Callback]:

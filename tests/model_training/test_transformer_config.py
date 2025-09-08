@@ -5,6 +5,7 @@ import pytest
 from chart_hero.model_training.transformer_config import (
     CloudConfig,
     LocalConfig,
+    MpsMixedConfig,
     auto_detect_config,
     get_config,
     validate_config,
@@ -24,6 +25,12 @@ def test_get_config():
     # Test that it raises an error for an unknown config type
     with pytest.raises(ValueError):
         get_config("unknown")
+
+
+def test_get_config_mps_mixed():
+    """Ensure the mps_mixed profile is available."""
+    config = get_config("mps_mixed")
+    assert isinstance(config, MpsMixedConfig)
 
 
 @patch("torch.cuda.is_available", return_value=True)

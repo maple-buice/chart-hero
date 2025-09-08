@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
+import warnings
 
 # region Drum Hits
 # Final map based on README.md
@@ -297,6 +298,37 @@ class LocalConfig(BaseConfig):
 
 
 @dataclass
+class MpsMixedConfig(LocalConfig):
+    """Configuration for MPS with mixed precision (bf16).
+
+    Mixed precision on Apple's Metal Performance Shaders backend is still
+    experimental and may be unstable. If bf16 support is unavailable the
+    configuration falls back to full precision training.
+    """
+
+    mixed_precision: bool = True
+    precision: str = "bf16-mixed"
+
+    def __post_init__(self) -> None:  # type: ignore[override]
+        super().__post_init__()
+        # Force MPS device if available; otherwise fall back to CPU and full precision
+        if self.device != "mps":
+            self.mixed_precision = False
+            self.precision = "32"
+            return
+        # Attempt a small bf16 tensor on MPS to verify support; fall back on failure
+        try:  # pragma: no cover - hardware dependent
+            torch.tensor(1.0, device="mps", dtype=torch.bfloat16)
+        except Exception:
+            warnings.warn(
+                "MPS bf16 mixed precision unsupported or unstable; falling back to full precision",
+                RuntimeWarning,
+            )
+            self.mixed_precision = False
+            self.precision = "32"
+
+
+@dataclass
 class LocalPerformanceConfig(LocalConfig):
     """A more aggressive configuration for powerful local machines."""
 
@@ -463,6 +495,8 @@ def get_config(config_type: str = "local") -> BaseConfig:
         return LocalHighResConfig()
     elif config_type_lower == "local_micro":
         return LocalMicroConfig()
+    elif config_type_lower == "mps_mixed":
+        return MpsMixedConfig()
     else:
         raise ValueError(
             f"Unknown config type: {config_type}. Use 'local', 'cloud', or 'overnight_default'."

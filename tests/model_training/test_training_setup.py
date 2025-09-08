@@ -10,6 +10,8 @@ from chart_hero.model_training.training_setup import (
     configure_paths,
     setup_callbacks,
     setup_logger,
+    setup_arg_parser,
+    apply_cli_overrides,
 )
 from chart_hero.model_training.transformer_config import get_config
 
@@ -75,3 +77,20 @@ def test_configure_paths_handles_str_log_dir(tmp_path):
     assert isinstance(mock_config["log_dir"], str)  # Original is unchanged
     assert log_dir_path.is_dir()
     assert model_dir_path.is_dir()
+
+
+def test_precision_override_cli(config):
+    parser = setup_arg_parser()
+    args = parser.parse_args(["--precision", "bf16-mixed", "--experiment-tag", "exp"])
+    apply_cli_overrides(config, args)
+    assert config.precision == "bf16-mixed"
+    assert config.mixed_precision is True
+
+
+def test_precision_override_env(config, monkeypatch):
+    parser = setup_arg_parser()
+    args = parser.parse_args(["--experiment-tag", "exp"])
+    monkeypatch.setenv("PRECISION", "bf16-mixed")
+    apply_cli_overrides(config, args)
+    assert config.precision == "bf16-mixed"
+    assert config.mixed_precision is True
