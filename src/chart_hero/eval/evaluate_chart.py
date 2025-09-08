@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -7,6 +9,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import mido
 import numpy as np
 import pandas as pd
+import soundfile as sf
 
 from chart_hero.inference.charter import Charter
 from chart_hero.inference.input_transform import audio_to_tensors
@@ -73,21 +76,41 @@ def load_truth_from_mid(mid_path: Path) -> List[Event]:
         if tr is not None:
             break
     if tr is None:
-        # fallback: use last non-tempo track
-        tr = mid.tracks[-1]
+        raise RuntimeError("PART DRUMS track not found in MIDI")
 
-    # Gather tempo from track 0 (first set_tempo), default 120bpm
-    tempo = 500000
+    # Gather all tempo changes from track 0 (default 120bpm)
+    tempo_changes: List[Tuple[int, int]] = [(0, 500000)]
+    tick_acc = 0
     for msg in mid.tracks[0]:
+        tick_acc += msg.time
         if msg.is_meta and msg.type == "set_tempo":
-            tempo = int(msg.tempo)
-            break
+            tempo_changes.append((tick_acc, int(msg.tempo)))
 
     events: List[Event] = []
     cym_on = {2: True, 3: True, 4: True}  # default ON like Clone Hero
     time_ticks = 0
+    tempo_idx = 0
+    cur_tempo = tempo_changes[0][1]
+    prev_tick = 0
+    acc_sec = 0.0
+    next_change = tempo_changes[1] if len(tempo_changes) > 1 else None
     for msg in tr:
         time_ticks += msg.time
+        while next_change is not None and time_ticks >= next_change[0]:
+            acc_sec += mido.tick2second(
+                next_change[0] - prev_tick, mid.ticks_per_beat, cur_tempo
+            )
+            prev_tick = next_change[0]
+            tempo_idx += 1
+            cur_tempo = tempo_changes[tempo_idx][1]
+            next_change = (
+                tempo_changes[tempo_idx + 1]
+                if tempo_idx + 1 < len(tempo_changes)
+                else None
+            )
+        sec = acc_sec + mido.tick2second(
+            time_ticks - prev_tick, mid.ticks_per_beat, cur_tempo
+        )
         if msg.type == "note_on" and msg.velocity > 0:
             if msg.note in TOGGLE_TO_PAD:
                 pad = TOGGLE_TO_PAD[msg.note]
@@ -96,7 +119,6 @@ def load_truth_from_mid(mid_path: Path) -> List[Event]:
             pad = GEM_TO_PAD.get(msg.note)
             if pad is None:
                 continue
-            sec = mido.tick2second(time_ticks, mid.ticks_per_beat, tempo)
             if pad in (2, 3, 4) and cym_on.get(pad, True):
                 cls = PAD_TO_CLASS_CYM[pad]
             else:
@@ -106,16 +128,17 @@ def load_truth_from_mid(mid_path: Path) -> List[Event]:
     return events
 
 
-def _maybe_mix_audio(paths: Sequence[str], target_sr: int) -> Tuple[str, float]:
-    """Load one or more audio files and mix down to mono float32, write temp WAV.
+def _maybe_mix_audio(
+    paths: Sequence[str], target_sr: int
+) -> Tuple[str, float, Optional[Path]]:
+    """Load one or more audio files and mix down to mono float32.
 
-    Returns a filesystem path and sample rate. Writes under output/_eval_mix.wav.
+    Returns a filesystem path, sample rate, and optional temporary file path that
+    should be cleaned up by the caller when not ``None``.
     """
-    import numpy as np
-    import soundfile as sf
 
     if len(paths) == 1:
-        return paths[0], float(target_sr)
+        return paths[0], float(target_sr), None
     ys: List[np.ndarray] = []
     for p in paths:
         y, sr_f = load_audio(p, sr=target_sr)
@@ -124,11 +147,10 @@ def _maybe_mix_audio(paths: Sequence[str], target_sr: int) -> Tuple[str, float]:
     m = min(map(len, ys))
     ys = [y[:m] for y in ys]
     mix = np.clip(np.sum(ys, axis=0) / max(1, len(ys)), -1.0, 1.0)
-    out_dir = Path("output")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "_eval_mix.wav"
-    sf.write(str(out_path), mix, target_sr)
-    return str(out_path), float(target_sr)
+    fd, out_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    sf.write(out_path, mix, target_sr)
+    return out_path, float(target_sr), Path(out_path)
 
 
 def predict_events(
@@ -148,73 +170,60 @@ def predict_events(
 ) -> List[Event]:
     config = get_config("local")
     # Apply balanced inference defaults if not provided via CLI
-    try:
-        # Global gates/margins/NMS
-        if getattr(config, "activity_gate", None) is None:
-            config.activity_gate = 0.50
-        # Prefer slightly stronger NMS for stability
-        config.event_nms_kernel_patches = int(
-            max(1, getattr(config, "event_nms_kernel_patches", 3))
-        )
-        if config.event_nms_kernel_patches < 9:
-            config.event_nms_kernel_patches = 9
-        if getattr(config, "cymbal_margin", None) is None:
-            config.cymbal_margin = 0.30
-        # Make tom win require clearly higher prob than cymbal
-        if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
-            config.tom_over_cymbal_margin = 0.45
-        # Mild per-class min spacing by default (unless provided)
+    if getattr(config, "activity_gate", None) is None:
+        config.activity_gate = 0.50
+    # Prefer slightly stronger NMS for stability
+    config.event_nms_kernel_patches = int(
+        max(1, getattr(config, "event_nms_kernel_patches", 3))
+    )
+    if config.event_nms_kernel_patches < 9:
+        config.event_nms_kernel_patches = 9
+    if getattr(config, "cymbal_margin", None) is None:
+        config.cymbal_margin = 0.30
+    # Make tom win require clearly higher prob than cymbal
+    if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
+        config.tom_over_cymbal_margin = 0.45
+    # Mild per-class min spacing by default (unless provided)
+    base_map = getattr(config, "min_spacing_ms_map", None) or {}
+    mild_map = {
+        "0": 28.0,
+        "1": 26.0,
+        "2": 24.0,
+        "3": 26.0,
+        "4": 28.0,
+        "66": 22.0,
+        "67": 24.0,
+        "68": 24.0,
+    }
+    for k, v in mild_map.items():
+        if k not in base_map:
+            base_map[k] = v
+    config.min_spacing_ms_map = base_map
+    if getattr(config, "min_spacing_ms_default", None) is None:
+        config.min_spacing_ms_default = 22.0
+    # Per-class thresholds default only if no checkpoint calibration file
+    if getattr(config, "class_thresholds", None) is None and class_thresholds is None:
         try:
-            base_map = getattr(config, "min_spacing_ms_map", None) or {}
-            mild_map = {
-                "0": 28.0,
-                "1": 26.0,
-                "2": 24.0,
-                "3": 26.0,
-                "4": 28.0,
-                "66": 22.0,
-                "67": 24.0,
-                "68": 24.0,
-            }
-            for k, v in mild_map.items():
-                if k not in base_map:
-                    base_map[k] = v
-            config.min_spacing_ms_map = base_map
-            if getattr(config, "min_spacing_ms_default", None) is None:
-                config.min_spacing_ms_default = 22.0
+            thr_path = Path(model_path).parent / "class_thresholds.json"
+            has_calibrated = thr_path.exists()
         except Exception:
-            pass
-        # Per-class thresholds default only if no checkpoint calibration file
-        if (
-            getattr(config, "class_thresholds", None) is None
-            and class_thresholds is None
-        ):
-            try:
-                from pathlib import Path as _Path
-
-                thr_path = _Path(model_path).parent / "class_thresholds.json"
-                has_calibrated = thr_path.exists()
-            except Exception:
-                has_calibrated = False
-            if not has_calibrated:
-                thr_map = {
-                    "0": 0.55,
-                    "1": 0.62,
-                    "2": 0.60,
-                    "3": 0.60,
-                    "4": 0.65,
-                    "66": 0.86,
-                    "67": 0.88,
-                    "68": 0.92,
-                }
-                classes = get_drum_hits()
-                config.class_thresholds = [
-                    float(thr_map.get(c, config.prediction_threshold)) for c in classes
-                ]
-        # Do not force class_gains by default; keep None unless provided
-    except Exception:
-        # If any defaults application fails, continue with existing config
-        pass
+            has_calibrated = False
+        if not has_calibrated:
+            thr_map = {
+                "0": 0.55,
+                "1": 0.62,
+                "2": 0.60,
+                "3": 0.60,
+                "4": 0.65,
+                "66": 0.86,
+                "67": 0.88,
+                "68": 0.92,
+            }
+            classes = get_drum_hits()
+            config.class_thresholds = [
+                float(thr_map.get(c, config.prediction_threshold)) for c in classes
+            ]
+    # Do not force class_gains by default; keep None unless provided
     if patch_stride is not None and patch_stride > 0:
         config.patch_stride = int(patch_stride)
     # Optional tuning hooks
@@ -231,8 +240,15 @@ def predict_events(
         config.cymbal_highfreq_cutoff_mel = float(cymbal_hf_cut)
 
     # Mix audio if multiple paths provided
-    mixed_path, _ = _maybe_mix_audio(list(audio_paths), config.sample_rate)
-    segments = audio_to_tensors(mixed_path, config)
+    mixed_path, _, tmp_mix = _maybe_mix_audio(list(audio_paths), config.sample_rate)
+    try:
+        segments = audio_to_tensors(mixed_path, config)
+    finally:
+        if tmp_mix is not None:
+            try:
+                tmp_mix.unlink()
+            except OSError:
+                pass
     ch = Charter(config, model_path)
     # Optional threshold overrides after Charter init (which may load calibrated)
     if disable_calibrated:
@@ -254,35 +270,16 @@ def predict_events(
     # Per-class thresholds via parsed mapping handled by caller by setting config.class_thresholds
     df = ch.predict(segments)
     sr = config.sample_rate
+    classes = get_drum_hits()
+    cols = ["peak_sample"] + classes
+    data = df[cols].to_numpy()
     ev: List[Event] = []
-    for row in df.to_dict(orient="records"):
-        sec = float(int(row["peak_sample"]) / float(sr))
-        for cls in get_drum_hits():
-            if int(row.get(cls, 0)) == 1:
+    for row in data:
+        sec = float(row[0] / sr)
+        for cls, hit in zip(classes, row[1:]):
+            if int(hit) == 1:
                 ev.append(Event(t=sec, cls=cls))
     return ev
-
-
-def _greedy_match_indices(
-    pred_idx: List[int], true_idx: List[int], tol: int
-) -> Dict[int, int]:
-    """Greedy match true indices to pred indices within +/- tol; returns mapping true->pred."""
-    used_true: set[int] = set()
-    mapping: Dict[int, int] = {}
-    for pi, p in enumerate(pred_idx):
-        best = None
-        best_d = tol + 1
-        for ti, t in enumerate(true_idx):
-            if ti in used_true:
-                continue
-            d = abs(p - t)
-            if d <= tol and d < best_d:
-                best = ti
-                best_d = d
-        if best is not None:
-            used_true.add(best)
-            mapping[best] = pi
-    return mapping
 
 
 def match_events(
@@ -306,35 +303,36 @@ def match_events(
     ioi_summary: Dict[str, Dict[str, Dict[str, float]]] = {}
 
     for c in classes:
-        P = pred_by[c]
-        T = true_by[c]
-        used = set()
-        tp = 0
-        fp = 0
-        fn = 0
+        P = sorted(pred_by[c], key=lambda e: e.t)
+        T = sorted(true_by[c], key=lambda e: e.t)
+        i = j = 0
+        tp = fp = fn = 0
         offsets: List[float] = []
-        for p in P:
-            best = None
-            best_d = tol_s + 1
-            for i, t in enumerate(T):
-                if i in used:
-                    continue
-                d = abs(p.t - t.t)
-                if d <= tol_s and d < best_d:
-                    best = i
-                    best_d = d
-            if best is not None:
-                used.add(best)
+        mapping: Dict[int, int] = {}
+        while i < len(P) and j < len(T):
+            dt = P[i].t - T[j].t
+            if abs(dt) <= tol_s:
+                mapping[j] = i
                 tp += 1
-                offsets.append((p.t - T[best].t))
-            else:
+                offsets.append(dt)
+                i += 1
+                j += 1
+            elif dt < 0:
                 fp += 1
-                rows.append({"cls": c, "type": "FP", "t": p.t})
-        # Unmatched truths
-        for i, t in enumerate(T):
-            if i not in used:
+                rows.append({"cls": c, "type": "FP", "t": P[i].t})
+                i += 1
+            else:
                 fn += 1
-                rows.append({"cls": c, "type": "FN", "t": t.t})
+                rows.append({"cls": c, "type": "FN", "t": T[j].t})
+                j += 1
+        while i < len(P):
+            fp += 1
+            rows.append({"cls": c, "type": "FP", "t": P[i].t})
+            i += 1
+        while j < len(T):
+            fn += 1
+            rows.append({"cls": c, "type": "FN", "t": T[j].t})
+            j += 1
         prec = tp / max(1, tp + fp)
         rec = tp / max(1, tp + fn)
         f1 = 0.0 if (prec + rec) == 0 else 2 * prec * rec / (prec + rec)
@@ -351,14 +349,7 @@ def match_events(
         }
 
         # Build IOI and subdivision stats for this class
-        # True event indices and times
-        true_idx = list(range(len(T)))
-        # Build greedy mapping using integer indices based on times converted to pseudo-frames at 1 ms resolution
-        # For this evaluator, use tol in samples -> convert times to integer milliseconds for robustness
-        pred_ms_idx = [int(round(p.t * 1000.0)) for p in P]
-        true_ms_idx = [int(round(t.t * 1000.0)) for t in T]
-        tol_ms = int(round(tol_s * 1000.0))
-        mapping = _greedy_match_indices(pred_ms_idx, true_ms_idx, tol_ms)
+        # mapping already provides true index -> pred index
 
         # IOI bins
         bin_totals = {str(b): 0 for b in ioi_bins_ms}
@@ -533,7 +524,6 @@ def main() -> None:
         if thr_map:
             # Put into order of get_drum_hits
             classes = get_drum_hits()
-            config = get_config("local")
             class_list = [float(thr_map.get(c, np.nan)) for c in classes]
             # pass via activity gate hook by setting environment? Instead, we'll set after Charter init below; store in locals
             per_class_overrides = class_list
