@@ -12,19 +12,23 @@ The project has been fully modernized with a transformer-based architecture:
 
 ### Quick Start Commands
 
+Run these from the repository root with the package installed (for example via
+`pip install -e .`).
+
 **Data Preparation:**
 ```bash
 # Prepare dataset with memory-efficient processing
-python prepare_egmd_data.py --sample-ratio 0.1 --memory-limit-gb 32 --high-performance
+python -m chart_hero.prepare_egmd_data --sample-ratio 0.1 --memory-limit-gb 32 --high-performance
 ```
 
 **Training:**
 ```bash
 # Full training
-python model_training/train_transformer.py --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0
+python -m chart_hero.model_training.train_transformer --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0
 
 # Quick test (fast_dev_run)
-python model_training/train_transformer.py --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0 --quick-test
+python -m chart_hero.model_training.train_transformer --config auto --data-dir ../datasets/processed --audio-dir ../datasets/e-gmd-v1.0.0 --quick-test
+```
 
 ## Quick Test Mode
 
@@ -44,7 +48,6 @@ python -m chart_hero.model_training.train_transformer \
   --data-dir ./tests/assets/dummy_data/processed \
   --experiment-tag quicktest_demo \
   --quick-test
-```
 
 Expected output:
 - Logs indicate `fast_dev_run` mode and a single batch per loop.
@@ -73,7 +76,6 @@ Some macOS environments or restricted shells can error on multiprocessing/shared
 - Local configs set `pin_memory=False` to avoid the “pin_memory not supported on MPS” warning.
 - First optimization step on MPS is often slower; subsequent steps are faster.
 - To avoid contention, use unique `--experiment-tag` per concurrent training.
-```
 
 ## Legacy Documentation: Drum Note Mapping
 
@@ -86,7 +88,6 @@ self.midi_note_map={36: 'KD', 38: 'SD', 40: 'SD', 37: 'SD_xstick', 48: 'HT', 50:
                    26: 'HH_open', 42: 'HH_close', 22: 'HH_close', 44: 'HH_close',
                    49: 'CC', 57: 'CC', 55: 'CC', 52: 'CC', 51: 'RC',
                    59: 'RC', 53: 'RC', 39: 'CB', 54: 'CB', 56: 'CB'}
-```
 
 Which was based on this mapping table from Google's Groove MIDI Dataset (the expanded version of which is used for training data):
 
@@ -133,7 +134,6 @@ public const int c_drumsGhostOffset = 39;
 public const byte VELOCITY = 100;             // default note velocity for exporting
 public const byte VELOCITY_ACCENT = 127;      // fof/ps
 public const byte VELOCITY_GHOST = 1;         // fof/ps
-```
 
 ### Clone Hero MIDI drum map
 
@@ -163,7 +163,6 @@ public enum CymbalPad
     // Orange = 4,
     // Open = 5
 }
-```
 
 ### MoonScraper DrumsChartNoteNumberToProcessFnMap
 ```csharp
@@ -196,7 +195,6 @@ static readonly IReadOnlyDictionary<int, NoteEventProcessFn> DrumsChartNoteNumbe
     { ChartIOHelper.c_drumsGhostOffset + 4, (int)Note.DrumPad.Orange, NoteFlagPriority.Ghost }, // 43 (actually Green)
     { ChartIOHelper.c_drumsGhostOffset + 5, (int)Note.DrumPad.Green, NoteFlagPriority.Ghost }, // 44
 };
-```
 
 Taking into account the counts from all chart files I've downloaded:
 ```python
@@ -221,7 +219,6 @@ Taking into account the counts from all chart files I've downloaded:
     67: 10834,
     68: 7209
 }
-```
 
 And the full enum map could be simplified to:
 
@@ -236,7 +233,6 @@ public enum ProDrumMap {
     HiHatCymbal = 67,
     RideCymbal = 68,
 }
-```
 
 Count of all the drum note positions in downloaded `notes.chart` files, as a sanity check:
 
@@ -262,14 +258,12 @@ Count of all the drum note positions in downloaded `notes.chart` files, as a san
     "67": 10834,
     "68": 7209
 }
-```
 
 Hi-tom seems very high, but maybe it's skewed in the dataset in the `notes.chart` dataset.
 
 Here it is for the MIDIs:
 
 ```json
-```
 
 ## Final Map
 
@@ -327,7 +321,6 @@ self.midi_note_map={
     80: '68', # Mute Triangle -> RideCymbal
     81: '66', # Open Triangle -> CrashCymbal
 }
-```
 
 ## Future improvements
 
