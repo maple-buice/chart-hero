@@ -242,7 +242,10 @@ def normalize_loudness_rms(y: np.ndarray, target_dbfs: float = -14.0) -> np.ndar
 def build_labels_from_midi(
     midi_path: Path, num_time_frames: int, processor: RbMidiProcessor
 ) -> Optional[torch.Tensor]:
-    return processor.create_label_matrix(midi_path, num_time_frames)
+    labels = processor.create_label_matrix(midi_path, num_time_frames)
+    if labels is None or not torch.any(labels):
+        return None
+    return labels
 
 
 # --- .chart/.txt support ---
