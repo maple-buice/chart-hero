@@ -1,4 +1,5 @@
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -369,23 +370,42 @@ class LocalHighResConfig(LocalConfig):
     audio_dir: str = "datasets/processed_highres"
 
     # Sequence length can get large with stride=1; prefer shorter segments for stability
-    max_audio_length: float = 30.0
+    max_audio_length: float = 20.0
 
     # Batching tuned down for the higher sequence length
     train_batch_size: int = 10
     val_batch_size: int = 12
 
     # Improve dataloader stability locally
-    num_workers: int = 8
-    persistent_workers: bool = True
+    num_workers: int = 4
+    persistent_workers: bool = False
     # Conservative decode min spacing defaults (ms)
     min_spacing_ms_map: dict[str, float] | None = None
+
+    mixed_precision: bool = True
+    precision: str = "bf16-mixed"
 
     def __post_init__(self) -> None:  # type: ignore[override]
         super().__post_init__()
         # Set default min spacing for kick/snare if not provided
         if self.min_spacing_ms_map is None:
             self.min_spacing_ms_map = {"0": 30.0, "1": 30.0}
+
+        # Force MPS device if available; otherwise fall back to CPU and full precision
+        if self.device != "mps":
+            self.mixed_precision = False
+            self.precision = "32"
+            return
+        # Attempt a small bf16 tensor on MPS to verify support; fall back on failure
+        try:  # pragma: no cover - hardware dependent
+            torch.tensor(1.0, device="mps", dtype=torch.bfloat16)
+        except Exception:
+            warnings.warn(
+                "MPS bf16 mixed precision unsupported or unstable; falling back to full precision",
+                RuntimeWarning,
+            )
+            self.mixed_precision = False
+            self.precision = "32"
 
 
 @dataclass
@@ -445,28 +465,43 @@ class CloudConfig(BaseConfig):
         return self.train_batch_size * self.accumulate_grad_batches
 
 
-def get_config(config_type: str = "local") -> BaseConfig:
-    """Get configuration based on environment type."""
+def get_config(
+    config_type: str = "local", *, max_audio_length: float | None = None
+) -> BaseConfig:
+    """Get configuration based on environment type.
+
+    Parameters
+    ----------
+    config_type:
+        Name of the configuration preset.
+    max_audio_length:
+        Optional override for :attr:`BaseConfig.max_audio_length` in seconds.
+    """
 
     config_type_lower = config_type.lower()
     if config_type_lower == "local":
-        return LocalConfig()
+        cfg: BaseConfig = LocalConfig()
     elif config_type_lower == "local_performance":
-        return LocalPerformanceConfig()
+        cfg = LocalPerformanceConfig()
     elif config_type_lower == "local_max_performance":
-        return LocalMaxPerformanceConfig()
+        cfg = LocalMaxPerformanceConfig()
     elif config_type_lower == "cloud":
-        return CloudConfig()
+        cfg = CloudConfig()
     elif config_type_lower == "overnight_default":  # Added new config type
-        return OvernightConfig()
+        cfg = OvernightConfig()
     elif config_type_lower == "local_highres":
-        return LocalHighResConfig()
+        cfg = LocalHighResConfig()
     elif config_type_lower == "local_micro":
-        return LocalMicroConfig()
+        cfg = LocalMicroConfig()
     else:
         raise ValueError(
             f"Unknown config type: {config_type}. Use 'local', 'cloud', or 'overnight_default'."
         )
+
+    if max_audio_length is not None:
+        cfg.max_audio_length = float(max_audio_length)
+
+    return cfg
 
 
 def auto_detect_config() -> BaseConfig:

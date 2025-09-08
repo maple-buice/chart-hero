@@ -21,14 +21,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
-
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing
 
 import librosa
 import numpy as np
@@ -556,22 +555,57 @@ def _process_record(
         dil = int(getattr(config, "label_dilation_frames", 0) or 0)
         if dil > 0:
             labels = dilate_labels_time(labels, dil)
-        if args.dedupe:
-            try:
-                h = _spec_phash(spec)
-                if h:
-                    with hash_lock:
-                        if h in seen_hashes:
-                            return "dup_skipped", domain, str(rec.song_dir), None
-                        if len(seen_hashes) >= MAX_HASHES:
-                            # Remove an arbitrary item to keep size bounded
-                            for k in list(seen_hashes.keys())[:1]:
-                                seen_hashes.pop(k)
-                                break
-                        seen_hashes[h] = True
-            except Exception:
-                pass
-        save_pair(split_dir, base, spec.squeeze(0), labels)
+        max_frames = int(
+            round(
+                (getattr(config, "max_audio_length", 0.0) or 0.0)
+                * config.sample_rate
+                / max(1, int(config.hop_length))
+            )
+        )
+        segments_written = 0
+        if max_frames > 0 and T > max_frames:
+            for seg_idx, start in enumerate(range(0, T, max_frames)):
+                end = min(start + max_frames, T)
+                spec_seg = spec[..., start:end]
+                labels_seg = labels[start:end, :]
+                if args.dedupe:
+                    try:
+                        h = _spec_phash(spec_seg)
+                        if h:
+                            with hash_lock:
+                                if h in seen_hashes:
+                                    continue
+                                if len(seen_hashes) >= MAX_HASHES:
+                                    # Remove an arbitrary item to keep size bounded
+                                    for k in list(seen_hashes.keys())[:1]:
+                                        seen_hashes.pop(k)
+                                        break
+                                seen_hashes[h] = True
+                    except Exception:
+                        pass
+                seg_base = f"{base}_seg{seg_idx + 1:02d}"
+                save_pair(split_dir, seg_base, spec_seg.squeeze(0), labels_seg)
+                segments_written += 1
+        else:
+            if args.dedupe:
+                try:
+                    h = _spec_phash(spec)
+                    if h:
+                        with hash_lock:
+                            if h in seen_hashes:
+                                return "dup_skipped", domain, str(rec.song_dir), None
+                            if len(seen_hashes) >= MAX_HASHES:
+                                # Remove an arbitrary item to keep size bounded
+                                for k in list(seen_hashes.keys())[:1]:
+                                    seen_hashes.pop(k)
+                                    break
+                                seen_hashes[h] = True
+                except Exception:
+                    pass
+            save_pair(split_dir, base, spec.squeeze(0), labels)
+            segments_written = 1
+        if segments_written == 0:
+            return "dup_skipped", domain, str(rec.song_dir), None
         return "written", domain, str(rec.song_dir), None
     except Exception as e:
         return "error", None, str(rec.song_dir), str(e)

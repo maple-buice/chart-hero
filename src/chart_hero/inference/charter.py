@@ -117,15 +117,15 @@ class Charter:
         if device_str:
             device = torch.device(device_str)
         else:
-            has_cuda = torch.cuda.is_available()
             has_mps = (
                 bool(getattr(torch.backends, "mps", None))
                 and torch.backends.mps.is_available()
             )
-            if has_cuda:
-                device = torch.device("cuda")
-            elif has_mps:
+            has_cuda = torch.cuda.is_available()
+            if has_mps:
                 device = torch.device("mps")
+            elif has_cuda:
+                device = torch.device("cuda")
             else:
                 device = torch.device("cpu")
         self.model.to(device)
