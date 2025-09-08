@@ -17,10 +17,7 @@ import mido
 
 from chart_hero.inference.mid_vocals import SyllableEvent, Phrase
 from chart_hero.inference.types import PredictionRow
-
-
-def seconds_to_ticks(seconds: float, bpm: float, ppq: int) -> int:
-    return int(round(seconds * (ppq * bpm / 60.0)))
+from chart_hero.utils.time_utils import seconds_to_ticks
 
 
 def _add_vocals_track(
@@ -115,13 +112,11 @@ def _add_drums_track(
     gem_dur = max(1, int(round(ppq * 0.125)))  # ~1/8 note
     tog_dur = 1
 
-    samp_to_tick = (ppq * bpm / 60.0) / float(sr)
-
     for row in rows:
         peak = row.get("peak_sample")
         if peak is None:
             continue
-        tick = int(round(int(peak) * samp_to_tick))
+        tick = seconds_to_ticks(int(peak) / sr, bpm, ppq)
 
         # Determine desired cymbal state per pad at this tick
         # Correct color mapping:

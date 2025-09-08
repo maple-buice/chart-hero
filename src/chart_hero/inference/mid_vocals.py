@@ -14,6 +14,8 @@ from typing import Iterable, List, Optional, Sequence
 
 import mido
 
+from chart_hero.utils.time_utils import seconds_to_ticks
+
 
 @dataclass
 class SyllableEvent:
@@ -26,10 +28,6 @@ class SyllableEvent:
 class Phrase:
     t0: float
     t1: float
-
-
-def seconds_to_ticks(seconds: float, bpm: float, ppq: int) -> int:
-    return int(round(seconds * (ppq * bpm / 60.0)))
 
 
 def write_vocals_midi(
