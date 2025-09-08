@@ -376,8 +376,8 @@ class LocalHighResConfig(LocalConfig):
     val_batch_size: int = 12
 
     # Improve dataloader stability locally
-    num_workers: int = 8
-    persistent_workers: bool = True
+    num_workers: int = 4
+    persistent_workers: bool = False
     # Conservative decode min spacing defaults (ms)
     min_spacing_ms_map: dict[str, float] | None = None
 
