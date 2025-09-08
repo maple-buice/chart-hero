@@ -43,13 +43,8 @@ class DrumTranscriptionModule(pl.LightningModule):
         self.register_buffer("pos_weight", pos_weight)
         # Help the type checker: pos_weight is a Tensor buffer
         self.pos_weight = pos_weight
-        if getattr(config, "use_focal_loss", False):
-            self.criterion = None  # use custom focal in step
-        else:
-            # reduction='none' so we can mask padded timesteps later
-            self.criterion = nn.BCEWithLogitsLoss(
-                pos_weight=self.pos_weight, reduction="none"
-            )
+        # Loss is computed using functional helpers for flexible dtype casting
+        self.criterion = None
 
         self.train_f1 = torchmetrics.F1Score(
             task="multilabel", num_labels=config.num_drum_classes
@@ -91,15 +86,17 @@ class DrumTranscriptionModule(pl.LightningModule):
             spectrograms, labels = batch  # type: ignore[misc]
             lengths = None
         outputs = self.model(spectrograms)
-        logits = outputs["logits"]  # [B, T_patches, C]
+        logits = outputs["logits"].float()  # [B, T_patches, C]
         onset_logits = (
             outputs.get("onset_logits") if isinstance(outputs, dict) else None
         )
+        if onset_logits is not None:
+            onset_logits = onset_logits.float()
 
         # Pool labels to patch-level to align with logits (robust to non-contiguous tensors)
         # Labels expected shape: [B, T_frames_or_patches, C]
         bsz, t_patches, num_classes = logits.shape
-        labels = labels.float()
+        labels = labels.to(logits.dtype)
         # Optional dilation to add timing tolerance before pooling
         dilation = max(0, int(getattr(self.config, "label_dilation_frames", 0) or 0))
         if dilation > 0:
@@ -159,7 +156,7 @@ class DrumTranscriptionModule(pl.LightningModule):
                 + (1 - alpha) * p**gamma * (1 - labels_for_loss)
             ) * bce
             # Class weighting via pos_weight approximated by scaling positives
-            pos_w = self.pos_weight.to(focal.device)
+            pos_w = self.pos_weight.to(focal.device, dtype=focal.dtype)
             focal = focal * (labels_for_loss * (pos_w - 1) + 1)
             if patch_mask is not None:
                 mask_flat = patch_mask.reshape(-1).unsqueeze(1).expand_as(focal) > 0
@@ -167,8 +164,12 @@ class DrumTranscriptionModule(pl.LightningModule):
             else:
                 loss = focal.mean()
         else:
-            assert self.criterion is not None
-            per_el = self.criterion(logits, labels_for_loss)  # [N, C]
+            per_el = F.binary_cross_entropy_with_logits(
+                logits,
+                labels_for_loss,
+                pos_weight=self.pos_weight.to(logits.dtype),
+                reduction="none",
+            )  # [N, C]
             if patch_mask is not None:
                 mask_flat = patch_mask.reshape(-1).unsqueeze(1).expand_as(per_el) > 0
                 loss = per_el[mask_flat].mean() if mask_flat.any() else per_el.mean()
