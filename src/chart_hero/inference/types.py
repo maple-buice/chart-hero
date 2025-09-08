@@ -26,3 +26,4 @@ class TransformerConfig(Protocol):
     prediction_threshold: float
     class_thresholds: list[float] | None
     device: str
+    inference_batch_size: int

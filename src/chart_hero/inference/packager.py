@@ -51,9 +51,8 @@ def convert_to_ogg(src: Path, dst: Path, target_sr: int = 44100) -> tuple[Path, 
                 str(dst),
             ]
             subprocess.run(cmd, check=True)
-            # Get duration of encoded file
-            dur = float(get_duration(str(dst)))
-            return dst, dur
+            info = sf.info(str(dst))
+            return dst, float(info.duration)
         except Exception:
             # fall back below
             pass

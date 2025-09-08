@@ -133,11 +133,12 @@ class Charter:
             stride_frames = patch
         hop = int(self.config.hop_length)
         classes = get_drum_hits()
+        class_idx = {lab: i for i, lab in enumerate(classes)}
         rows: list[PredictionRow] = []
 
         with torch.no_grad():
             # Batch reasonably to avoid OOM
-            batch_size = 4
+            batch_size = getattr(self.config, "inference_batch_size", 4)
             # Normalize input: accept legacy tensor lists too
             norm_segments: list[Segment] = []
             seg_len_frames = int(
@@ -145,7 +146,7 @@ class Charter:
                 * self.config.sample_rate
                 / self.config.hop_length
             )
-            for idx, seg in enumerate(segments):
+            for seg_idx, seg in enumerate(segments):
                 if isinstance(seg, torch.Tensor):
                     ten = seg.detach().cpu().float().squeeze()
                     if ten.dim() != 2:
@@ -157,8 +158,8 @@ class Charter:
                     norm_segments.append(
                         {
                             "spec": spec_np,
-                            "start_frame": idx * seg_len_frames,
-                            "end_frame": idx * seg_len_frames + spec_np.shape[1],
+                            "start_frame": seg_idx * seg_len_frames,
+                            "end_frame": seg_idx * seg_len_frames + spec_np.shape[1],
                             "total_frames": spec_np.shape[1],
                         }
                     )
@@ -182,11 +183,11 @@ class Charter:
                         {
                             "spec": spec_np,
                             "start_frame": int(
-                                seg.get("start_frame", idx * seg_len_frames)
+                                seg.get("start_frame", seg_idx * seg_len_frames)
                             ),
                             "end_frame": int(
                                 seg.get(
-                                    "end_frame", idx * seg_len_frames + spec_np.shape[1]
+                                    "end_frame", seg_idx * seg_len_frames + spec_np.shape[1]
                                 )
                             ),
                             "total_frames": int(
@@ -260,9 +261,6 @@ class Charter:
                             (seg_probs.shape[1],), thr, device=seg_probs.device
                         )
 
-                    # Label names -> indices
-                    idx = {lab: i for i, lab in enumerate(classes)}
-
                     # Optional per-class NMS along time to reduce duplicate hits
                     k = max(1, int(getattr(self.config, "event_nms_kernel_patches", 3)))
                     if k > 1 and T_p > 1:
@@ -334,11 +332,7 @@ class Charter:
                                 if hf_ratio < float(hf_gate):
                                     # Zero out cymbal activations before arbitration
                                     for cym_lab in ("66", "67", "68"):
-                                        cym_i = (
-                                            classes.index(cym_lab)
-                                            if cym_lab in classes
-                                            else None
-                                        )
+                                        cym_i = class_idx.get(cym_lab)
                                         if cym_i is not None:
                                             act[cym_i] = False
                             except Exception:
@@ -346,12 +340,12 @@ class Charter:
 
                         # Pairwise arbitration per color (prefer higher prob when both fire)
                         # Yellow: tom '2' vs hat '67'
-                        y_tom = idx.get("2")
-                        y_cym = idx.get("67")
-                        b_tom = idx.get("3")
-                        b_cym = idx.get("68")
-                        g_tom = idx.get("4")
-                        g_cym = idx.get("66")
+                        y_tom = class_idx.get("2")
+                        y_cym = class_idx.get("67")
+                        b_tom = class_idx.get("3")
+                        b_cym = class_idx.get("68")
+                        g_tom = class_idx.get("4")
+                        g_cym = class_idx.get("66")
 
                         margin = float(getattr(self.config, "cymbal_margin", 0.1))
                         tom_margin = float(
@@ -388,8 +382,8 @@ class Charter:
                         g_t, g_c = choose_pair(g_tom, g_cym)
 
                         # If nothing active on any class, skip
-                        i0 = idx.get("0")
-                        i1 = idx.get("1")
+                        i0 = class_idx.get("0")
+                        i1 = class_idx.get("1")
                         has_kick = bool(act[i0].item()) if i0 is not None else False
                         has_snare = bool(act[i1].item()) if i1 is not None else False
                         if not (
@@ -408,14 +402,14 @@ class Charter:
                             # Determine active classes indices
                             active_indices: list[int] = []
                             for name, idx_i in [
-                                ("0", idx.get("0")),
-                                ("1", idx.get("1")),
-                                ("2", idx.get("2")),
-                                ("3", idx.get("3")),
-                                ("4", idx.get("4")),
-                                ("66", idx.get("66")),
-                                ("67", idx.get("67")),
-                                ("68", idx.get("68")),
+                                ("0", class_idx.get("0")),
+                                ("1", class_idx.get("1")),
+                                ("2", class_idx.get("2")),
+                                ("3", class_idx.get("3")),
+                                ("4", class_idx.get("4")),
+                                ("66", class_idx.get("66")),
+                                ("67", class_idx.get("67")),
+                                ("68", class_idx.get("68")),
                             ]:
                                 if idx_i is not None and bool(act[idx_i].item()):
                                     active_indices.append(idx_i)
