@@ -119,12 +119,13 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         # Load data via numpy memmap for lower I/O overhead
         spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
         label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
-        spectrogram = torch.from_numpy(
-            np.array(spectrogram_np, dtype=np.float32, copy=self.mode == "train")
-        )
-        label_matrix = torch.from_numpy(
-            np.array(label_np, dtype=np.float32, copy=self.mode == "train")
-        )
+        # np.load with mmap_mode returns read-only arrays. Torch requires writable
+        # arrays when using ``from_numpy``, so make an explicit copy to avoid
+        # "given NumPy array is not writable" warnings.
+        spectrogram_np = np.array(spectrogram_np, dtype=np.float32, copy=True)
+        label_np = np.array(label_np, dtype=np.float32, copy=True)
+        spectrogram = torch.from_numpy(spectrogram_np)
+        label_matrix = torch.from_numpy(label_np)
 
         # Robustness: ensure labels have shape (T, C) with T>0 and correct C
         num_classes = self.config.num_drum_classes
