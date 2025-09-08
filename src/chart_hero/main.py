@@ -34,6 +34,7 @@ from chart_hero.inference.song_identifier import (
 from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.utils.audio_io import get_duration, load_audio
+from chart_hero.utils.tempo import TempoSegment, estimate_tempo_map
 
 
 def identify_song(path: str):
@@ -333,35 +334,18 @@ def main() -> None:
     bpm: Optional[float] = args.bpm
 
     # Improved local tempo estimate with histogram confidence
-    def _estimate_bpm_local(path: str, sr: int) -> tuple[Optional[float], float]:
+    def _estimate_bpm_local(
+        path: str, sr: int
+    ) -> tuple[Optional[float], float, list[TempoSegment]]:
         try:
-            import numpy as _np
-
             y, s = load_audio(path, sr=sr)
-            # Beat track to get beat frames and intervals
-            beats = librosa.beat.beat_track(y=y, sr=s, units="frames")[1]
-            if beats is not None and len(beats) >= 3:
-                times = librosa.frames_to_time(beats, sr=s)
-                iois = _np.diff(times)
-                iois = iois[(iois > 0.1) & (iois < 2.0)]  # clamp 30–600 BPM
-                if iois.size > 0:
-                    bpms = 60.0 / iois
-                    # Histogram in 0.5 BPM bins
-                    hist, edges = _np.histogram(bpms, bins=_np.arange(30, 241, 0.5))
-                    idx = int(hist.argmax())
-                    mode_bpm = float((edges[idx] + edges[idx + 1]) / 2.0)
-                    conf = float(hist.max() / max(1, hist.sum()))
-                    return mode_bpm, conf
-            # Fallback to librosa.tempo median when beat track insufficient
-            tempo = lr_tempo(y=y, sr=s, hop_length=512, aggregate=None)
-            if tempo is not None and len(tempo) > 0:
-                return float(np.median(tempo)), 0.3
+            segments, global_bpm, conf = estimate_tempo_map(y, s)
+            return (global_bpm if global_bpm > 0 else None), conf, segments
         except Exception:
-            return None, 0.0
-        return None, 0.0
+            return None, 0.0, []
 
     if bpm is None:
-        bpm_local, bpm_conf = _estimate_bpm_local(f_path, sr=22050)
+        bpm_local, bpm_conf, tempo_map = _estimate_bpm_local(f_path, sr=22050)
         bpm = bpm_local if bpm_local else None
 
     audd_result = None
