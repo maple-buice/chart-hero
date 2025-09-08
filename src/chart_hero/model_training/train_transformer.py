@@ -164,7 +164,6 @@ def main() -> None:
             "max_epochs": config.num_epochs,
             "accelerator": config.device,
             "devices": 1,
-            "precision": config.precision,
             "gradient_clip_val": config.gradient_clip_val,
             "accumulate_grad_batches": config.accumulate_grad_batches,
             "enable_progress_bar": not args.no_progress_bar,
@@ -182,6 +181,8 @@ def main() -> None:
             trainer_kwargs.setdefault("plugins", []).append(
                 MPSPrecisionPlugin(config.precision)
             )
+        else:
+            trainer_kwargs["precision"] = config.precision
 
         # Make --quick-test actually quick regardless of dataset size
         if args.quick_test:
