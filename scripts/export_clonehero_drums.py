@@ -38,6 +38,22 @@ def slugify(text: str) -> str:
     return text or "untitled"
 
 
+def _pack_name_for(song_dir: Path, roots: List[Path]) -> str:
+    try:
+        rp = song_dir.resolve()
+    except Exception:
+        rp = song_dir
+    for r in roots:
+        try:
+            base = r.resolve()
+            rel = rp.relative_to(base)
+            if rel.parts:
+                return rel.parts[0]
+        except Exception:
+            continue
+    return song_dir.parent.name
+
+
 def parse_song_ini(path: Path) -> dict[str, Optional[str]]:
     meta: dict[str, Optional[str]] = {
         "title": None,
@@ -247,7 +263,9 @@ class ExportResult:
     stats: dict[str, Any]
 
 
-def export_song_folder(song_dir: Path, out_dir: Path, config: Any) -> ExportResult:
+def export_song_folder(
+    song_dir: Path, out_dir: Path, config: Any, pack: str
+) -> ExportResult:
     out_paths: list[Path] = []
     stats_acc = {
         "sources": Counter(),
@@ -261,7 +279,7 @@ def export_song_folder(song_dir: Path, out_dir: Path, config: Any) -> ExportResu
     artist = meta.get("artist") or song_dir.parent.name
     base_slug = f"{slugify(artist)}-{slugify(title)}"
 
-    # Destination base directory organized by artist/title (normalized)
+    # Destination base directory organized by pack/artist/title (normalized)
     dest_base_dir = out_dir / slugify(artist) / slugify(title)
 
     chart_path = None
@@ -307,6 +325,7 @@ def export_song_folder(song_dir: Path, out_dir: Path, config: Any) -> ExportResu
                     "song": {
                         "title": title,
                         "artist": artist,
+                        "pack": pack,
                         "album": meta.get("album"),
                         "charter": meta.get("charter"),
                     },
@@ -366,6 +385,7 @@ def export_song_folder(song_dir: Path, out_dir: Path, config: Any) -> ExportResu
                     "song": {
                         "title": title,
                         "artist": artist,
+                        "pack": pack,
                         "album": meta.get("album"),
                         "charter": meta.get("charter"),
                     },
@@ -447,7 +467,10 @@ def main() -> None:
                     n in filenames for n in ("notes.chart", "notes.txt", "notes.mid")
                 ):
                     total_stats["songs"] += 1
-                    res = export_song_folder(dirpath_p, out_dir, config)
+                    pack = _pack_name_for(dirpath_p, roots)
+                    res = export_song_folder(
+                        dirpath_p, out_dir / slugify(pack), config, pack
+                    )
                     total_stats["files_written"] += len(res.out_paths)
                     total_stats["sources"].update(res.stats["sources"])  # type: ignore[arg-type]
                     total_stats["difficulties"].update(res.stats["difficulties"])  # type: ignore[arg-type]
