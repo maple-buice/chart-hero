@@ -4,48 +4,23 @@ Project Roadmap
 Status: living document to track planned work and priorities.
 
 ## Near-Term (High Priority)
-- MIDI labels: Robust RB drum parsing
-  - Select correct tracks (PART DRUMS, REAL_DRUMS_PS), handle tempo maps
-  - Handle Pro-Cymbal toggles (110/111/112), double-kick (95)
-  - DONE: Implemented in `src/chart_hero/utils/midi_utils.py`
-- Event-tolerant training objectives
-  - Label dilation across time frames before pooling to patches
-  - Optional focal loss for sparse onsets; keep pos_weight
-  - Per-class thresholds for better precision/recall balance
-  - DONE: Implemented in `lightning_module.py` + `transformer_config.py`
-- Event-level validation metrics
-  - Precision/Recall/F1 with onset tolerance in patch units
-  - DONE: Implemented in `lightning_module.py`
-- Clone Hero export path
-  - Moonscraper-compatible `.chart` writer + `song.ini`
-  - Integrated `--export-clonehero`
-  - DONE: `src/chart_hero/inference/chart_writer.py`, `main.py`
-  - NEXT: Switch export to MIDI (`notes.mid`) for vocals compatibility
-    - Add PART VOCALS generation (talkies first, pitched later)
-    - Replace/augment current `.chart` drums with MIDI drums once stable
-    - Track work in `src/chart_hero/inference/mid_vocals.py`
-
-Lyrics & Vocals
-- Synced lyrics integration
-  - Primary: LRCLIB by Spotify ID or text+duration
-  - Fallback: YouTube captions (WebVTT) via yt-dlp
-  - Syllabification (CMUdict/pyphen heuristic) to split words to syllables
-  - Output normalized structure (lines → words → syllables)
-  - Scaffolded: `src/chart_hero/inference/lyrics.py`
-- PART VOCALS MIDI exporter
-  - Emit lyric tokens per syllable and phrase markers
-  - MVP: talkies only (MIDI note 100), constant tempo
-  - Scaffolded: `src/chart_hero/inference/mid_vocals.py`
-
-YouTube Music Premium Cookies
-- Add cookies support to yt-dlp downloads to prefer YT Music Premium sources
+- Lyrics & Vocals
+  - Synced lyrics integration
+    - Primary: LRCLIB by Spotify ID or text+duration
+    - Fallback: YouTube captions (WebVTT) via yt-dlp
+    - Syllabification (CMUdict/pyphen heuristic) to split words to syllables
+    - Output normalized structure (lines → words → syllables)
+    - Scaffolded: `src/chart_hero/inference/lyrics.py`
+  - PART VOCALS MIDI exporter
+    - Emit lyric tokens per syllable and phrase markers
+    - MVP: talkies only (MIDI note 100), constant tempo
+    - Scaffolded: `src/chart_hero/inference/mid_vocals.py`
+- YouTube Music Premium Cookies
+  - Add cookies support to yt-dlp downloads to prefer YT Music Premium sources
   - Detect env: `YTDLP_COOKIES_FROM_BROWSER` or `YTDLP_COOKIEFILE`
   - Pass via `cookiesfrombrowser` or `cookiefile` in `get_yt_audio`
   - Tighten format to prefer AAC/M4A
   - Status: TODO
-- Data/Schema validation
-  - Discovery script exports JSON + schema validates charts and INIs
-  - DONE: `scripts/discover_clonehero.py`, `schemas/`
 
 ## Modeling & Inference (Next)
 - Threshold optimization
@@ -121,22 +96,3 @@ See detailed plan: `docs/plans/high_resolution_drum_model.md`.
 - Human-in-the-loop correction tools
 - Active learning from hard negatives (polyrhythms, ghost notes)
 - Sample-aware augmentation (kit-specific timbre perturbations)
-
-## Lyrics & Vocals
-- [ ] (R-001) Synced lyrics integration via LRCLIB primary, YT captions fallback
-  - Primary: LRCLIB by Spotify ID or text+duration
-  - Fallback: YouTube captions (WebVTT) via yt-dlp
-  - Syllabification (CMUdict/pyphen heuristic) to split words to syllables
-  - Output normalized structure (lines → words → syllables)
-  - Scaffolded: `src/chart_hero/inference/lyrics.py`
-- [ ] (R-002) PART VOCALS MIDI exporter (talkies first)
-  - Emit lyric tokens per syllable and phrase markers
-  - MVP: talkies only (MIDI note 100), constant tempo
-  - Scaffolded: `src/chart_hero/inference/mid_vocals.py`
-
-## YouTube Music Premium Cookies
-- [ ] (R-003) Add cookies support to yt-dlp downloads to prefer YT Music Premium sources
-  - Detect env: `YTDLP_COOKIES_FROM_BROWSER` or `YTDLP_COOKIEFILE`
-  - Pass via `cookiesfrombrowser` or `cookiefile` in `get_yt_audio`
-  - Tighten format to prefer AAC/M4A
-  - Status: TODO
