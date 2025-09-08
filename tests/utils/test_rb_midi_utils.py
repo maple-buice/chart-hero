@@ -17,7 +17,7 @@ def config():
     return get_config("local")
 
 
-def test_rb_midi_processor_on_rb2_mid(config):
+def test_rb_midi_processor_on_rb2_mid(config) -> None:
     midi_path = Path("CloneHero/Songs/Rock Band 2/Interpol - PDA/notes.mid")
     if not midi_path.exists():
         pytest.skip(f"RB2 MIDI not found at {midi_path}")
@@ -35,11 +35,9 @@ def test_rb_midi_processor_on_rb2_mid(config):
     assert torch.sum(labels) > 0
 
 
-def test_rb_midi_processor_no_drum_track(config):
+def test_rb_midi_processor_no_drum_track(config) -> None:
     """RbMidiProcessor should yield no events when a MIDI lacks a drum track."""
-    midi_path = Path(
-        "honest-bob-and-the-factory-to-dealer-incentives/soy-bomb/notes.mid"
-    )
+    midi_path = Path("tests/assets/midi_examples/no_drums/notes.mid")
     if not midi_path.exists():
         pytest.skip(f"Test MIDI not found at {midi_path}")
 

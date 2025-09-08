@@ -7,7 +7,7 @@ from chart_hero.model_training.transformer_data import (
 )
 
 
-def test_compute_class_pos_weights_dummy_dataset():
+def test_compute_class_pos_weights_dummy_dataset() -> None:
     config = get_config("local")
     data_dir = "tests/assets/dummy_data"
     pw = compute_class_pos_weights(
@@ -20,7 +20,7 @@ def test_compute_class_pos_weights_dummy_dataset():
     assert (pw > 0).all()
 
 
-def test_create_data_loaders_shapes():
+def test_create_data_loaders_shapes() -> None:
     config = get_config("local")
     data_dir = "tests/assets/dummy_data"
     train_loader, val_loader, test_loader = create_data_loaders(

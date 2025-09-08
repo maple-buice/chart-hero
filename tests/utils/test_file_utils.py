@@ -15,14 +15,14 @@ from chart_hero.utils.file_utils import (
 )
 
 
-def test_find_chart_hero_project_root():
+def test_find_chart_hero_project_root() -> None:
     """Test that the project root can be found."""
     root = find_chart_hero_project_root()
     assert root is not None
     assert (root / ".git").is_dir()
 
 
-def test_get_training_data_dir(tmp_path: Path):
+def test_get_training_data_dir(tmp_path: Path) -> None:
     """Test that the training_data directory can be found."""
     with patch(
         "chart_hero.utils.file_utils.find_chart_hero_project_root"
@@ -34,7 +34,7 @@ def test_get_training_data_dir(tmp_path: Path):
         assert training_data_dir.name == "training_data"
 
 
-def test_get_model_training_dir(tmp_path: Path):
+def test_get_model_training_dir(tmp_path: Path) -> None:
     """Test that the model_training directory can be found."""
     with patch(
         "chart_hero.utils.file_utils.find_chart_hero_project_root"
@@ -46,7 +46,7 @@ def test_get_model_training_dir(tmp_path: Path):
         assert model_training_dir.name == "model_training"
 
 
-def test_get_e_gmd_v1_0_0_dir(tmp_path: Path):
+def test_get_e_gmd_v1_0_0_dir(tmp_path: Path) -> None:
     """Test that the e-gmd-v1.0.0 directory can be found."""
     with patch(
         "chart_hero.utils.file_utils.get_training_data_dir"
@@ -58,7 +58,7 @@ def test_get_e_gmd_v1_0_0_dir(tmp_path: Path):
         assert e_gmd_dir.name == "e-gmd-v1.0.0"
 
 
-def test_get_audio_set_dir(tmp_path: Path):
+def test_get_audio_set_dir(tmp_path: Path) -> None:
     """Test that the audio_set directory can be found."""
     with patch(
         "chart_hero.utils.file_utils.get_e_gmd_v1_0_0_dir"
@@ -70,34 +70,34 @@ def test_get_audio_set_dir(tmp_path: Path):
         assert audio_set_dir.name == "audio_set"
 
 
-def test_get_labeled_audio_set_dir():
+def test_get_labeled_audio_set_dir() -> None:
     """Test that the labeled_audio_set directory can be created."""
     labeled_audio_set_dir = get_labeled_audio_set_dir("drummer1", 1)
     assert labeled_audio_set_dir.is_dir()
     assert labeled_audio_set_dir.name == "labeled_audio_set"
 
 
-def test_get_process_later_dir():
+def test_get_process_later_dir() -> None:
     """Test that the process_later directory can be created."""
     process_later_dir = get_process_later_dir("drummer1", 1)
     assert process_later_dir.is_dir()
     assert process_later_dir.name == "process_later"
 
 
-def test_get_model_backup_dir():
+def test_get_model_backup_dir() -> None:
     """Test that the model_backup directory can be created."""
     model_backup_dir = get_model_backup_dir()
     assert model_backup_dir.is_dir()
     assert model_backup_dir.name == "model_backup"
 
 
-def test_get_model_path():
+def test_get_model_path() -> None:
     """Test that the model.keras path can be found."""
     model_path = get_model_path()
     assert model_path.name == "model.keras"
 
 
-def test_parallel_rmtree(tmp_path: Path):
+def test_parallel_rmtree(tmp_path: Path) -> None:
     """
     Test that parallel_rmtree correctly deletes a directory structure.
     """
@@ -120,7 +120,7 @@ def test_parallel_rmtree(tmp_path: Path):
     assert not dummy_root.exists()
 
 
-def test_parallel_rmtree_empty_dir(tmp_path: Path):
+def test_parallel_rmtree_empty_dir(tmp_path: Path) -> None:
     """
     Test that parallel_rmtree correctly deletes an empty directory.
     """
@@ -135,7 +135,7 @@ def test_parallel_rmtree_empty_dir(tmp_path: Path):
     assert not dummy_root.exists()
 
 
-def test_parallel_rmtree_non_existent_dir():
+def test_parallel_rmtree_non_existent_dir() -> None:
     """
     Test that parallel_rmtree handles a non-existent directory gracefully.
     """
