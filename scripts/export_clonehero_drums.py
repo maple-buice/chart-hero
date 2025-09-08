@@ -19,7 +19,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from chart_hero.model_training.transformer_config import get_config
 
@@ -76,52 +76,29 @@ def parse_song_ini(path: Path) -> dict[str, Optional[str]]:
     return meta
 
 
-def parse_song_ini_content(text: str) -> dict[str, Optional[str]]:
-    meta: dict[str, Optional[str]] = {
-        "title": None,
-        "artist": None,
-        "album": None,
-        "charter": None,
-    }
-    in_song = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith(("#", ";")):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            in_song = line.lower() == "[song]"
-            continue
-        if not in_song:
-            continue
-        if "=" in line:
-            k, v = line.split("=", 1)
-            key = k.strip().lower()
-            val = v.strip()
-            if key == "name":
-                meta["title"] = val
-            elif key == "artist":
-                meta["artist"] = val
-            elif key == "album":
-                meta["album"] = val
-            elif key == "charter":
-                meta["charter"] = val
-    return meta
+_parse_chart: Optional[Callable[[str], Any]] = None
 
 
 def load_chart(path: Path) -> dict[str, Any] | None:
     """Use the parser from scripts/discover_clonehero.py to read .chart/.txt."""
-    import importlib.util
+    global _parse_chart
+    if _parse_chart is None:
+        import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        "discover_clonehero", str(Path(__file__).parent / "discover_clonehero.py")
-    )
-    if spec is None or spec.loader is None:
-        print("ERR: could not import discover_clonehero.py")
-        return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+        spec = importlib.util.spec_from_file_location(
+            "discover_clonehero", str(Path(__file__).parent / "discover_clonehero.py")
+        )
+        if spec is None or spec.loader is None:
+            print("ERR: could not import discover_clonehero.py")
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[attr-defined]
+        _parse_chart = getattr(module, "parse_chart", None)  # type: ignore[attr-defined]
+        if _parse_chart is None:
+            print("ERR: discover_clonehero.parse_chart not found")
+            return None
     try:
-        return module.parse_chart(str(path))  # type: ignore[attr-defined]
+        return _parse_chart(str(path))
     except Exception as e:
         print(f"ERR parsing chart {path}: {e}")
         return None
@@ -155,9 +132,9 @@ def _chart_tempos_us_per_beat(
         bpm = max(1.0, bpm_x1000 / 1000.0)
         us_per_beat = int(round(60_000_000.0 / bpm))
         changes.append((tick, us_per_beat))
-    if not changes or changes[0][0] != 0:
-        changes.append((0, 500000))
     changes.sort(key=lambda x: x[0])
+    if not changes or changes[0][0] != 0:
+        changes.insert(0, (0, 500000))
     return changes
 
 
@@ -233,8 +210,10 @@ def chart_events_to_normalized(events: List[dict[str, Any]]) -> List[dict[str, A
                     hit = {2: "66", 3: "67", 4: "68"}[lane]
                 else:
                     hit = {2: "2", 3: "3", 4: "4"}[lane]
+            elif lane == 5:
+                hit = "4"  # 5-lane green maps to tom '4'
             else:
-                hit = "4"
+                continue
 
             len_ticks = 0
             for e in bucket:
@@ -268,9 +247,7 @@ class ExportResult:
     stats: dict[str, Any]
 
 
-def export_song_folder(
-    song_dir: Path, out_dir: Path, config: Any, root: Optional[Path] = None
-) -> ExportResult:
+def export_song_folder(song_dir: Path, out_dir: Path, config: Any) -> ExportResult:
     out_paths: list[Path] = []
     stats_acc = {
         "sources": Counter(),
@@ -298,6 +275,9 @@ def export_song_folder(
         if obj:
             resolution = int(obj.get("song", {}).get("Resolution") or 192)
             timing = chart_sync_to_tempos(obj.get("sync_track", []))
+            tempo_changes = _chart_tempos_us_per_beat(
+                timing.get("tempos_bpm_x1000", [])
+            )
             diff_map = {
                 "EasyDrums": "Easy",
                 "MediumDrums": "Medium",
@@ -309,13 +289,13 @@ def export_song_folder(
                 if not evs:
                     continue
                 norm_events = chart_events_to_normalized(evs)
-                tempo_changes = _chart_tempos_us_per_beat(
-                    timing.get("tempos_bpm_x1000", [])
-                )
+                unique_ticks = {int(e["tick"]) for e in norm_events}
+                tick_to_sec = {
+                    t: _chart_tick_to_seconds(t, tempo_changes, resolution)
+                    for t in unique_ticks
+                }
                 for e in norm_events:
-                    e["time_sec"] = _chart_tick_to_seconds(
-                        int(e["tick"]), tempo_changes, resolution
-                    )
+                    e["time_sec"] = tick_to_sec[int(e["tick"])]
                 stats_acc["sources"].update(["chart"])
                 stats_acc["difficulties"].update([f"chart:{norm_diff}"])
                 stats_acc["class_hist"].update([e["hit"] for e in norm_events])
@@ -467,7 +447,7 @@ def main() -> None:
                     n in filenames for n in ("notes.chart", "notes.txt", "notes.mid")
                 ):
                     total_stats["songs"] += 1
-                    res = export_song_folder(dirpath_p, out_dir, config, root=r)
+                    res = export_song_folder(dirpath_p, out_dir, config)
                     total_stats["files_written"] += len(res.out_paths)
                     total_stats["sources"].update(res.stats["sources"])  # type: ignore[arg-type]
                     total_stats["difficulties"].update(res.stats["difficulties"])  # type: ignore[arg-type]
