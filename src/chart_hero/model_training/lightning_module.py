@@ -187,9 +187,16 @@ class DrumTranscriptionModule(pl.LightningModule):
                 on_logits = on_logits.unsqueeze(0)
             if patch_mask is not None:
                 mask_flat_T = patch_mask > 0
-                on_loss = F.binary_cross_entropy_with_logits(
-                    on_logits[mask_flat_T], onset_labels[mask_flat_T], reduction="mean"
-                )
+                if mask_flat_T.any():
+                    on_loss = F.binary_cross_entropy_with_logits(
+                        on_logits[mask_flat_T],
+                        onset_labels[mask_flat_T],
+                        reduction="mean",
+                    )
+                else:
+                    on_loss = torch.zeros(
+                        (), device=on_logits.device, dtype=on_logits.dtype
+                    )
             else:
                 on_loss = F.binary_cross_entropy_with_logits(
                     on_logits, onset_labels, reduction="mean"
