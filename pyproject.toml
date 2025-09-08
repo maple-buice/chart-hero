@@ -53,5 +53,6 @@ module = [
   "yt_dlp.*",
   "mido.*",
   "torchaudio.*",
+  "scipy.*",
 ]
 ignore_missing_imports = true
