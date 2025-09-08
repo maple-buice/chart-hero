@@ -30,11 +30,7 @@ import librosa
 import numpy as np
 import torch
 
-from chart_hero.model_training.transformer_config import (
-    BaseConfig,
-    get_config,
-    get_drum_hits,
-)
+from chart_hero.model_training.transformer_config import BaseConfig, get_config
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 
@@ -64,10 +60,35 @@ def find_song_folders(roots: Sequence[str | os.PathLike[str]]) -> List[Path]:
 
 
 def choose_audio_path(song_dir: Path) -> Optional[Path]:
-    # Priority: song.ogg if present; else any audio file in dir
+    """Best-effort selection of a full-mix audio file in a song folder."""
     p = song_dir / "song.ogg"
     if p.exists():
         return p
+    mix_keywords = ("song", "mix", "full")
+    stem_keywords = (
+        "guitar",
+        "bass",
+        "drum",
+        "vocals",
+        "vocal",
+        "keys",
+        "rhythm",
+    )
+    candidates: list[Path] = []
+    for fn in os.listdir(song_dir):
+        if Path(fn).suffix.lower() not in AUDIO_EXTS:
+            continue
+        low = fn.lower()
+        pth = song_dir / fn
+        if any(k in low for k in mix_keywords) and not any(
+            k in low for k in stem_keywords
+        ):
+            return pth
+        if not any(k in low for k in stem_keywords):
+            candidates.append(pth)
+    if candidates:
+        return candidates[0]
+    # Fallback: return first audio file even if likely a stem
     for fn in os.listdir(song_dir):
         if Path(fn).suffix.lower() in AUDIO_EXTS:
             return song_dir / fn
@@ -219,10 +240,9 @@ def normalize_loudness_rms(y: np.ndarray, target_dbfs: float = -14.0) -> np.ndar
 
 
 def build_labels_from_midi(
-    midi_path: Path, num_time_frames: int, config: BaseConfig
+    midi_path: Path, num_time_frames: int, processor: RbMidiProcessor
 ) -> Optional[torch.Tensor]:
-    rb = RbMidiProcessor(config)
-    return rb.create_label_matrix(midi_path, num_time_frames)
+    return processor.create_label_matrix(midi_path, num_time_frames)
 
 
 # --- .chart/.txt support ---
@@ -264,22 +284,29 @@ def _chart_tempos_us_per_beat(sync_track: list[dict]) -> list[tuple[int, int]]:
     return changes
 
 
-def _load_chart_obj(path: Path) -> dict | None:
-    """Dynamically import and call scripts/discover_clonehero.parse_chart."""
-    import importlib.util
+_PARSE_CHART_FN = None
 
-    # scripts/ is 3 levels up from this file's directory
-    scripts_dir = Path(__file__).resolve().parents[3] / "scripts"
-    src_path = scripts_dir / "discover_clonehero.py"
-    if not src_path.exists():
-        return None
-    spec = importlib.util.spec_from_file_location("discover_clonehero", str(src_path))
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[attr-defined]
+
+def _load_chart_obj(path: Path) -> dict | None:
+    """Parse a .chart file using scripts/discover_clonehero.parse_chart."""
+    global _PARSE_CHART_FN
     try:
-        return module.parse_chart(str(path))  # type: ignore[attr-defined]
+        if _PARSE_CHART_FN is None:
+            import importlib.util
+
+            scripts_dir = Path(__file__).resolve().parents[3] / "scripts"
+            src_path = scripts_dir / "discover_clonehero.py"
+            if not src_path.exists():
+                return None
+            spec = importlib.util.spec_from_file_location(
+                "discover_clonehero", str(src_path)
+            )
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # type: ignore[attr-defined]
+            _PARSE_CHART_FN = module.parse_chart  # type: ignore[attr-defined]
+        return _PARSE_CHART_FN(str(path)) if _PARSE_CHART_FN else None
     except Exception:
         return None
 
@@ -517,6 +544,7 @@ def main() -> None:
 
     config = get_config(args.config)
     processor = SpectrogramProcessor(config)
+    midi_processor = RbMidiProcessor(config)
 
     # Discovery with optional caching
     cache_path: Optional[Path]
@@ -785,8 +813,18 @@ def main() -> None:
     keys = list(groups.keys())
     rng.shuffle(keys)
     n_groups = len(keys)
-    g_train = int(round(args.splits[0] * n_groups))
-    g_val = int(round(args.splits[1] * n_groups))
+    splits = np.array(args.splits, dtype=np.float64)
+    if splits.sum() <= 0:
+        splits = np.array([0.8, 0.1, 0.1], dtype=np.float64)
+    splits = splits / splits.sum()
+    raw = splits * n_groups
+    counts = np.floor(raw).astype(int)
+    remainder = n_groups - int(counts.sum())
+    if remainder > 0:
+        order = np.argsort(raw - counts)[::-1]
+        for idx in order[:remainder]:
+            counts[idx] += 1
+    g_train, g_val, _g_test = counts.tolist()
     key_train = set(keys[:g_train])
     key_val = set(keys[g_train : g_train + g_val])
     idx_train = {i for k in key_train for i in groups[k]}
@@ -799,19 +837,23 @@ def main() -> None:
     for p in (out_train, out_val, out_test):
         p.mkdir(parents=True, exist_ok=True)
 
-    classes = get_drum_hits()
     written = 0
     skipped = 0
     desynced = 0
     dup_skipped = 0
     domain_counts: Dict[str, int] = {}
     seen_hashes: set[str] = set()
+    MAX_HASHES = 100000
 
-    def _spec_phash(spec: torch.Tensor, target_size: Tuple[int, int] = (16, 16)) -> str:
+    def _spec_phash(
+        spec: torch.Tensor, target_size: Tuple[int, int] = (16, 16)
+    ) -> Optional[str]:
         # spec: (1,F,T) or (F,T)
         arr = spec.squeeze(0).detach().cpu().numpy()
         F, T = arr.shape
         fh, th = target_size
+        if F < fh or T < th:
+            return None
         # average pool to fh x th
         f_bins = np.array_split(np.arange(F), fh)
         t_bins = np.array_split(np.arange(T), th)
@@ -843,7 +885,7 @@ def main() -> None:
             # Labels at frame-level (T, C)
             T = int(spec.shape[-1])
             if rec.source == "midi":
-                labels = build_labels_from_midi(rec.notes_path, T, config)
+                labels = build_labels_from_midi(rec.notes_path, T, midi_processor)
             else:
                 labels = build_labels_from_chart(rec.notes_path, T, config)
             if labels is None:
@@ -865,10 +907,13 @@ def main() -> None:
             if args.dedupe:
                 try:
                     h = _spec_phash(spec)
-                    if h in seen_hashes:
+                    if h and h in seen_hashes:
                         dup_skipped += 1
                         continue
-                    seen_hashes.add(h)
+                    if h:
+                        if len(seen_hashes) >= MAX_HASHES:
+                            seen_hashes.pop()
+                        seen_hashes.add(h)
                 except Exception:
                     pass
             split_dir = (
