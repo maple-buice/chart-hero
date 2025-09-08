@@ -16,6 +16,11 @@ from pytorch_lightning.callbacks import (
     LearningRateMonitor,
     ModelCheckpoint,
 )
+
+try:  # pragma: no-cover - optional dependency
+    from pytorch_lightning.loggers import WandbLogger  # type: ignore
+except ModuleNotFoundError:  # pragma: no-cover
+    WandbLogger = None  # type: ignore[assignment]
 from chart_hero.model_training.transformer_config import (
     BaseConfig,
     auto_detect_config,
@@ -248,10 +253,7 @@ def setup_logger(
 ) -> object | None:
     if not use_wandb:
         return None
-    try:
-        from pytorch_lightning.loggers import WandbLogger
-        import wandb  # noqa: F401  # ensure wandb is available
-    except ModuleNotFoundError:
+    if WandbLogger is None:
         logger.warning("wandb is not installed; disabling W&B logging")
         return None
     return WandbLogger(
