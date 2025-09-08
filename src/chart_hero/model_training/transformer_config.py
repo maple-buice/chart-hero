@@ -430,35 +430,57 @@ class LocalMicroConfig(LocalConfig):
 
 @dataclass
 class CloudConfig(BaseConfig):
-    """Configuration optimized for Google Colab with GPU."""
+    """High-resolution configuration optimized for cloud GPUs/TPUs."""
 
     # Device settings
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     mixed_precision: bool = True
     precision: str = "16-mixed"
 
+    # High-resolution audio processing
+    n_fft: int = 1024
+    hop_length: int = 128
+
+    # Patching for finer temporal resolution
+    patch_size: Tuple[int, int] = (8, 16)
+    patch_stride: int = 1
+
+    # Training tolerances
+    event_tolerance_patches: int = 3
+    label_dilation_frames: int = 3
+
+    # Loss settings
+    use_focal_loss: bool = True
+    pos_weight_cap: float = 10.0  # cap auto pos_weight
+
     # GPU optimization
-    train_batch_size: int = 64
-    val_batch_size: int = 128
+    train_batch_size: int = 10
+    val_batch_size: int = 12
     num_workers: int = 4  # Conservative for Colab
     pin_memory: bool = True
+    persistent_workers: bool = False
 
     # Training settings
     accumulate_grad_batches: int = 4  # Larger effective batch size
     gradient_checkpointing: bool = False  # GPU has more memory
 
     # Colab-specific paths (will be created if they don't exist)
-    data_dir: str = "../datasets/"
+    data_dir: str = "datasets/processed_highres"
+    audio_dir: str = "datasets/processed_highres"
     model_dir: str = "model_training/transformer_models/"
     log_dir: str = "logs/"
 
     # Longer sequences for GPU training
-    max_audio_length: float = 12.0
+    max_audio_length: float = 20.0
     max_seq_len: int = 1536
 
     # More aggressive training for cloud resources
     learning_rate: float = 2e-4
     warmup_steps: int = 2000
+
+    def __post_init__(self) -> None:
+        if self.min_spacing_ms_map is None:
+            self.min_spacing_ms_map = {"0": 30.0, "1": 30.0}
 
     @property
     def effective_batch_size(self) -> int:
