@@ -17,9 +17,14 @@ def identify_song(path: str) -> audd_song_result:
     data = {"api_token": api_token, "return": "musicbrainz,spotify,apple_music"}
     with open(path, "rb") as f:
         files = {"file": f}
-        response = requests.post("https://api.audd.io/", data=data, files=files)
+        response = requests.post(
+            "https://api.audd.io/", data=data, files=files, timeout=10
+        )
     response.raise_for_status()  # Raise an exception for bad status codes
-    response_json = response.json()
+    try:
+        response_json = response.json()
+    except ValueError as exc:
+        raise ValueError("Invalid JSON from AudD API") from exc
 
     if not response_json or not response_json.get("result"):
         raise ValueError("No result found in AudD API response")
@@ -32,12 +37,13 @@ def identify_song(path: str) -> audd_song_result:
 
 
 def get_data_from_acousticbrainz(song: audd_song_result) -> Dict[str, Any]:
-    print(song.musicbrainz[0].id)
-    result = requests.get(
-        "https://acousticbrainz.org/api/v1/low-level?recording_ids="
-        + song.musicbrainz[0].id
-    )
-    return cast(Dict[str, Any], result.json())
+    """Fetch AcousticBrainz data for the first MusicBrainz ID in the result."""
+    if not song.musicbrainz:
+        raise ValueError("No MusicBrainz IDs available")
+    data = get_acousticbrainz_lowlevel_by_mbid(song.musicbrainz[0].id)
+    if data is None:
+        raise ValueError("No data returned from AcousticBrainz")
+    return data
 
 
 # -------------------- Simple on-disk cache for ID lookups -------------------
@@ -135,7 +141,10 @@ def search_musicbrainz_recording(
             timeout=10,
         )
         resp.raise_for_status()
-        js = resp.json()
+        try:
+            js = resp.json()
+        except ValueError:
+            return None
         recs: List[Dict[str, Any]] = (
             js.get("recordings", []) if isinstance(js, dict) else []
         )
@@ -151,8 +160,7 @@ def search_musicbrainz_recording(
                 dur_pen = abs((float(length_ms) / 1000.0) - float(duration_sec))
             return sc, -dur_pen
 
-        recs.sort(key=_score, reverse=True)
-        return recs[0]
+        return max(recs, key=_score)
     except Exception:
         return None
 
@@ -182,7 +190,8 @@ def search_musicbrainz_recording_cached(
     limit: int = 5,
     cache_path: str,
 ) -> Optional[Dict[str, Any]]:
-    key = f"mb:{artist or ''}|{title}|{int(duration_sec or 0)}|{limit}"
+    dur_ms = int(round(float(duration_sec) * 1000)) if duration_sec is not None else ""
+    key = f"mb:{artist or ''}|{title}|{dur_ms}|{limit}"
     cache = _load_cache(cache_path)
     hit = cache.get(key)
     if isinstance(hit, dict):
