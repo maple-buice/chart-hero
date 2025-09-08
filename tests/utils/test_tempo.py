@@ -6,7 +6,9 @@ import numpy as np
 from chart_hero.utils.tempo import estimate_tempo_map
 
 
-def _click_track(bpms: list[float], durations: list[float], sr: int = 22050) -> np.ndarray:
+def _click_track(
+    bpms: list[float], durations: list[float], sr: int = 22050
+) -> np.ndarray:
     """Generate a concatenated click track for the given BPM segments."""
     assert len(bpms) == len(durations)
     pieces = []

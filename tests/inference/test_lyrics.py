@@ -9,9 +9,9 @@ def make_line():
         Syllable(text="lo,", t0=0.25, t1=0.5),
     ]
     word1 = Word(text="hello,", t0=0.0, t1=0.5, syllables=syllables)
-    word2 = Word(text="world", t0=0.5, t1=1.0, syllables=[
-        Syllable(text="world", t0=0.5, t1=1.0)
-    ])
+    word2 = Word(
+        text="world", t0=0.5, t1=1.0, syllables=[Syllable(text="world", t0=0.5, t1=1.0)]
+    )
     line = Line(text="hello, world", t0=0.0, t1=1.0, words=[word1, word2])
     return [line]
 

@@ -37,7 +37,7 @@ def test_load_audio_ffmpeg_stereo(monkeypatch):
     expected = np.array([[0.1, 0.3], [0.2, 0.4]], dtype=np.float32)
     assert np.allclose(y, expected)
 
-    
+
 def test_load_audio_fallback_to_librosa(monkeypatch):
     expected = np.array([0.3, 0.4], dtype=np.float32)
 
@@ -68,6 +68,7 @@ def test_load_audio_ffmpeg_error_fallback(monkeypatch):
     y, sr = audio_io.load_audio("dummy.wav")
     assert sr == 48000
     assert np.allclose(y, expected)
+
 
 def test_get_duration_ffprobe(monkeypatch):
     monkeypatch.setattr(audio_io, "has_ffprobe", lambda: True)

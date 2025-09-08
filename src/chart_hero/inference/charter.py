@@ -118,7 +118,10 @@ class Charter:
             device = torch.device(device_str)
         else:
             has_cuda = torch.cuda.is_available()
-            has_mps = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
+            has_mps = (
+                bool(getattr(torch.backends, "mps", None))
+                and torch.backends.mps.is_available()
+            )
             if has_cuda:
                 device = torch.device("cuda")
             elif has_mps:
@@ -926,9 +929,7 @@ class ChartGenerator:
             "peak_sample"
         )
         samples = pitch_mapping_df.index.to_numpy()
-        times = np.round(
-            librosa.samples_to_time(samples, sr=self.sample_rate), 8
-        )
+        times = np.round(librosa.samples_to_time(samples, sr=self.sample_rate), 8)
         records = pitch_mapping_df.to_dict(orient="records")
         pitch_dict: dict[float, list[int | str]] = {}
         for t, rec in zip(times, records):
