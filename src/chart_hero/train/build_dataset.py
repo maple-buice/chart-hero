@@ -566,6 +566,11 @@ def main() -> None:
         action="store_true",
         help="Skip likely duplicate audio by simple perceptual hashing of spectrogram",
     )
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip songs that already have processed outputs in the destination",
+    )
     args = ap.parse_args()
 
     config = get_config(args.config)
@@ -854,6 +859,7 @@ def main() -> None:
     skipped = 0
     desynced = 0
     dup_skipped = 0
+    existing = 0
     domain_counts: Dict[str, int] = {}
     seen_hashes: set[str] = set()
     MAX_HASHES = 100000
@@ -882,6 +888,15 @@ def main() -> None:
         return by.tobytes().hex()
 
     for i, rec in enumerate(recs):
+        base = f"{rec.song_dir.parent.name}_{rec.song_dir.name}_{i:06d}"
+        split_dir = (
+            out_train if i in idx_train else (out_val if i in idx_val else out_test)
+        )
+        spec_path = split_dir / f"{base}_mel.npy"
+        lab_path = split_dir / f"{base}_label.npy"
+        if args.resume and spec_path.exists() and lab_path.exists():
+            existing += 1
+            continue
         try:
             # Load/mix audio and convert to spectrogram
             y, domain = load_audio_for_training(rec.song_dir, config)
@@ -914,8 +929,6 @@ def main() -> None:
             if dil > 0:
                 labels = dilate_labels_time(labels, dil)
 
-            # Save pair
-            base = f"{rec.song_dir.parent.name}_{rec.song_dir.name}_{i:06d}"
             # Duplicate detection (on spectrogram) if requested
             if args.dedupe:
                 try:
@@ -929,9 +942,8 @@ def main() -> None:
                         seen_hashes.add(h)
                 except Exception:
                     pass
-            split_dir = (
-                out_train if i in idx_train else (out_val if i in idx_val else out_test)
-            )
+
+            # Save pair
             save_pair(split_dir, base, spec.squeeze(0), labels)
             written += 1
         except Exception as e:
@@ -940,7 +952,7 @@ def main() -> None:
             continue
 
     print(
-        f"Done. Wrote {written} examples ({out_root}). Skipped {skipped} missing, {desynced} desynced, {dup_skipped} duplicates."
+        f"Done. Wrote {written} examples ({out_root}). Skipped {skipped} missing, {desynced} desynced, {dup_skipped} duplicates, {existing} existing."
     )
     if domain_counts:
         print("Domain distribution:")
