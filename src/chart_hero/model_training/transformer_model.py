@@ -43,14 +43,13 @@ class PatchEmbedding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Input spectrograms [batch_size, channels, time, freq]
+            x: Input spectrograms [batch_size, 1, freq, time]
         Returns:
             Patch embeddings [batch_size, num_patches, embed_dim]
         """
-        # x shape: (batch_size, 1, time, freq)
+        # x shape: (batch_size, 1, n_mels, time)
         # The Conv1d layer expects (batch_size, in_channels, length)
         # where in_channels is freq (n_mels) and length is time.
-        # Input x shape: (batch_size, 1, n_mels, time)
         x = x.squeeze(1)  # -> (batch_size, n_mels, time)
 
         # Extract patches and project
@@ -200,17 +199,24 @@ class DrumTranscriptionTransformer(nn.Module):
         )
 
         if max_time_patches is None:
-            # Calculate maximum patch dimensions with conservative bounds for memory efficiency
-            max_time_frames = (
-                int(config.max_audio_length * config.sample_rate / config.hop_length)
-                + 1
+            # Estimate maximum number of time patches based on segment length and stride
+            max_seq_len = int(getattr(config, "max_seq_len", 0) or 0)
+            max_audio_frames = int(
+                round(
+                    (getattr(config, "max_audio_length", 0.0) or 0.0)
+                    * config.sample_rate
+                    / max(1, int(config.hop_length))
+                )
             )
-            max_time_patches = (
-                max_time_frames + config.patch_size[0] - 1
-            ) // config.patch_size[0]
+            seg_frames = max(max_seq_len, max_audio_frames)
+            stride = int(getattr(config, "patch_stride", config.patch_size[0]))
+            if seg_frames > 0:
+                max_time_patches = (seg_frames + stride - 1) // stride
+            else:
+                max_time_patches = 1
 
-            # Apply conservative limits to prevent memory explosion
-            max_time_patches = min(max_time_patches, 256)  # Cap at 256 time patches
+            cap = int(getattr(config, "max_time_patches_cap", 256))
+            max_time_patches = min(max_time_patches, cap)
 
         self.pos_encoding = PositionalEncoding1D(
             embed_dim=config.hidden_size,

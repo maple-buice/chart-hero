@@ -11,6 +11,7 @@ This forwards all arguments to the standard trainer with --config local_highres.
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from shutil import which
@@ -18,20 +19,21 @@ from shutil import which
 
 def main() -> None:
     py = sys.executable or which("python") or "python3"
-    # If caller doesn't specify --data-dir, default to the high-res dataset path
-    passed = " ".join(sys.argv[1:])
-    add_data = "--data-dir" not in passed
-    args = (
-        [
-            py,
-            "-m",
-            "chart_hero.model_training.train_transformer",
-            "--config",
-            "local_highres",
-        ]
-        + (["--data-dir", "datasets/processed_highres"] if add_data else [])
-        + sys.argv[1:]
-    )
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--data-dir")
+    parsed, remaining = parser.parse_known_args()
+
+    args = [
+        py,
+        "-m",
+        "chart_hero.model_training.train_transformer",
+        "--config",
+        "local_highres",
+    ]
+    if parsed.data_dir is None:
+        args += ["--data-dir", "datasets/processed_highres"]
+    args += remaining
     # Run and forward exit code
     res = subprocess.run(args)
     sys.exit(res.returncode)

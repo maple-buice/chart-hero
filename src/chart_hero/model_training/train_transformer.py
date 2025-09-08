@@ -14,7 +14,6 @@ import torch
 import torch.multiprocessing as mp
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-import wandb
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.training_setup import (
     configure_run,
@@ -47,6 +46,15 @@ def main() -> None:
         f"Configuration loaded for '{args.config}'. Using device: {config.device}"
     )
     logger.info(f"WandB logging is {'enabled' if use_wandb else 'disabled'}.")
+    wandb = None
+    if use_wandb:
+        try:
+            import wandb as _wandb
+
+            wandb = _wandb
+        except ModuleNotFoundError:
+            logger.warning("wandb is not installed; disabling W&B logging")
+            use_wandb = False
 
     try:
         # Compute/load class pos_weight if requested and not a quick test
@@ -323,11 +331,11 @@ def main() -> None:
 
     except Exception as e:
         logger.exception(f"An error occurred: {e}")
-        if use_wandb:
+        if use_wandb and wandb is not None:
             wandb.finish(exit_code=1)
         sys.exit(1)
     finally:
-        if use_wandb and wandb.run:
+        if use_wandb and wandb is not None and wandb.run:
             wandb.finish()
 
 
