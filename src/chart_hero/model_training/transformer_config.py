@@ -372,11 +372,11 @@ class LocalHighResConfig(LocalConfig):
     max_audio_length: float = 30.0
 
     # Batching tuned down for the higher sequence length
-    train_batch_size: int = 4
-    val_batch_size: int = 6
+    train_batch_size: int = 10
+    val_batch_size: int = 12
 
     # Improve dataloader stability locally
-    num_workers: int = 4
+    num_workers: int = 8
     persistent_workers: bool = True
     # Conservative decode min spacing defaults (ms)
     min_spacing_ms_map: dict[str, float] | None = None
