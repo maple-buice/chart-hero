@@ -27,6 +27,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
+
 import librosa
 import numpy as np
 import torch
@@ -36,6 +39,8 @@ from chart_hero.model_training.transformer_data import SpectrogramProcessor
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 
 AUDIO_EXTS = (".ogg", ".mp3", ".wav", ".flac", ".m4a")
+
+MAX_HASHES = 100000
 
 
 @dataclass
@@ -493,6 +498,85 @@ def save_pair(
     return spec_path, lab_path
 
 
+def _spec_phash(
+    spec: torch.Tensor, target_size: Tuple[int, int] = (16, 16)
+) -> Optional[str]:
+    """Compute a simple perceptual hash of a spectrogram tensor."""
+    arr = spec.squeeze(0).detach().cpu().numpy()
+    F, T = arr.shape
+    fh, th = target_size
+    if F < fh or T < th:
+        return None
+    f_bins = np.array_split(np.arange(F), fh)
+    t_bins = np.array_split(np.arange(T), th)
+    small = np.zeros((fh, th), dtype=np.float32)
+    for i, fb in enumerate(f_bins):
+        for j, tb in enumerate(t_bins):
+            small[i, j] = float(np.mean(arr[np.ix_(fb, tb)]))
+    med = float(np.median(small))
+    bits = (small > med).astype(np.uint8).flatten()
+    by = np.packbits(bits)
+    return by.tobytes().hex()
+
+
+def _process_record(
+    rec: Record,
+    base: str,
+    split_dir: Path,
+    config: BaseConfig,
+    args: argparse.Namespace,
+    seen_hashes: Optional[multiprocessing.managers.DictProxy],
+    hash_lock: Optional[multiprocessing.synchronize.Lock],
+) -> Tuple[str, Optional[str], str, Optional[str]]:
+    """Process a single Record into spectrogram/label pair.
+
+    Returns a tuple of (status, domain, song_dir, error_message).
+    """
+    processor = SpectrogramProcessor(config)
+    midi_processor = RbMidiProcessor(config)
+    try:
+        y, domain = load_audio_for_training(rec.song_dir, config)
+        if y.size == 0:
+            return "skipped", None, str(rec.song_dir), None
+        y_norm = normalize_loudness_rms(y, target_dbfs=-14.0)
+        y_t = torch.from_numpy(y_norm).float().unsqueeze(0)
+        spec = processor.audio_to_spectrogram(y_t)
+        if spec.shape[1] != config.n_mels:
+            spec = spec.transpose(1, 2)
+        T = int(spec.shape[-1])
+        if rec.source == "midi":
+            labels = build_labels_from_midi(rec.notes_path, T, midi_processor)
+        else:
+            labels = build_labels_from_chart(rec.notes_path, T, config)
+        if labels is None:
+            return "skipped", domain, str(rec.song_dir), None
+        labels, lag, score = estimate_and_apply_global_offset(y, labels, config)
+        if not np.isfinite(score) or score < float(args.min_align_score):
+            return "desynced", domain, str(rec.song_dir), None
+        dil = int(getattr(config, "label_dilation_frames", 0) or 0)
+        if dil > 0:
+            labels = dilate_labels_time(labels, dil)
+        if args.dedupe:
+            try:
+                h = _spec_phash(spec)
+                if h:
+                    with hash_lock:
+                        if h in seen_hashes:
+                            return "dup_skipped", domain, str(rec.song_dir), None
+                        if len(seen_hashes) >= MAX_HASHES:
+                            # Remove an arbitrary item to keep size bounded
+                            for k in list(seen_hashes.keys())[:1]:
+                                seen_hashes.pop(k)
+                                break
+                        seen_hashes[h] = True
+            except Exception:
+                pass
+        save_pair(split_dir, base, spec.squeeze(0), labels)
+        return "written", domain, str(rec.song_dir), None
+    except Exception as e:
+        return "error", None, str(rec.song_dir), str(e)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Build high-res dataset from Clone Hero songs"
@@ -571,11 +655,15 @@ def main() -> None:
         action="store_true",
         help="Skip songs that already have processed outputs in the destination",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of parallel worker processes",
+    )
     args = ap.parse_args()
 
     config = get_config(args.config)
-    processor = SpectrogramProcessor(config)
-    midi_processor = RbMidiProcessor(config)
 
     # Discovery with optional caching
     cache_path: Optional[Path]
@@ -861,95 +949,51 @@ def main() -> None:
     dup_skipped = 0
     existing = 0
     domain_counts: Dict[str, int] = {}
-    seen_hashes: set[str] = set()
-    MAX_HASHES = 100000
 
-    def _spec_phash(
-        spec: torch.Tensor, target_size: Tuple[int, int] = (16, 16)
-    ) -> Optional[str]:
-        # spec: (1,F,T) or (F,T)
-        arr = spec.squeeze(0).detach().cpu().numpy()
-        F, T = arr.shape
-        fh, th = target_size
-        if F < fh or T < th:
-            return None
-        # average pool to fh x th
-        f_bins = np.array_split(np.arange(F), fh)
-        t_bins = np.array_split(np.arange(T), th)
-        small = np.zeros((fh, th), dtype=np.float32)
-        for i, fb in enumerate(f_bins):
-            for j, tb in enumerate(t_bins):
-                small[i, j] = float(np.mean(arr[np.ix_(fb, tb)]))
-        med = float(np.median(small))
-        bits = (small > med).astype(np.uint8).flatten()
-        # pack bits to hex
-        # 256 bits -> 32 bytes -> 64 hex
-        by = np.packbits(bits)
-        return by.tobytes().hex()
+    manager = multiprocessing.Manager() if args.dedupe else None
+    seen_hashes = manager.dict() if manager else None
+    hash_lock = manager.Lock() if manager else None
 
-    for i, rec in enumerate(recs):
-        base = f"{rec.song_dir.parent.name}_{rec.song_dir.name}_{i:06d}"
-        split_dir = (
-            out_train if i in idx_train else (out_val if i in idx_val else out_test)
-        )
-        spec_path = split_dir / f"{base}_mel.npy"
-        lab_path = split_dir / f"{base}_label.npy"
-        if args.resume and spec_path.exists() and lab_path.exists():
-            existing += 1
-            continue
-        try:
-            # Load/mix audio and convert to spectrogram
-            y, domain = load_audio_for_training(rec.song_dir, config)
-            domain_counts[domain] = domain_counts.get(domain, 0) + 1
-            if y.size == 0:
-                skipped += 1
+    futures = []
+    with ProcessPoolExecutor(max_workers=int(args.workers or os.cpu_count())) as ex:
+        for i, rec in enumerate(recs):
+            base = f"{rec.song_dir.parent.name}_{rec.song_dir.name}_{i:06d}"
+            split_dir = (
+                out_train if i in idx_train else (out_val if i in idx_val else out_test)
+            )
+            spec_path = split_dir / f"{base}_mel.npy"
+            lab_path = split_dir / f"{base}_label.npy"
+            if args.resume and spec_path.exists() and lab_path.exists():
+                existing += 1
                 continue
-            # Loudness normalize to target
-            y_norm = normalize_loudness_rms(y, target_dbfs=-14.0)
-            y_t = torch.from_numpy(y_norm).float().unsqueeze(0)
-            spec = processor.audio_to_spectrogram(y_t)
-            if spec.shape[1] != config.n_mels:
-                spec = spec.transpose(1, 2)  # (1,T,F) -> (1,F,T)
-            # Labels at frame-level (T, C)
-            T = int(spec.shape[-1])
-            if rec.source == "midi":
-                labels = build_labels_from_midi(rec.notes_path, T, midi_processor)
-            else:
-                labels = build_labels_from_chart(rec.notes_path, T, config)
-            if labels is None:
+            futures.append(
+                ex.submit(
+                    _process_record,
+                    rec,
+                    base,
+                    split_dir,
+                    config,
+                    args,
+                    seen_hashes,
+                    hash_lock,
+                )
+            )
+
+        for fut in as_completed(futures):
+            status, domain, song_dir, err = fut.result()
+            if domain:
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            if status == "written":
+                written += 1
+            elif status == "skipped":
                 skipped += 1
-                continue
-            # Global offset correction via onset alignment (±250 ms)
-            labels, lag, score = estimate_and_apply_global_offset(y, labels, config)
-            if not np.isfinite(score) or score < float(args.min_align_score):
+            elif status == "desynced":
                 desynced += 1
-                continue
-            # Optional label dilation for training robustness
-            dil = int(getattr(config, "label_dilation_frames", 0) or 0)
-            if dil > 0:
-                labels = dilate_labels_time(labels, dil)
-
-            # Duplicate detection (on spectrogram) if requested
-            if args.dedupe:
-                try:
-                    h = _spec_phash(spec)
-                    if h and h in seen_hashes:
-                        dup_skipped += 1
-                        continue
-                    if h:
-                        if len(seen_hashes) >= MAX_HASHES:
-                            seen_hashes.pop()
-                        seen_hashes.add(h)
-                except Exception:
-                    pass
-
-            # Save pair
-            save_pair(split_dir, base, spec.squeeze(0), labels)
-            written += 1
-        except Exception as e:
-            print(f"ERR processing {rec.song_dir}: {e}")
-            skipped += 1
-            continue
+            elif status == "dup_skipped":
+                dup_skipped += 1
+            elif status == "error":
+                skipped += 1
+                print(f"ERR processing {song_dir}: {err}")
 
     print(
         f"Done. Wrote {written} examples ({out_root}). Skipped {skipped} missing, {desynced} desynced, {dup_skipped} duplicates, {existing} existing."
