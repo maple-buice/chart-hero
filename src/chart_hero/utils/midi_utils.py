@@ -1,11 +1,9 @@
-"""
-This module provides utilities for processing MIDI files, specifically for
-creating label matrices for drum transcription.
-"""
+"""Utilities for processing General MIDI drum performances."""
 
 from pathlib import Path
 from typing import Any
 
+import logging
 import mido
 import torch
 
@@ -17,7 +15,7 @@ from chart_hero.model_training.transformer_config import (
 
 
 class MidiProcessor:
-    """A class to process MIDI files and create frame-by-frame label matrices."""
+    """Process GM MIDI files and create frame-by-frame drum label matrices."""
 
     def __init__(self, config: Any) -> None:
         self.config = config
@@ -25,11 +23,7 @@ class MidiProcessor:
     def create_label_matrix(
         self, midi_path: Path, num_time_frames: int
     ) -> torch.Tensor | None:
-        """
-        Build frame-level labels from a General MIDI-style drum performance.
-        Intended for "real" MIDIs in training datasets (e.g., E-GMD), not Rock Band chart MIDIs.
-        Applies DRUM_HIT_MAP to the last MIDI track; uses single tempo from track 0.
-        """
+        """Build frame-level labels from a General MIDI-style drum performance."""
         try:
             mf = mido.MidiFile(midi_path)
         except Exception as e:
@@ -38,7 +32,10 @@ class MidiProcessor:
 
         tpq = mf.ticks_per_beat or 480
         tempo = self._get_midi_tempo(mf)
-        track = mf.tracks[-1]
+        track = self._find_drum_track(mf)
+        if track is None:
+            logging.warning("No drum track found in %s", midi_path)
+            return torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
 
         label = torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
         time_log = 0
@@ -66,7 +63,7 @@ class MidiProcessor:
                 label[frame, idx] = 1.0
 
     def _get_midi_tempo(self, mf: mido.MidiFile) -> int:
-        """Extract a single tempo (track 0) for legacy GM fallback; default 120 BPM."""
+        """Extract a single tempo (track 0); default 120 BPM."""
         try:
             for msg in mf.tracks[0]:
                 if msg.is_meta and msg.type == "set_tempo":
@@ -74,3 +71,22 @@ class MidiProcessor:
         except Exception:
             pass
         return 500000
+
+    def _find_drum_track(self, mf: mido.MidiFile) -> mido.MidiTrack | None:
+        """Locate the track containing GM drum events."""
+        # Prefer track with any note-on messages on channel 9 (GM drums)
+        for tr in mf.tracks:
+            for msg in tr:
+                if msg.type == "note_on" and getattr(msg, "channel", None) == 9:
+                    return tr
+        # Fallback: track name contains 'drum' or 'perc'
+        for tr in mf.tracks:
+            for msg in tr:
+                if msg.is_meta and msg.type == "track_name":
+                    name = str(msg.name).lower()
+                    if "drum" in name or "perc" in name:
+                        return tr
+        # Last resort: if there's only one track, assume it's drums
+        if len(mf.tracks) == 1:
+            return mf.tracks[0]
+        return None
