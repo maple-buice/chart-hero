@@ -6,6 +6,7 @@ from chart_hero.inference.mid_export import write_notes_mid
 from chart_hero.inference.mid_vocals import (
     SyllableEvent as VoxSyllable,
     Phrase as VoxPhrase,
+    write_vocals_midi,
 )
 
 
@@ -112,4 +113,22 @@ def test_pro_cymbal_toggles_order(tmp_path: Path) -> None:
 
     for t in toggle_times:
         notes = [n for typ, n in events_by_time[t] if typ == "note_on"]
-        assert notes[:2] == [110, 98]  # toggle precedes gem
+    assert notes[:2] == [110, 98]  # toggle precedes gem
+
+
+def test_write_vocals_auto_phrase_and_skip_blank(tmp_path: Path) -> None:
+    sylls = [
+        VoxSyllable(text="hi", t0=0.0, t1=0.5),
+        VoxSyllable(text="", t0=0.5, t1=1.0),
+    ]
+    out = write_vocals_midi(tmp_path / "vox.mid", sylls)
+    mf = mido.MidiFile(out)
+    vox_track = next(
+        tr
+        for tr in mf.tracks
+        if any(msg.type == "track_name" and msg.name == "PART VOCALS" for msg in tr)
+    )
+    texts = [msg.text for msg in vox_track if msg.type == "text"]
+    lyrics = [msg.text for msg in vox_track if msg.type == "lyrics"]
+    assert "[phrase_start]" in texts and "[phrase_end]" in texts
+    assert lyrics == ["hi"]

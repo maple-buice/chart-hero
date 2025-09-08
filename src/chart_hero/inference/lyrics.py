@@ -146,12 +146,16 @@ def fetch_lrclib_search(
                     if not (isinstance(lrc, str) and lrc.strip()):
                         continue
                     if duration is not None and duration > 0:
-                        d = it.get("duration") or it.get("durationMs")
                         try:
-                            d_val = float(d) if not isinstance(d, str) else float(d)
+                            if "duration" in it and it.get("duration") is not None:
+                                d_val = float(it.get("duration"))
+                                raw = it.get("duration")
+                            else:
+                                d_val = float(it.get("durationMs")) / 1000.0
+                                raw = it.get("durationMs")
                             if abs(d_val - float(duration)) > 5.0:
                                 _log(
-                                    f"Skip candidate: duration mismatch ({d} vs {duration})."
+                                    f"Skip candidate: duration mismatch ({raw} vs {duration})."
                                 )
                                 continue
                         except Exception:
@@ -324,7 +328,7 @@ def parse_vtt(vtt: str) -> List[Line]:
     Many YT captions are line-level only; we split line spans evenly across words.
     """
 
-    def parse_vtt_time(ts: str) -> float:
+    def parse_vtt_time(ts: str) -> tuple[float, float]:
         # Accept hh:mm:ss.mmm or mm:ss.mmm
         parts = ts.split("-->")
         if len(parts) == 2:
@@ -334,7 +338,6 @@ def parse_vtt(vtt: str) -> List[Line]:
 
         def to_sec(x: str) -> float:
             xs = x.strip()
-            h = 0
             if xs.count(":") == 2:
                 h, m, s = xs.split(":")
                 return int(h) * 3600 + int(m) * 60 + float(s)
@@ -377,12 +380,28 @@ def parse_vtt(vtt: str) -> List[Line]:
             continue
         else:
             cur_text.append(raw)
+    if cur_text and cur_t0 is not None and cur_t1 is not None:
+        full = " ".join(cur_text).strip()
+        words: List[Word] = []
+        if full:
+            toks = [w for w in re.split(r"\s+", full) if w]
+            span = max((cur_t1 - cur_t0), 0.35)
+            per = span / len(toks)
+            t = cur_t0
+            for w in toks:
+                w0, w1 = t, t + per
+                t = w1
+                sylls = _syllabify_to_slices(w, w0, w1)
+                words.append(Word(text=w, t0=w0, t1=w1, syllables=sylls))
+            lines.append(Line(text=full, t0=cur_t0, t1=cur_t1, words=words))
     return lines
 
 
 # ---- Syllabification -------------------------------------------------------
 
 _VOWEL_GROUPS = re.compile(r"(?i:[aeiouy]+)")
+
+_PYPHEN_DIC: Optional["pyphen.Pyphen"] = None  # cache for pyphen splitter
 
 
 def _syllables_pronouncing(word: str) -> List[str]:  # pragma: no cover - optional
@@ -402,8 +421,10 @@ def _syllables_pronouncing(word: str) -> List[str]:  # pragma: no cover - option
 def _syllables_pyphen(word: str) -> List[str]:  # pragma: no cover - optional
     if pyphen is None:
         return []
-    dic = pyphen.Pyphen(lang="en")
-    hy = dic.inserted(word)
+    global _PYPHEN_DIC
+    if _PYPHEN_DIC is None:
+        _PYPHEN_DIC = pyphen.Pyphen(lang="en")
+    hy = _PYPHEN_DIC.inserted(word)
     return hy.split("-") if hy else []
 
 
@@ -658,48 +679,34 @@ def fetch_audd_unsynced_lyrics(
         if isinstance(js, dict):
             res = js.get("result")
             if isinstance(res, list) and res:
-                # pick the first result that has lyrics text
-                text_hits = 0
                 preview: list[str] = []
+                first_text: Optional[str] = None
                 for it in res:
-                    if isinstance(it, dict):
-                        lyr = it.get("lyrics") or it.get("text")
-                        if isinstance(lyr, str) and lyr.strip():
-                            text_hits += 1
-                            # keep first text for return and collect preview list
-                            if not preview:
-                                # Return the first text hit immediately after logging preview
-                                # but first build preview of candidates for visibility
-                                pass
-
-                    # build preview line for this candidate
+                    if not isinstance(it, dict):
+                        continue
+                    lyr = it.get("lyrics") or it.get("text")
+                    if isinstance(lyr, str) and lyr.strip() and first_text is None:
+                        first_text = lyr
                     try:
-                        cand_title = None
-                        if isinstance(it, dict):
-                            cand_title = it.get("title") or it.get("song_title") or None
-                            cand_artist = (
-                                it.get("artist") or it.get("artist_name") or None
-                            )
-                            snippet = (it.get("lyrics") or it.get("text") or "")[
-                                :40
-                            ].replace("\n", " ")
-                            pv = f"{cand_artist or '?'} - {cand_title or '?'} | len={len(it.get('lyrics') or it.get('text') or '')} | {snippet}"
-                            preview.append(pv)
+                        cand_title = it.get("title") or it.get("song_title") or None
+                        cand_artist = it.get("artist") or it.get("artist_name") or None
+                        snippet_src = lyr if isinstance(lyr, str) else (it.get("lyrics") or it.get("text") or "")
+                        snippet = (snippet_src or "")[:40].replace("\n", " ")
+                        pv = (
+                            f"{cand_artist or '?'} - {cand_title or '?'} | "
+                            f"len={len(snippet_src or '')} | {snippet}"
+                        )
+                        preview.append(pv)
                     except Exception:
                         pass
-                # log summary of candidates
                 _log(
                     "AudD findLyrics candidates: "
                     + json.dumps(preview[:5], ensure_ascii=False)
                     + (" …" if len(preview) > 5 else "")
                 )
-                # return first text hit if any
-                for it in res:
-                    if isinstance(it, dict):
-                        lyr = it.get("lyrics") or it.get("text")
-                        if isinstance(lyr, str) and lyr.strip():
-                            _log("AudD findLyrics returned text.")
-                            return lyr
+                if first_text:
+                    _log("AudD findLyrics returned text.")
+                    return first_text
         count = len(res) if isinstance(res, list) else 0
         _log(f"AudD findLyrics had no usable results (candidates={count}).")
         return None
