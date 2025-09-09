@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, Sequence
 
 import librosa
 import numpy as np
@@ -9,9 +9,11 @@ import torch.nn.functional as F
 from music21 import chord, meter, note, stream
 from numpy.typing import NDArray
 
-from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_drum_hits
 
+from .model_utils import load_model_from_checkpoint, select_device
+from .segment_utils import detect_leading_silence_from_segments
+from .inference_utils import map_patch_to_sample
 from .types import PredictionRow, Segment, TransformerConfig
 
 
@@ -73,13 +75,9 @@ class Charter:
             pass
 
         # Load model with strict=False to allow criterion buffers etc. to differ
-        self.model = DrumTranscriptionModule.load_from_checkpoint(
-            str(model_path),
-            config=self.config,
-            max_time_patches=max_time_patches,
-            strict=False,
+        self.model = load_model_from_checkpoint(
+            self.config, model_path, max_time_patches=max_time_patches
         )
-        self.model.eval()
         # Try to load calibrated per-class thresholds saved during training
         # Only if not already provided on the config
         if not getattr(self.config, "class_thresholds", None):
@@ -99,6 +97,7 @@ class Charter:
 
     from typing import Sequence
 
+    @torch.no_grad()
     def predict(self, segments: Sequence[Segment | torch.Tensor]) -> pd.DataFrame:
         """
         Run model inference over spectrogram segments and return a DataFrame of
@@ -113,21 +112,7 @@ class Charter:
         if not segments:
             return pd.DataFrame(columns=["peak_sample"] + get_drum_hits())
 
-        device_str = getattr(self.config, "device", None)
-        if device_str:
-            device = torch.device(device_str)
-        else:
-            has_mps = (
-                bool(getattr(torch.backends, "mps", None))
-                and torch.backends.mps.is_available()
-            )
-            has_cuda = torch.cuda.is_available()
-            if has_mps:
-                device = torch.device("mps")
-            elif has_cuda:
-                device = torch.device("cuda")
-            else:
-                device = torch.device("cpu")
+        device = select_device(self.config)
         self.model.to(device)
 
         patch = int(self.config.patch_size[0])
@@ -144,313 +129,339 @@ class Charter:
         class_idx = {lab: i for i, lab in enumerate(classes)}
         rows: list[PredictionRow] = []
 
-        with torch.no_grad():
-            # Batch reasonably to avoid OOM
-            batch_size = getattr(self.config, "inference_batch_size", 4)
-            # Normalize input: accept legacy tensor lists too
-            norm_segments: list[Segment] = []
-            seg_len_frames = int(
-                self.config.max_audio_length
-                * self.config.sample_rate
-                / self.config.hop_length
+        # Batch reasonably to avoid OOM
+        batch_size = getattr(self.config, "inference_batch_size", 4)
+        # Normalize input: accept legacy tensor lists too
+        norm_segments: list[Segment] = []
+        seg_len_frames = int(
+            self.config.max_audio_length
+            * self.config.sample_rate
+            / self.config.hop_length
+        )
+        for seg_idx, seg in enumerate(segments):
+            if isinstance(seg, torch.Tensor):
+                ten = seg.detach().cpu().float().squeeze()
+                if ten.dim() != 2:
+                    continue
+                if ten.shape[0] != self.config.n_mels:
+                    ten = ten.t()
+                spec_t = ten
+                start_frame = seg_idx * seg_len_frames
+                end_frame = start_frame + spec_t.shape[1]
+                total_frames = spec_t.shape[1]
+            else:
+                spec = seg["spec"]
+                arr = (
+                    torch.from_numpy(spec).float()
+                    if isinstance(spec, np.ndarray)
+                    else torch.as_tensor(spec, dtype=torch.float32)
+                ).squeeze()
+                if arr.dim() != 2:
+                    continue
+                if arr.shape[0] != self.config.n_mels:
+                    arr = arr.t()
+                spec_t = arr
+                start_frame = int(seg.get("start_frame", seg_idx * seg_len_frames))
+                end_frame = int(seg.get("end_frame", start_frame + spec_t.shape[1]))
+                total_frames = int(seg.get("total_frames", spec_t.shape[1]))
+            norm_segments.append(
+                {
+                    "spec": spec_t,
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "total_frames": total_frames,
+                }
             )
-            for seg_idx, seg in enumerate(segments):
-                if isinstance(seg, torch.Tensor):
-                    ten = seg.detach().cpu().float().squeeze()
-                    if ten.dim() != 2:
-                        continue
-                    if ten.shape[0] != self.config.n_mels:
-                        ten = ten.t()
-                    spec_t = ten
-                    start_frame = seg_idx * seg_len_frames
-                    end_frame = start_frame + spec_t.shape[1]
-                    total_frames = spec_t.shape[1]
+
+        # Detect and trim leading silence so early frames do not yield spurious notes
+        silence_thr_db = float(getattr(self.config, "leading_silence_db", -60.0))
+        # Convert dB threshold to a positive magnitude for the spectrogram scale
+        silence_thr = 10 ** (silence_thr_db / 20.0)
+        offset_frames = detect_leading_silence_from_segments(norm_segments, silence_thr)
+        offset_samples = offset_frames * hop
+        if offset_frames > 0:
+            for seg in norm_segments:
+                seg["start_frame"] = max(0, int(seg["start_frame"]) - offset_frames)
+                seg["end_frame"] = max(0, int(seg["end_frame"]) - offset_frames)
+
+        for i in range(0, len(norm_segments), batch_size):
+            batch = norm_segments[i : i + batch_size]
+            specs = [b["spec"].float() for b in batch]
+            max_f = max(s.shape[1] for s in specs)
+            padded = [
+                F.pad(
+                    s,
+                    (0, max_f - s.shape[1]),
+                    value=float(s.min().item()) if s.numel() > 0 else 0.0,
+                )
+                for s in specs
+            ]
+            x = torch.stack(padded, dim=0).unsqueeze(1).to(device)
+            out = self.model(x)
+            logits = out["logits"].cpu()  # [B, T_patches, C]
+            probs = torch.sigmoid(logits)
+            # Optional onset gating from auxiliary head
+            onset_thr = getattr(self.config, "onset_gate_threshold", None)
+            onset_probs: torch.Tensor | None = None
+            if onset_thr is not None and "onset_logits" in out:
+                onset_probs = torch.sigmoid(out["onset_logits"]).cpu()  # [B, T]
+
+            # Apply optional per-class gains to re-calibrate probabilities
+            if getattr(self.config, "class_gains", None):
+                gains = self.config.class_gains
+                if isinstance(gains, (list, tuple)) and len(gains) == len(classes):
+                    g = torch.tensor(gains, dtype=probs.dtype).view(1, 1, -1)
+                    probs = torch.clamp(probs * g, 0.0, 1.0)
+
+            # Thresholds
+            thr = self.config.prediction_threshold
+            thr_vec = None
+            if getattr(self.config, "class_thresholds", None):
+                ct = self.config.class_thresholds
+                if isinstance(ct, (list, tuple)) and len(ct) == len(classes):
+                    # shape [1, C] to broadcast against [T, C]
+                    thr_vec = torch.tensor(ct).view(1, -1).to(probs.device)
+
+            # Optional decode min spacing control (ms)
+            min_default = getattr(self.config, "min_spacing_ms_default", None)
+            min_map = getattr(self.config, "min_spacing_ms_map", None) or {}
+            last_time_ms: dict[str, float] = {}
+
+            # Optional per-class time offset corrections (ms)
+            class_time_offsets_ms = getattr(
+                self.config, "class_time_offsets_ms", None
+            )
+            classes_list = classes
+
+            for b_idx, seg in enumerate(batch):
+                seg_probs = probs[b_idx]  # [T_patches, C]
+                T_p = seg_probs.shape[0]
+                # Build thresholds vector [C]
+                if thr_vec is not None:
+                    thr_row = thr_vec.squeeze(0)
                 else:
-                    spec = seg["spec"]
-                    arr = (
-                        torch.from_numpy(spec).float()
-                        if isinstance(spec, np.ndarray)
-                        else torch.as_tensor(spec, dtype=torch.float32)
-                    ).squeeze()
-                    if arr.dim() != 2:
+                    thr_row = torch.full(
+                        (seg_probs.shape[1],), thr, device=seg_probs.device
+                    )
+
+                # Optional per-class NMS along time to reduce duplicate hits
+                k = max(1, int(getattr(self.config, "event_nms_kernel_patches", 3)))
+                if k > 1 and T_p > 1:
+                    # seg_probs: [T,C] -> [1,C,T] for pooling
+                    p_ct = seg_probs.transpose(0, 1).unsqueeze(0)
+                    pooled = F.max_pool1d(
+                        p_ct, kernel_size=k, stride=1, padding=k // 2
+                    )
+                    # keep only local maxima
+                    keep_mask = (p_ct >= pooled).squeeze(0).transpose(0, 1)  # [T,C]
+                else:
+                    keep_mask = torch.ones_like(seg_probs, dtype=torch.bool)
+
+                # Pre-compute a positive-valued spectrogram for light-weight spectral gates
+                # seg["spec"] is log-mel (dB-ish) multiplied by an onset envelope.
+                # Convert to a positive scale that preserves relative band energy.
+                seg_spec = seg["spec"]
+                if isinstance(seg_spec, torch.Tensor):
+                    seg_arr = seg_spec.numpy()
+                else:
+                    seg_arr = np.asarray(seg_spec)
+                spec_pos = seg_arr - float(seg_arr.min()) + 1e-6
+
+                # Cymbal gating knobs
+                hf_gate = getattr(self.config, "cymbal_highfreq_ratio_gate", None)
+                hf_cut = float(
+                    getattr(self.config, "cymbal_highfreq_cutoff_mel", 0.7)
+                )
+
+                for t in range(T_p):
+                    p_t = seg_probs[t]  # [C]
+                    km_t = keep_mask[t]
+                    # Binary activations by threshold
+                    act = (p_t >= thr_row) & km_t
+
+                    # Map to frame center using kernel size and stride (for gates that look at the input feature)
+                    frame_idx = (
+                        seg["start_frame"] + t * stride_frames + (patch // 2)
+                    )
+                    # Local frame index inside spectrogram
+                    local_idx = min(
+                        seg_arr.shape[1] - 1, t * stride_frames + (patch // 2)
+                    )
+
+                    # Energy gate: skip frames below silence threshold
+                    silence_gate = float(getattr(self.config, "silence_gate_db", -60.0))
+                    frame_energy = float(seg_arr[:, local_idx].mean())
+                    if frame_energy < silence_gate:
                         continue
-                    if arr.shape[0] != self.config.n_mels:
-                        arr = arr.t()
-                    spec_t = arr
-                    start_frame = int(seg.get("start_frame", seg_idx * seg_len_frames))
-                    end_frame = int(seg.get("end_frame", start_frame + spec_t.shape[1]))
-                    total_frames = int(seg.get("total_frames", spec_t.shape[1]))
-                norm_segments.append(
-                    {
-                        "spec": spec_t,
-                        "start_frame": start_frame,
-                        "end_frame": end_frame,
-                        "total_frames": total_frames,
-                    }
-                )
 
-            for i in range(0, len(norm_segments), batch_size):
-                batch = norm_segments[i : i + batch_size]
-                specs = [b["spec"].float() for b in batch]
-                max_f = max(s.shape[1] for s in specs)
-                padded = [
-                    F.pad(
-                        s,
-                        (0, max_f - s.shape[1]),
-                        value=float(s.min().item()) if s.numel() > 0 else 0.0,
-                    )
-                    for s in specs
-                ]
-                x = torch.stack(padded, dim=0).unsqueeze(1).to(device)
-                out = self.model(x)
-                logits = out["logits"].cpu()  # [B, T_patches, C]
-                probs = torch.sigmoid(logits)
-                # Optional onset gating from auxiliary head
-                onset_thr = getattr(self.config, "onset_gate_threshold", None)
-                onset_probs: torch.Tensor | None = None
-                if onset_thr is not None and "onset_logits" in out:
-                    onset_probs = torch.sigmoid(out["onset_logits"]).cpu()  # [B, T]
-
-                # Apply optional per-class gains to re-calibrate probabilities
-                if getattr(self.config, "class_gains", None):
-                    gains = self.config.class_gains
-                    if isinstance(gains, (list, tuple)) and len(gains) == len(classes):
-                        g = torch.tensor(gains, dtype=probs.dtype).view(1, 1, -1)
-                        probs = torch.clamp(probs * g, 0.0, 1.0)
-
-                # Thresholds
-                thr = self.config.prediction_threshold
-                thr_vec = None
-                if getattr(self.config, "class_thresholds", None):
-                    ct = self.config.class_thresholds
-                    if isinstance(ct, (list, tuple)) and len(ct) == len(classes):
-                        # shape [1, C] to broadcast against [T, C]
-                        thr_vec = torch.tensor(ct).view(1, -1).to(probs.device)
-
-                # Optional decode min spacing control (ms)
-                min_default = getattr(self.config, "min_spacing_ms_default", None)
-                min_map = getattr(self.config, "min_spacing_ms_map", None) or {}
-                last_time_ms: dict[str, float] = {}
-
-                # Optional per-class time offset corrections (ms)
-                class_time_offsets_ms = getattr(
-                    self.config, "class_time_offsets_ms", None
-                )
-                classes_list = classes
-
-                for b_idx, seg in enumerate(batch):
-                    seg_probs = probs[b_idx]  # [T_patches, C]
-                    T_p = seg_probs.shape[0]
-                    # Build thresholds vector [C]
-                    if thr_vec is not None:
-                        thr_row = thr_vec.squeeze(0)
-                    else:
-                        thr_row = torch.full(
-                            (seg_probs.shape[1],), thr, device=seg_probs.device
-                        )
-
-                    # Optional per-class NMS along time to reduce duplicate hits
-                    k = max(1, int(getattr(self.config, "event_nms_kernel_patches", 3)))
-                    if k > 1 and T_p > 1:
-                        # seg_probs: [T,C] -> [1,C,T] for pooling
-                        p_ct = seg_probs.transpose(0, 1).unsqueeze(0)
-                        pooled = F.max_pool1d(
-                            p_ct, kernel_size=k, stride=1, padding=k // 2
-                        )
-                        # keep only local maxima
-                        keep_mask = (p_ct >= pooled).squeeze(0).transpose(0, 1)  # [T,C]
-                    else:
-                        keep_mask = torch.ones_like(seg_probs, dtype=torch.bool)
-
-                    # Pre-compute a positive-valued spectrogram for light-weight spectral gates
-                    # seg["spec"] is log-mel (dB-ish) multiplied by an onset envelope.
-                    # Convert to a positive scale that preserves relative band energy.
-                    seg_spec = seg["spec"]
-                    if isinstance(seg_spec, torch.Tensor):
-                        seg_arr = seg_spec.numpy()
-                    else:
-                        seg_arr = np.asarray(seg_spec)
-                    spec_pos = seg_arr - float(seg_arr.min()) + 1e-6
-
-                    # Cymbal gating knobs
-                    hf_gate = getattr(self.config, "cymbal_highfreq_ratio_gate", None)
-                    hf_cut = float(
-                        getattr(self.config, "cymbal_highfreq_cutoff_mel", 0.7)
-                    )
-
-                    for t in range(T_p):
-                        p_t = seg_probs[t]  # [C]
-                        km_t = keep_mask[t]
-                        # Binary activations by threshold
-                        act = (p_t >= thr_row) & km_t
-
-                        # Map to frame center using kernel size and stride (for gates that look at the input feature)
-                        frame_idx = (
-                            seg["start_frame"] + t * stride_frames + (patch // 2)
-                        )
-
-                        # Optional onset gate: require onset probability >= threshold
-                        if onset_probs is not None:
-                            try:
-                                if float(onset_probs[b_idx, t].item()) < float(
-                                    onset_thr
-                                ):
-                                    continue
-                            except Exception:
-                                pass
-
-                        # Optional activity gate: if nothing is strong enough, skip whole tick
-                        gate = getattr(self.config, "activity_gate", None)
-                        if gate is not None:
-                            if float(p_t.max().item()) < float(gate):
-                                continue
-
-                        # Optional spectral gate to suppress cymbal FPs caused by pitched trills, vocals, etc.
-                        # Require a minimum fraction of energy in the high-mel bands around this time.
-                        if hf_gate is not None:
-                            try:
-                                n_m = int(spec_pos.shape[0])
-                                f0 = max(0, int(frame_idx) - 1)
-                                f1 = min(int(frame_idx) + 2, int(spec_pos.shape[1]))
-                                hi0 = int(max(0, min(n_m - 1, round(n_m * hf_cut))))
-                                win = spec_pos[:, f0:f1]
-                                total = float(win.sum())
-                                high = float(win[hi0:, :].sum()) if total > 0 else 0.0
-                                hf_ratio = (high / total) if total > 0 else 0.0
-                                if hf_ratio < float(hf_gate):
-                                    # Zero out cymbal activations before arbitration
-                                    for cym_lab in ("66", "67", "68"):
-                                        cym_i = class_idx.get(cym_lab)
-                                        if cym_i is not None:
-                                            act[cym_i] = False
-                            except Exception:
-                                pass
-
-                        # Pairwise arbitration per color (prefer higher prob when both fire)
-                        # Yellow: tom '2' vs hat '67'
-                        y_tom = class_idx.get("2")
-                        y_cym = class_idx.get("67")
-                        b_tom = class_idx.get("3")
-                        b_cym = class_idx.get("68")
-                        g_tom = class_idx.get("4")
-                        g_cym = class_idx.get("66")
-
-                        margin = float(getattr(self.config, "cymbal_margin", 0.1))
-                        tom_margin = float(
-                            getattr(self.config, "tom_over_cymbal_margin", 0.35)
-                        )
-
-                        def choose_pair(
-                            tom_i: int | None, cym_i: int | None
-                        ) -> tuple[int, int]:
-                            if tom_i is None or cym_i is None:
-                                # Fallback: nothing to arbitrate
-                                return (
-                                    int(act[tom_i].item()) if tom_i is not None else 0,
-                                    int(act[cym_i].item()) if cym_i is not None else 0,
-                                )
-                            a_t = bool(act[tom_i].item())
-                            a_c = bool(act[cym_i].item())
-                            if a_t and a_c:
-                                pt = float(p_t[tom_i].item())
-                                pc = float(p_t[cym_i].item())
-                                # Selection policy:
-                                # - If cymbal within margin of tom, choose cymbal
-                                # - Else require tom to exceed cymbal by a larger margin to choose tom
-                                if (pc + margin) >= pt:
-                                    return (0, 1)
-                                if pt >= (pc + tom_margin):
-                                    return (1, 0)
-                                # Otherwise still prefer cymbal
-                                return (0, 1)
-                            return (int(a_t), int(a_c))
-
-                        y_t, y_c = choose_pair(y_tom, y_cym)
-                        b_t, b_c = choose_pair(b_tom, b_cym)
-                        g_t, g_c = choose_pair(g_tom, g_cym)
-
-                        # If nothing active on any class, skip
-                        i0 = class_idx.get("0")
-                        i1 = class_idx.get("1")
-                        has_kick = bool(act[i0].item()) if i0 is not None else False
-                        has_snare = bool(act[i1].item()) if i1 is not None else False
-                        if not (
-                            has_kick
-                            or has_snare
-                            or (y_t or y_c or b_t or b_c or g_t or g_c)
-                        ):
-                            continue
-
-                        # Apply per-class time offsets by shifting sample position
-                        # Use the largest offset among active classes to avoid splitting events
-                        add_ms = 0.0
-                        if isinstance(class_time_offsets_ms, (list, tuple)) and len(
-                            class_time_offsets_ms
-                        ) == len(classes_list):
-                            # Determine active classes indices
-                            active_indices: list[int] = []
-                            for name, idx_i in [
-                                ("0", class_idx.get("0")),
-                                ("1", class_idx.get("1")),
-                                ("2", class_idx.get("2")),
-                                ("3", class_idx.get("3")),
-                                ("4", class_idx.get("4")),
-                                ("66", class_idx.get("66")),
-                                ("67", class_idx.get("67")),
-                                ("68", class_idx.get("68")),
-                            ]:
-                                if idx_i is not None and bool(act[idx_i].item()):
-                                    active_indices.append(idx_i)
-                            if active_indices:
-                                add_ms = -max(
-                                    float(class_time_offsets_ms[i])
-                                    for i in active_indices
-                                )
-                        peak_sample = int(
-                            (frame_idx * hop)
-                            + (add_ms * self.config.sample_rate / 1000.0)
-                        )
-
-                        row: PredictionRow = {
-                            "peak_sample": peak_sample,
-                            "0": int(act[i0].item()) if i0 is not None else 0,
-                            "1": int(act[i1].item()) if i1 is not None else 0,
-                            "2": y_t,
-                            "3": b_t,
-                            "4": g_t,
-                            "66": g_c,
-                            "67": y_c,
-                            "68": b_c,
-                        }
-
-                        # Optional min spacing per class (skip if within limit)
-                        def _ms_from_sample(samp: int) -> float:
-                            return float(samp) * 1000.0 / float(self.config.sample_rate)
-
-                        now_ms = _ms_from_sample(peak_sample)
-                        keep = True
-                        for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
-                            if row.get(lab, 0) != 1:
-                                continue
-                            last_ms = last_time_ms.get(lab)
-                            limit = (
-                                min_map.get(lab, min_default)
-                                if min_default is not None
-                                else min_map.get(lab)
-                            )
-                            if (
-                                last_ms is not None
-                                and limit is not None
-                                and (now_ms - last_ms) < float(limit)
+                    # Optional onset gate: require onset probability >= threshold
+                    if onset_probs is not None:
+                        try:
+                            if float(onset_probs[b_idx, t].item()) < float(
+                                onset_thr
                             ):
-                                keep = False
-                                break
-                        if not keep:
+                                continue
+                        except Exception:
+                            pass
+
+                    # Optional activity gate: if nothing is strong enough, skip whole tick
+                    gate = getattr(self.config, "activity_gate", None)
+                    if gate is not None:
+                        if float(p_t.max().item()) < float(gate):
                             continue
-                        for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
-                            if row.get(lab, 0) == 1:
-                                last_time_ms[lab] = now_ms
-                        rows.append(row)
+
+                    # Optional spectral gate to suppress cymbal FPs caused by pitched trills, vocals, etc.
+                    # Require a minimum fraction of energy in the high-mel bands around this time.
+                    if hf_gate is not None:
+                        try:
+                            n_m = int(spec_pos.shape[0])
+                            f0 = max(0, int(frame_idx) - 1)
+                            f1 = min(int(frame_idx) + 2, int(spec_pos.shape[1]))
+                            hi0 = int(max(0, min(n_m - 1, round(n_m * hf_cut))))
+                            win = spec_pos[:, f0:f1]
+                            total = float(win.sum())
+                            high = float(win[hi0:, :].sum()) if total > 0 else 0.0
+                            hf_ratio = (high / total) if total > 0 else 0.0
+                            if hf_ratio < float(hf_gate):
+                                # Zero out cymbal activations before arbitration
+                                for cym_lab in ("66", "67", "68"):
+                                    cym_i = class_idx.get(cym_lab)
+                                    if cym_i is not None:
+                                        act[cym_i] = False
+                        except Exception:
+                            pass
+
+                    # Pairwise arbitration per color (prefer higher prob when both fire)
+                    # Yellow: tom '2' vs hat '67'
+                    y_tom = class_idx.get("2")
+                    y_cym = class_idx.get("67")
+                    b_tom = class_idx.get("3")
+                    b_cym = class_idx.get("68")
+                    g_tom = class_idx.get("4")
+                    g_cym = class_idx.get("66")
+
+                    margin = float(getattr(self.config, "cymbal_margin", 0.1))
+                    tom_margin = float(
+                        getattr(self.config, "tom_over_cymbal_margin", 0.35)
+                    )
+
+                    def choose_pair(
+                        tom_i: int | None, cym_i: int | None
+                    ) -> tuple[int, int]:
+                        if tom_i is None or cym_i is None:
+                            # Fallback: nothing to arbitrate
+                            return (
+                                int(act[tom_i].item()) if tom_i is not None else 0,
+                                int(act[cym_i].item()) if cym_i is not None else 0,
+                            )
+                        a_t = bool(act[tom_i].item())
+                        a_c = bool(act[cym_i].item())
+                        if a_t and a_c:
+                            pt = float(p_t[tom_i].item())
+                            pc = float(p_t[cym_i].item())
+                            # Selection policy:
+                            # - If cymbal within margin of tom, choose cymbal
+                            # - Else require tom to exceed cymbal by a larger margin to choose tom
+                            if (pc + margin) >= pt:
+                                return (0, 1)
+                            if pt >= (pc + tom_margin):
+                                return (1, 0)
+                            # Otherwise still prefer cymbal
+                            return (0, 1)
+                        return (int(a_t), int(a_c))
+
+                    y_t, y_c = choose_pair(y_tom, y_cym)
+                    b_t, b_c = choose_pair(b_tom, b_cym)
+                    g_t, g_c = choose_pair(g_tom, g_cym)
+
+                    # If nothing active on any class, skip
+                    i0 = class_idx.get("0")
+                    i1 = class_idx.get("1")
+                    has_kick = bool(act[i0].item()) if i0 is not None else False
+                    has_snare = bool(act[i1].item()) if i1 is not None else False
+                    if not (
+                        has_kick
+                        or has_snare
+                        or (y_t or y_c or b_t or b_c or g_t or g_c)
+                    ):
+                        continue
+
+                    # Apply per-class time offsets by shifting sample position
+                    # Use the largest offset among active classes to avoid splitting events
+                    add_ms = 0.0
+                    if isinstance(class_time_offsets_ms, (list, tuple)) and len(
+                        class_time_offsets_ms
+                    ) == len(classes_list):
+                        # Determine active classes indices
+                        active_indices: list[int] = []
+                        for name, idx_i in [
+                            ("0", class_idx.get("0")),
+                            ("1", class_idx.get("1")),
+                            ("2", class_idx.get("2")),
+                            ("3", class_idx.get("3")),
+                            ("4", class_idx.get("4")),
+                            ("66", class_idx.get("66")),
+                            ("67", class_idx.get("67")),
+                            ("68", class_idx.get("68")),
+                        ]:
+                            if idx_i is not None and bool(act[idx_i].item()):
+                                active_indices.append(idx_i)
+                        if active_indices:
+                            add_ms = -max(
+                                float(class_time_offsets_ms[i])
+                                for i in active_indices
+                            )
+                    peak_sample = map_patch_to_sample(
+                        start_frame=seg["start_frame"],
+                        patch_idx=t,
+                        stride_frames=stride_frames,
+                        patch_size=patch,
+                        hop_length=hop,
+                        offset_samples=offset_samples,
+                        add_ms=add_ms,
+                        sample_rate=self.config.sample_rate,
+                    )
+
+                    row: PredictionRow = {
+                        "peak_sample": peak_sample,
+                        "0": int(act[i0].item()) if i0 is not None else 0,
+                        "1": int(act[i1].item()) if i1 is not None else 0,
+                        "2": y_t,
+                        "3": b_t,
+                        "4": g_t,
+                        "66": g_c,
+                        "67": y_c,
+                        "68": b_c,
+                    }
+
+                    # Optional min spacing per class (skip if within limit)
+                    def _ms_from_sample(samp: int) -> float:
+                        return float(samp) * 1000.0 / float(self.config.sample_rate)
+
+                    now_ms = _ms_from_sample(peak_sample)
+                    keep = True
+                    for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
+                        if row.get(lab, 0) != 1:
+                            continue
+                        last_ms = last_time_ms.get(lab)
+                        limit = (
+                            min_map.get(lab, min_default)
+                            if min_default is not None
+                            else min_map.get(lab)
+                        )
+                        if (
+                            last_ms is not None
+                            and limit is not None
+                            and (now_ms - last_ms) < float(limit)
+                        ):
+                            keep = False
+                            break
+                    if not keep:
+                        continue
+                    for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
+                        if row.get(lab, 0) == 1:
+                            last_time_ms[lab] = now_ms
+                    rows.append(row)
 
         if not rows:
             return pd.DataFrame(columns=["peak_sample"] + classes)
