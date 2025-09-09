@@ -101,6 +101,12 @@ def main() -> None:
     ap.add_argument(
         "--out-csv", type=str, default=None, help="Optional CSV path to write offsets"
     )
+    ap.add_argument(
+        "--early-tol-ms",
+        type=float,
+        default=20.0,
+        help="Tolerance for flagging predictions before first true note",
+    )
     args = ap.parse_args()
 
     # Build config
@@ -127,6 +133,10 @@ def main() -> None:
     classes = get_drum_hits()
 
     offsets_all: Dict[str, List[float]] = {c: [] for c in classes}
+    earliest_diffs: List[float] = []
+    early_preds: List[float] = []
+    cc_shifts: List[float] = []
+    bad_earliest = 0
 
     for mid, aud in songs:
         segs = audio_to_tensors(str(aud), config)
@@ -136,6 +146,24 @@ def main() -> None:
         off = _match_offsets(preds, truth, float(args.tol_ms) / 1000.0)
         for c in classes:
             offsets_all[c].extend(off[c])
+
+        truth_times = sorted([e.t for e in truth])
+        pred_times = sorted([e.t for e in preds])
+        if truth_times and pred_times:
+            earliest = (pred_times[0] - truth_times[0]) * 1000.0
+            earliest_diffs.append(earliest)
+            if earliest < -float(args.early_tol_ms):
+                bad_earliest += 1
+            first_true = truth_times[0]
+            early_preds.extend([(p - first_true) * 1000.0 for p in pred_times if p < first_true])
+
+            diffs = [(p - t) * 1000.0 for p in pred_times for t in truth_times]
+            if diffs:
+                arr = np.array(diffs, dtype=float)
+                bins = np.arange(-1000.0, 1000.0 + 1.0, 1.0)
+                hist, edges = np.histogram(arr, bins=bins)
+                idx = int(np.argmax(hist))
+                cc_shifts.append((edges[idx] + edges[idx + 1]) / 2.0)
 
     # Optionally write CSV of offsets
     if args.out_csv:
@@ -160,6 +188,26 @@ def main() -> None:
         med = float(np.median(arr))
         std = float(arr.std())
         print(f"  {c}: n={arr.size:4d} mean={mean:7.2f} med={med:7.2f} std={std:7.2f}")
+
+    if earliest_diffs:
+        arr = np.array(earliest_diffs, dtype=float)
+        print("\nEarliest prediction minus earliest truth (ms):")
+        print(
+            f"  mean={arr.mean():7.2f} med={np.median(arr):7.2f} min={arr.min():7.2f} max={arr.max():7.2f}"
+        )
+        print(
+            f"  songs earlier than -{float(args.early_tol_ms):.1f} ms: {bad_earliest}/{arr.size}"
+        )
+    if early_preds:
+        bins = np.arange(-500.0, 0.0 + 50.0, 50.0)
+        hist, edges = np.histogram(np.array(early_preds, dtype=float), bins=bins)
+        print("\nPredictions before first true note (histogram ms):")
+        for count, start, end in zip(hist, edges[:-1], edges[1:]):
+            print(f"  {start:7.1f} to {end:7.1f}: {int(count)}")
+    if cc_shifts:
+        arr = np.array(cc_shifts, dtype=float)
+        print("\nEstimated shift via cross-correlation (ms):")
+        print(f"  mean={arr.mean():7.2f} med={np.median(arr):7.2f}")
 
 
 if __name__ == "__main__":
