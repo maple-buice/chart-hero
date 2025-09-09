@@ -382,8 +382,8 @@ class LocalHighResConfig(LocalConfig):
     # Conservative decode min spacing defaults (ms)
     min_spacing_ms_map: dict[str, float] | None = None
 
-    mixed_precision: bool = True
-    precision: str = "bf16-mixed"
+    mixed_precision: bool = False
+    precision: str = "32"
 
     def __post_init__(self) -> None:  # type: ignore[override]
         super().__post_init__()
