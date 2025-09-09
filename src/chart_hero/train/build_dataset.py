@@ -36,8 +36,11 @@ import torch
 from chart_hero.model_training.transformer_config import BaseConfig, get_config
 from chart_hero.model_training.transformer_data import SpectrogramProcessor
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
-
-AUDIO_EXTS = (".ogg", ".mp3", ".wav", ".flac", ".m4a")
+from chart_hero.utils.song_utils import (
+    choose_audio_path,
+    list_stems,
+    mix_stems_to_waveform,
+)
 
 MAX_HASHES = 100000
 
@@ -62,54 +65,6 @@ def find_song_folders(roots: Sequence[str | os.PathLike[str]]) -> List[Path]:
             ):
                 out.append(Path(dirpath))
     return out
-
-
-def choose_audio_path(song_dir: Path) -> Optional[Path]:
-    """Best-effort selection of a full-mix audio file in a song folder."""
-    p = song_dir / "song.ogg"
-    if p.exists():
-        return p
-    mix_keywords = ("song", "mix", "full")
-    stem_keywords = (
-        "guitar",
-        "bass",
-        "drum",
-        "vocals",
-        "vocal",
-        "keys",
-        "rhythm",
-    )
-    candidates: list[Path] = []
-    for fn in os.listdir(song_dir):
-        if Path(fn).suffix.lower() not in AUDIO_EXTS:
-            continue
-        low = fn.lower()
-        pth = song_dir / fn
-        if any(k in low for k in mix_keywords) and not any(
-            k in low for k in stem_keywords
-        ):
-            return pth
-        if not any(k in low for k in stem_keywords):
-            candidates.append(pth)
-    if candidates:
-        return candidates[0]
-    # Fallback: return first audio file even if likely a stem
-    for fn in os.listdir(song_dir):
-        if Path(fn).suffix.lower() in AUDIO_EXTS:
-            return song_dir / fn
-    return None
-
-
-def list_stems(song_dir: Path) -> dict[str, Path]:
-    stems: dict[str, Path] = {}
-    for fn in os.listdir(song_dir):
-        low = fn.lower()
-        if not any(low.endswith(ext) for ext in AUDIO_EXTS):
-            continue
-        p = song_dir / fn
-        key = low.split(".")[0]
-        stems[key] = p
-    return stems
 
 
 def _parse_bool_like(v: str) -> Optional[bool]:
@@ -200,43 +155,18 @@ def load_audio_for_training(
 
     Domains: 'stems_full_mix', 'fullmix', 'drums_only'
     """
-    stems = list_stems(song_dir)
     sr = int(config.sample_rate)
-    # Prefer stems full-mix when drums and any other stem(s) exist
-    drum_keys = [k for k in stems.keys() if "drum" in k]
-    other_keys = [
-        k
-        for k in stems.keys()
-        if any(
-            w in k for w in ("guitar", "bass", "vocals", "rhythm", "keys", "backing")
-        )
-    ]
-    if drum_keys and other_keys:
-        tracks: list[np.ndarray] = []
-        max_len = 0
-        for k in drum_keys + other_keys:
-            try:
-                y, _ = librosa.load(str(stems[k]), sr=sr)
-                tracks.append(y.astype(np.float32))
-                max_len = max(max_len, len(y))
-            except Exception:
-                continue
-        if tracks:
-            mix = np.zeros(max_len, dtype=np.float32)
-            for t in tracks:
-                if len(t) < max_len:
-                    t = np.pad(t, (0, max_len - len(t)))
-                mix += t
-            peak = float(np.max(np.abs(mix))) if mix.size > 0 else 1.0
-            if peak > 0:
-                mix = 0.5 * mix / peak  # -6 dB headroom
-            return mix, "stems_full_mix"
-    # Fall back to song.ogg or any audio file
+    mix = mix_stems_to_waveform(song_dir, sr)
+    if mix is not None:
+        return mix, "stems_full_mix"
+
+    stems = list_stems(song_dir)
     p = choose_audio_path(song_dir)
     if p is not None:
         y, _ = librosa.load(str(p), sr=sr)
         return y.astype(np.float32), "fullmix"
-    # Last resort: drums only
+
+    drum_keys = [k for k in stems.keys() if "drum" in k]
     if drum_keys:
         try:
             y, _ = librosa.load(str(stems[drum_keys[0]]), sr=sr)
