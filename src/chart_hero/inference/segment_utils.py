@@ -9,17 +9,20 @@ from .types import Segment
 
 
 def detect_leading_silence_from_segments(
-    segments: Sequence[Segment], threshold: float = -1e-3
+    segments: Sequence[Segment], threshold: float = 1e-3
 ) -> int:
-    """Return the number of silent frames at the start of the audio.
+    """Return the number of silent frames preceding the first audible frame.
 
-    The function scans the first provided segment and finds the first frame
-    whose mean energy exceeds ``threshold``. Spectrogram values are expected to
-    be non-negative; values near zero indicate silence. If no such frame exists,
-    ``0`` is returned.
+    Frame energy is measured as the mean absolute spectrogram value per frame.
+    The first frame whose energy is greater than or equal to ``threshold`` is
+    considered the start of audible content.  The returned index is in frame
+    units relative to the beginning of the audio.  If no frame crosses the
+    threshold, the total number of frames is returned.
     """
     if not segments:
         return 0
+
+    last_end = 0
     for seg in segments:
         spec = seg["spec"]
         if isinstance(spec, torch.Tensor):
@@ -27,9 +30,14 @@ def detect_leading_silence_from_segments(
         else:
             spec_arr = np.asarray(spec)
         if spec_arr.ndim != 2:
+            last_end = int(seg.get("end_frame", last_end))
             continue
-        frame_energies = spec_arr.mean(axis=0)
-        idx = np.nonzero(frame_energies < threshold)[0]
+
+        frame_energies = np.abs(spec_arr).mean(axis=0)
+        idx = np.nonzero(frame_energies >= threshold)[0]
         if idx.size > 0:
             return int(seg["start_frame"]) + int(idx[0])
-    return 0
+
+        last_end = int(seg.get("end_frame", seg["start_frame"] + frame_energies.size))
+
+    return last_end

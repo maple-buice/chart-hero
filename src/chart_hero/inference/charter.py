@@ -174,7 +174,9 @@ class Charter:
                 )
 
         # Detect and trim leading silence so early frames do not yield spurious notes
-        silence_thr = float(getattr(self.config, "leading_silence_db", -60.0))
+        silence_thr_db = float(getattr(self.config, "leading_silence_db", -60.0))
+        # Convert dB threshold to a positive magnitude for the spectrogram scale
+        silence_thr = 10 ** (silence_thr_db / 20.0)
         offset_frames = detect_leading_silence_from_segments(norm_segments, silence_thr)
         offset_samples = offset_frames * hop
         if offset_frames > 0:
