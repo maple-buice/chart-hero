@@ -13,11 +13,13 @@ def detect_leading_silence_from_segments(
 ) -> int:
     """Return the number of silent frames preceding the first audible frame.
 
-    Frame energy is measured as the mean absolute spectrogram value per frame.
-    The first frame whose energy is greater than or equal to ``threshold`` is
-    considered the start of audible content.  The returned index is in frame
-    units relative to the beginning of the audio.  If no frame crosses the
-    threshold, the total number of frames is returned.
+    Frame energy is measured as the mean spectrogram magnitude per frame.  If
+    the spectrogram is in log scale (e.g., dB), it is converted back to a
+    positive magnitude before computing energy.  The first frame whose energy is
+    greater than or equal to ``threshold`` is considered the start of audible
+    content.  The returned index is in frame units relative to the beginning of
+    the audio.  If no frame crosses the threshold, the total number of frames is
+    returned.
     """
     if not segments:
         return 0
@@ -33,7 +35,10 @@ def detect_leading_silence_from_segments(
             last_end = int(seg.get("end_frame", last_end))
             continue
 
-        frame_energies = np.abs(spec_arr).mean(axis=0)
+        if np.any(spec_arr < 0):
+            spec_arr = np.power(10.0, spec_arr / 20.0)
+
+        frame_energies = spec_arr.mean(axis=0)
         idx = np.nonzero(frame_energies >= threshold)[0]
         if idx.size > 0:
             return int(seg["start_frame"]) + int(idx[0])
