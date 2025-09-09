@@ -52,9 +52,10 @@ help:
 	@echo "  make format         # Ruff format"
 	@echo "  make train-quick    # Quick sanity training run"
 	@echo "  make dataset-highres SONGS_ROOT=/Volumes/Media/CloneHero DATASET_OUT=datasets/processed_highres  # Build hi-res dataset"
-	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
-	@echo "  make train-highres RESUME_LATEST=1  # Resume latest local_highres run"
-	@echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
+        @echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
+        @echo "  make train-highres RESUME_LATEST=1  # Resume latest local_highres run"
+        @echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
+        @echo "  make eval SONG=/path/to/songdir [NMS=11 AG=0.55 HF=0.32]  # Eval model vs song's notes.mid"
 .PHONY: venv
 venv:
 		$(PYTHON) -m venv $(VENV)
@@ -129,24 +130,41 @@ calibrate-highres:
 			--patch-stride $(PATCH_STRIDE) \
 			--tol-ms 45
 	
-	# Basic evaluation against a known-good notes.mid
-	# Required vars: AUDIO=/path/to/song.ogg MID=/path/to/notes.mid
-	# Optional: NMS=11 AG=0.55 HF=0.32 THR= (global threshold) DISABLE_CALIB=1
+        # Basic evaluation against a known-good notes.mid
+        # Provide SONG=/path/to/songdir to infer audio and notes.mid, or
+        # AUDIO=/path/to/song.ogg MID=/path/to/notes.mid.
+        # Optional: NMS=11 AG=0.55 HF=0.32 THR= (global threshold) DISABLE_CALIB=1
 .PHONY: eval
 eval:
-		@if [ -z "$(AUDIO)" ] || [ -z "$(MID)" ]; then \
-			echo "Usage: make eval AUDIO=/path/song.ogg MID=/path/notes.mid [NMS=11 AG=0.55 HF=0.32]"; \
-			exit 2; \
-		fi
-		@echo "Evaluating $(AUDIO) vs $(MID) using model $(INFER_MODEL)";
-		$(PY) -m chart_hero.eval.evaluate_chart \
-			--audio "$(AUDIO)" \
-			--mid "$(MID)" \
-			--model "$(INFER_MODEL)" \
-			--patch-stride 1 \
-			$(if $(strip $(NMS)),--nms-k $(NMS),) \
-			$(if $(strip $(AG)),--activity-gate $(AG),) \
-			$(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
-			$(if $(strip $(THR)),--threshold $(THR),) \
-			$(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
-			|| true
+                @if [ -n "$(SONG)" ]; then \
+                        echo "Evaluating song $(SONG) using model $(INFER_MODEL)"; \
+                        $(PY) -m chart_hero.eval.evaluate_chart \
+                                --song "$(SONG)" \
+                                --model "$(INFER_MODEL)" \
+                                --patch-stride 1 \
+                                $(if $(strip $(NMS)),--nms-k $(NMS),) \
+                                $(if $(strip $(AG)),--activity-gate $(AG),) \
+                                $(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
+                                $(if $(strip $(THR)),--threshold $(THR),) \
+                                $(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
+                                || true; \
+                else \
+                        if [ -z "$(AUDIO)" ] || [ -z "$(MID)" ]; then \
+                                echo "Usage: make eval SONG=/path/songdir"; \
+                                echo "   or: make eval AUDIO=/path/song.ogg MID=/path/notes.mid"; \
+                                echo "Optional vars: NMS=11 AG=0.55 HF=0.32"; \
+                                exit 2; \
+                        fi; \
+                        echo "Evaluating $(AUDIO) vs $(MID) using model $(INFER_MODEL)"; \
+                        $(PY) -m chart_hero.eval.evaluate_chart \
+                                --audio "$(AUDIO)" \
+                                --mid "$(MID)" \
+                                --model "$(INFER_MODEL)" \
+                                --patch-stride 1 \
+                                $(if $(strip $(NMS)),--nms-k $(NMS),) \
+                                $(if $(strip $(AG)),--activity-gate $(AG),) \
+                                $(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
+                                $(if $(strip $(THR)),--threshold $(THR),) \
+                                $(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
+                                || true; \
+                fi
