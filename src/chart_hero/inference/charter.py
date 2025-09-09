@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, Sequence
 
 import librosa
 import numpy as np
@@ -9,9 +9,11 @@ import torch.nn.functional as F
 from music21 import chord, meter, note, stream
 from numpy.typing import NDArray
 
-from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.transformer_config import get_drum_hits
 
+from .model_utils import load_model_from_checkpoint, select_device
+from .segment_utils import detect_leading_silence_from_segments
+from .inference_utils import map_patch_to_sample
 from .types import PredictionRow, Segment, TransformerConfig
 
 
@@ -73,13 +75,9 @@ class Charter:
             pass
 
         # Load model with strict=False to allow criterion buffers etc. to differ
-        self.model = DrumTranscriptionModule.load_from_checkpoint(
-            str(model_path),
-            config=self.config,
-            max_time_patches=max_time_patches,
-            strict=False,
+        self.model = load_model_from_checkpoint(
+            self.config, model_path, max_time_patches=max_time_patches
         )
-        self.model.eval()
         # Try to load calibrated per-class thresholds saved during training
         # Only if not already provided on the config
         if not getattr(self.config, "class_thresholds", None):
@@ -113,21 +111,7 @@ class Charter:
         if not segments:
             return pd.DataFrame(columns=["peak_sample"] + get_drum_hits())
 
-        device_str = getattr(self.config, "device", None)
-        if device_str:
-            device = torch.device(device_str)
-        else:
-            has_mps = (
-                bool(getattr(torch.backends, "mps", None))
-                and torch.backends.mps.is_available()
-            )
-            has_cuda = torch.cuda.is_available()
-            if has_mps:
-                device = torch.device("mps")
-            elif has_cuda:
-                device = torch.device("cuda")
-            else:
-                device = torch.device("cpu")
+        device = select_device(self.config)
         self.model.to(device)
 
         patch = int(self.config.patch_size[0])
@@ -188,6 +172,15 @@ class Charter:
                         "total_frames": total_frames,
                     }
                 )
+
+        # Detect and trim leading silence so early frames do not yield spurious notes
+        silence_thr = float(getattr(self.config, "leading_silence_db", -60.0))
+        offset_frames = detect_leading_silence_from_segments(norm_segments, silence_thr)
+        offset_samples = offset_frames * hop
+        if offset_frames > 0:
+            for seg in norm_segments:
+                seg["start_frame"] = max(0, int(seg["start_frame"]) - offset_frames)
+                seg["end_frame"] = max(0, int(seg["end_frame"]) - offset_frames)
 
             for i in range(0, len(norm_segments), batch_size):
                 batch = norm_segments[i : i + batch_size]
@@ -288,6 +281,16 @@ class Charter:
                         frame_idx = (
                             seg["start_frame"] + t * stride_frames + (patch // 2)
                         )
+                        # Local frame index inside spectrogram
+                        local_idx = min(
+                            seg_arr.shape[1] - 1, t * stride_frames + (patch // 2)
+                        )
+
+                        # Energy gate: skip frames below silence threshold
+                        silence_gate = float(getattr(self.config, "silence_gate_db", -60.0))
+                        frame_energy = float(seg_arr[:, local_idx].mean())
+                        if frame_energy < silence_gate:
+                            continue
 
                         # Optional onset gate: require onset probability >= threshold
                         if onset_probs is not None:
@@ -406,9 +409,15 @@ class Charter:
                                     float(class_time_offsets_ms[i])
                                     for i in active_indices
                                 )
-                        peak_sample = int(
-                            (frame_idx * hop)
-                            + (add_ms * self.config.sample_rate / 1000.0)
+                        peak_sample = map_patch_to_sample(
+                            start_frame=seg["start_frame"],
+                            patch_idx=t,
+                            stride_frames=stride_frames,
+                            patch_size=patch,
+                            hop_length=hop,
+                            offset_samples=offset_samples,
+                            add_ms=add_ms,
+                            sample_rate=self.config.sample_rate,
                         )
 
                         row: PredictionRow = {
