@@ -130,6 +130,27 @@ calibrate-highres:
 			--patch-stride $(PATCH_STRIDE) \
 			--tol-ms 45
 
+.PHONY: sweep-offsets
+sweep-offsets:
+		$(PY) scripts/sweep_time_offsets.py \
+			--roots "$(DEV_SET_ROOT)" \
+			--model "$(INFER_MODEL)" \
+			--offsets -80,-40,-20,-10,0,10,20,40,80 \
+			--nms-k 9 \
+			--activity-gate 0.45 \
+			--patch-stride $(PATCH_STRIDE) \
+			--tol-ms 45
+
+.PHONY: analyze-offsets
+analyze-offsets:
+		$(PY) scripts/analyze_offsets.py \
+			--roots "$(DEV_SET_ROOT)" \
+			--model "$(INFER_MODEL)" \
+			--nms-k 9 \
+			--activity-gate 0.45 \
+			--patch-stride $(PATCH_STRIDE) \
+			--tol-ms 45
+
         # Basic evaluation against a known-good notes.mid
         # Provide SONG=/path/to/songdir to infer audio and notes.mid, or
         # AUDIO=/path/to/song.ogg MID=/path/to/notes.mid.
