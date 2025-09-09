@@ -16,18 +16,18 @@ ASSETS = pathlib.Path(__file__).resolve().parent.parent / "assets"
     "audio,bpms,times,tol",
     [
         ("tempo_2tempo_test_track.wav", [100, 150], [0.0, 3.37], 0.05),
-        ("tempo_3tempo_test_track.wav", [90, 150, 80], [0.0, 4.0, 6.4], 0.6),
+        ("tempo_3tempo_test_track.wav", [90, 150, 80], [0.0, 4.0, 6.4], 0.05),
         (
             "tempo_4tempo_test_track.wav",
             [90, 150, 80, 140],
             [0.0, 4.0, 6.4, 10.9],
-            0.6,
+            0.05,
         ),
         (
             "tempo_5tempo_test_track.wav",
             [90, 150, 80, 140, 110],
             [0.0, 4.0, 6.4, 10.9, 13.47],
-            0.7,
+            0.05,
         ),
     ],
 )
