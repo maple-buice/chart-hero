@@ -97,6 +97,7 @@ class Charter:
 
     from typing import Sequence
 
+    @torch.no_grad()
     def predict(self, segments: Sequence[Segment | torch.Tensor]) -> pd.DataFrame:
         """
         Run model inference over spectrogram segments and return a DataFrame of
@@ -128,50 +129,49 @@ class Charter:
         class_idx = {lab: i for i, lab in enumerate(classes)}
         rows: list[PredictionRow] = []
 
-        with torch.no_grad():
-            # Batch reasonably to avoid OOM
-            batch_size = getattr(self.config, "inference_batch_size", 4)
-            # Normalize input: accept legacy tensor lists too
-            norm_segments: list[Segment] = []
-            seg_len_frames = int(
-                self.config.max_audio_length
-                * self.config.sample_rate
-                / self.config.hop_length
+        # Batch reasonably to avoid OOM
+        batch_size = getattr(self.config, "inference_batch_size", 4)
+        # Normalize input: accept legacy tensor lists too
+        norm_segments: list[Segment] = []
+        seg_len_frames = int(
+            self.config.max_audio_length
+            * self.config.sample_rate
+            / self.config.hop_length
+        )
+        for seg_idx, seg in enumerate(segments):
+            if isinstance(seg, torch.Tensor):
+                ten = seg.detach().cpu().float().squeeze()
+                if ten.dim() != 2:
+                    continue
+                if ten.shape[0] != self.config.n_mels:
+                    ten = ten.t()
+                spec_t = ten
+                start_frame = seg_idx * seg_len_frames
+                end_frame = start_frame + spec_t.shape[1]
+                total_frames = spec_t.shape[1]
+            else:
+                spec = seg["spec"]
+                arr = (
+                    torch.from_numpy(spec).float()
+                    if isinstance(spec, np.ndarray)
+                    else torch.as_tensor(spec, dtype=torch.float32)
+                ).squeeze()
+                if arr.dim() != 2:
+                    continue
+                if arr.shape[0] != self.config.n_mels:
+                    arr = arr.t()
+                spec_t = arr
+                start_frame = int(seg.get("start_frame", seg_idx * seg_len_frames))
+                end_frame = int(seg.get("end_frame", start_frame + spec_t.shape[1]))
+                total_frames = int(seg.get("total_frames", spec_t.shape[1]))
+            norm_segments.append(
+                {
+                    "spec": spec_t,
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "total_frames": total_frames,
+                }
             )
-            for seg_idx, seg in enumerate(segments):
-                if isinstance(seg, torch.Tensor):
-                    ten = seg.detach().cpu().float().squeeze()
-                    if ten.dim() != 2:
-                        continue
-                    if ten.shape[0] != self.config.n_mels:
-                        ten = ten.t()
-                    spec_t = ten
-                    start_frame = seg_idx * seg_len_frames
-                    end_frame = start_frame + spec_t.shape[1]
-                    total_frames = spec_t.shape[1]
-                else:
-                    spec = seg["spec"]
-                    arr = (
-                        torch.from_numpy(spec).float()
-                        if isinstance(spec, np.ndarray)
-                        else torch.as_tensor(spec, dtype=torch.float32)
-                    ).squeeze()
-                    if arr.dim() != 2:
-                        continue
-                    if arr.shape[0] != self.config.n_mels:
-                        arr = arr.t()
-                    spec_t = arr
-                    start_frame = int(seg.get("start_frame", seg_idx * seg_len_frames))
-                    end_frame = int(seg.get("end_frame", start_frame + spec_t.shape[1]))
-                    total_frames = int(seg.get("total_frames", spec_t.shape[1]))
-                norm_segments.append(
-                    {
-                        "spec": spec_t,
-                        "start_frame": start_frame,
-                        "end_frame": end_frame,
-                        "total_frames": total_frames,
-                    }
-                )
 
         # Detect and trim leading silence so early frames do not yield spurious notes
         silence_thr_db = float(getattr(self.config, "leading_silence_db", -60.0))
