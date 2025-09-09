@@ -48,7 +48,8 @@ def mix_stems_to_waveform(song_dir: Path, sr: int) -> Optional[np.ndarray]:
         k
         for k in stems.keys()
         if any(
-            w in k for w in ("guitar", "bass", "vocals", "vocal", "rhythm", "keys", "backing")
+            w in k
+            for w in ("guitar", "bass", "vocals", "vocal", "rhythm", "keys", "backing")
         )
     ]
     if not drum_keys or not other_keys:
@@ -105,7 +106,9 @@ def choose_audio_path(song_dir: Path) -> Optional[Path]:
             continue
         low = fn.lower()
         pth = song_dir / fn
-        if any(k in low for k in mix_keywords) and not any(k in low for k in stem_keywords):
+        if any(k in low for k in mix_keywords) and not any(
+            k in low for k in stem_keywords
+        ):
             return pth
         if not any(k in low for k in stem_keywords):
             candidates.append(pth)
@@ -176,4 +179,3 @@ def save_eval_song_copy(
         updated.append(f"name = [EVAL] {name}")
     ini_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
     return out_dir
-

@@ -35,7 +35,9 @@ class MidiProcessor:
         track = self._find_drum_track(mf)
         if track is None:
             logging.warning("No drum track found in %s", midi_path)
-            return torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
+            return torch.zeros(
+                (num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32
+            )
 
         label = torch.zeros((num_time_frames, len(TARGET_CLASSES)), dtype=torch.float32)
         time_log = 0

@@ -439,7 +439,9 @@ def main() -> None:
         default=None,
         help="One or more audio paths; if multiple are given (e.g., drums_1 drums_2 drums_3), they are mixed",
     )
-    ap.add_argument("--mid", type=str, default=None, help="notes.mid path (ground truth)")
+    ap.add_argument(
+        "--mid", type=str, default=None, help="notes.mid path (ground truth)"
+    )
     ap.add_argument(
         "--song",
         type=str,
@@ -568,7 +570,9 @@ def main() -> None:
                 break
     else:
         if args.audio is None or args.mid is None:
-            raise RuntimeError("Either --song or both --audio and --mid must be provided")
+            raise RuntimeError(
+                "Either --song or both --audio and --mid must be provided"
+            )
 
     truth = load_truth_from_mid(Path(args.mid))
 
@@ -750,6 +754,7 @@ def main() -> None:
             tmp_song_mix.unlink()
         except OSError:
             pass
+
 
 if __name__ == "__main__":
     main()

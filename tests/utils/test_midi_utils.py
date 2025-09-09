@@ -29,8 +29,12 @@ def dummy_midi_file(tmp_path):
 
     track.append(mido.MetaMessage("track_name", name="Drums"))
     track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
-    track.append(mido.Message("note_on", note=36, velocity=64, time=480, channel=9))  # Kick
-    track.append(mido.Message("note_on", note=38, velocity=64, time=480, channel=9))  # Snare
+    track.append(
+        mido.Message("note_on", note=36, velocity=64, time=480, channel=9)
+    )  # Kick
+    track.append(
+        mido.Message("note_on", note=38, velocity=64, time=480, channel=9)
+    )  # Snare
     mid_path = tmp_path / "dummy.mid"
     mid.save(str(mid_path))
     return mid_path
@@ -61,14 +65,13 @@ def test_create_label_matrix(midi_processor, dummy_midi_file, config):
     assert torch.sum(label_matrix) > 0  # Check that some notes were found
 
 
-def test_no_drum_track_returns_empty_labels(
-    midi_processor, no_drum_midi_file, config
-):
+def test_no_drum_track_returns_empty_labels(midi_processor, no_drum_midi_file, config):
     """MIDIs without drum tracks yield an all-zero label matrix."""
     num_time_frames = int(2 * config.sample_rate / config.hop_length)
-    label_matrix = midi_processor.create_label_matrix(no_drum_midi_file, num_time_frames)
+    label_matrix = midi_processor.create_label_matrix(
+        no_drum_midi_file, num_time_frames
+    )
 
     assert isinstance(label_matrix, torch.Tensor)
     assert label_matrix.shape == (num_time_frames, config.num_drum_classes)
     assert torch.count_nonzero(label_matrix) == 0
-

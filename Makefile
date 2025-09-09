@@ -5,7 +5,7 @@
 	PRECOMMIT := $(VENV)/bin/pre-commit
 	PYTEST := $(VENV)/bin/pytest
 	RUFF := $(VENV)/bin/ruff
-	
+
 	# Defaults for dataset building (can be overridden on the command line)
 	SONGS_ROOT ?= /Users/maple/CloneHeroSongs/CloneHero
 	DEV_SET_ROOT ?= CloneHero/KnownGoodSongs
@@ -14,14 +14,14 @@
 	# to restrict the number processed in a run.
 	DATASET_SONG_LIMIT ?=
 	INDEX_DIR ?= artifacts/clonehero_charts_json
-	
+
 	# Training/inference convenience variables
 	TAG ?= $(shell date "+%Y%m%d_%H%M%S")
 	WANDB ?= 0
 	RESUME_LATEST ?= 0
 	# Resolve W&B flag
 	WANDB_FLAG := $(if $(filter 1 yes true,$(WANDB)),--use-wandb,--no-wandb)
-	
+
 	MODELS_DIR := models/local_transformer_models
 	# Newest last.ckpt under timestamped subdirs
 	LATEST_LAST := $(shell ls -t $(MODELS_DIR)/*/last.ckpt 2>/dev/null | head -n 1)
@@ -39,7 +39,7 @@
 	PRESET ?=
 	# Build flag only when PRESET is non-empty
 	PRESET_FLAG := $(if $(strip $(PRESET)),--preset $(PRESET),)
-	
+
 	PATCH_STRIDE ?= 1
 .PHONY: help
 help:
@@ -52,10 +52,10 @@ help:
 	@echo "  make format         # Ruff format"
 	@echo "  make train-quick    # Quick sanity training run"
 	@echo "  make dataset-highres SONGS_ROOT=/Volumes/Media/CloneHero DATASET_OUT=datasets/processed_highres  # Build hi-res dataset"
-        @echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
-        @echo "  make train-highres RESUME_LATEST=1  # Resume latest local_highres run"
-        @echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
-        @echo "  make eval SONG=/path/to/songdir [NMS=11 AG=0.55 HF=0.32]  # Eval model vs song's notes.mid"
+	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
+	@echo "  make train-highres RESUME_LATEST=1  # Resume latest local_highres run"
+	@echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
+	@echo "  make eval SONG=/path/to/songdir [NMS=11 AG=0.55 HF=0.32]  # Eval model vs song's notes.mid"
 .PHONY: venv
 venv:
 		$(PYTHON) -m venv $(VENV)
@@ -86,7 +86,7 @@ train-quick:
 			--quick-test \
 			--data-dir "$(DATASET_OUT)"" \
 			--experiment-tag "quick_$(TAG)"
-	
+
 	# Build a high-resolution dataset from Clone Hero folders.
 	# Variables:
 	# - SONGS_ROOT: Clone Hero songs root (default /Volumes/Media/CloneHero)
@@ -114,10 +114,10 @@ infer:
 		@for L in $(LINKS); do \
 			echo "Running inference for $$L with model $(INFER_MODEL)"; \
 			$(PY) -m chart_hero \
-				--export-clonehero \
-				-l "$$L" \
-				--model-path="$(INFER_MODEL)" \
-				$(PRESET_FLAG) || exit $$?; \
+			--export-clonehero \
+			-l "$$L" \
+			--model-path="$(INFER_MODEL)" \
+			$(PRESET_FLAG) || exit $$?; \
 		done
 .PHONY: calibrate-highres
 calibrate-highres:
@@ -129,42 +129,42 @@ calibrate-highres:
 			--activity-gate 0.45 \
 			--patch-stride $(PATCH_STRIDE) \
 			--tol-ms 45
-	
+
         # Basic evaluation against a known-good notes.mid
         # Provide SONG=/path/to/songdir to infer audio and notes.mid, or
         # AUDIO=/path/to/song.ogg MID=/path/to/notes.mid.
         # Optional: NMS=11 AG=0.55 HF=0.32 THR= (global threshold) DISABLE_CALIB=1
 .PHONY: eval
 eval:
-                @if [ -n "$(SONG)" ]; then \
-                        echo "Evaluating song $(SONG) using model $(INFER_MODEL)"; \
-                        $(PY) -m chart_hero.eval.evaluate_chart \
-                                --song "$(SONG)" \
-                                --model "$(INFER_MODEL)" \
-                                --patch-stride 1 \
-                                $(if $(strip $(NMS)),--nms-k $(NMS),) \
-                                $(if $(strip $(AG)),--activity-gate $(AG),) \
-                                $(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
-                                $(if $(strip $(THR)),--threshold $(THR),) \
-                                $(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
-                                || true; \
-                else \
-                        if [ -z "$(AUDIO)" ] || [ -z "$(MID)" ]; then \
-                                echo "Usage: make eval SONG=/path/songdir"; \
-                                echo "   or: make eval AUDIO=/path/song.ogg MID=/path/notes.mid"; \
-                                echo "Optional vars: NMS=11 AG=0.55 HF=0.32"; \
-                                exit 2; \
-                        fi; \
-                        echo "Evaluating $(AUDIO) vs $(MID) using model $(INFER_MODEL)"; \
-                        $(PY) -m chart_hero.eval.evaluate_chart \
-                                --audio "$(AUDIO)" \
-                                --mid "$(MID)" \
-                                --model "$(INFER_MODEL)" \
-                                --patch-stride 1 \
-                                $(if $(strip $(NMS)),--nms-k $(NMS),) \
-                                $(if $(strip $(AG)),--activity-gate $(AG),) \
-                                $(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
-                                $(if $(strip $(THR)),--threshold $(THR),) \
-                                $(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
-                                || true; \
-                fi
+	@if [ -n "$(SONG)" ]; then \
+		echo "Evaluating song $(SONG) using model $(INFER_MODEL)"; \
+		$(PY) -m chart_hero.eval.evaluate_chart \
+		--song "$(SONG)" \
+		--model "$(INFER_MODEL)" \
+		--patch-stride 1 \
+		$(if $(strip $(NMS)),--nms-k $(NMS),) \
+		$(if $(strip $(AG)),--activity-gate $(AG),) \
+		$(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
+		$(if $(strip $(THR)),--threshold $(THR),) \
+		$(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
+		|| true; \
+	else \
+		if [ -z "$(AUDIO)" ] || [ -z "$(MID)" ]; then \
+			echo "Usage: make eval SONG=/path/songdir"; \
+			echo "   or: make eval AUDIO=/path/song.ogg MID=/path/notes.mid"; \
+			echo "Optional vars: NMS=11 AG=0.55 HF=0.32"; \
+			exit 2; \
+		fi; \
+		echo "Evaluating $(AUDIO) vs $(MID) using model $(INFER_MODEL)"; \
+		$(PY) -m chart_hero.eval.evaluate_chart \
+				--audio "$(AUDIO)" \
+				--mid "$(MID)" \
+				--model "$(INFER_MODEL)" \
+				--patch-stride 1 \
+				$(if $(strip $(NMS)),--nms-k $(NMS),) \
+				$(if $(strip $(AG)),--activity-gate $(AG),) \
+				$(if $(strip $(HF)),--cymbal-hf-gate $(HF),) \
+				$(if $(strip $(THR)),--threshold $(THR),) \
+				$(if $(filter 1 yes true,$(DISABLE_CALIB)),--disable-calibrated,) \
+				|| true; \
+	fi

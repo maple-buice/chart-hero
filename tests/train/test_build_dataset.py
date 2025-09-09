@@ -2,7 +2,11 @@ import mido
 
 import json
 
-from chart_hero.train.build_dataset import build_labels_from_midi, json_index_has_song, _slugify
+from chart_hero.train.build_dataset import (
+    build_labels_from_midi,
+    json_index_has_song,
+    _slugify,
+)
 from chart_hero.utils.rb_midi_utils import RbMidiProcessor
 from chart_hero.model_training.transformer_config import get_config
 
@@ -53,9 +57,7 @@ def test_json_index_has_song_filters_by_pack(tmp_path):
     idx_root = tmp_path / "index"
     idx_dir = idx_root / _slugify("PackDrum") / _slugify("Artist") / _slugify("Song")
     idx_dir.mkdir(parents=True)
-    (idx_dir / "dummy.midi.json").write_text(
-        json.dumps({"path": str(drum_mid)})
-    )
+    (idx_dir / "dummy.midi.json").write_text(json.dumps({"path": str(drum_mid)}))
 
     roots = [root]
     assert json_index_has_song(pack_drum, roots, idx_root)

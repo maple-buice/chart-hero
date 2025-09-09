@@ -70,9 +70,7 @@ class SpectrogramProcessor:
         else:
             log_mel_spec = torch.zeros_like(log_mel_spec)
 
-        return torch.nan_to_num(
-            log_mel_spec, nan=0.0, posinf=0.0, neginf=0.0
-        )
+        return torch.nan_to_num(log_mel_spec, nan=0.0, posinf=0.0, neginf=0.0)
 
     def prepare_patches(
         self, spectrogram: torch.Tensor
@@ -130,12 +128,8 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         label_matrix = torch.from_numpy(label_np)
 
         # Replace any NaN or infinite values to stabilize downstream operations
-        spectrogram = torch.nan_to_num(
-            spectrogram, nan=0.0, posinf=0.0, neginf=0.0
-        )
-        label_matrix = torch.nan_to_num(
-            label_matrix, nan=0.0, posinf=0.0, neginf=0.0
-        )
+        spectrogram = torch.nan_to_num(spectrogram, nan=0.0, posinf=0.0, neginf=0.0)
+        label_matrix = torch.nan_to_num(label_matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Robustness: ensure labels have shape (T, C) with T>0 and correct C
         num_classes = self.config.num_drum_classes

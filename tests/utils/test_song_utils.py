@@ -42,4 +42,3 @@ def test_save_eval_song_copy(tmp_path):
     assert (out_dir / "notes.mid").exists()
     ini_text = (out_dir / "song.ini").read_text(encoding="utf-8")
     assert "name = [EVAL] Test Song" in ini_text
-
