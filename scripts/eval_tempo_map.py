@@ -144,10 +144,17 @@ def main() -> None:
             res = evaluate_song(entry.path)
             if res:
                 results.append(res)
-                print(
-                    f"{res['song']}: BPM err={res['avg_bpm_error']:.2f} "
-                    f"Boundary err={res['avg_boundary_error']:.3f}s"
+                bpm_err = (
+                    f"{res['avg_bpm_error']:.2f}"
+                    if res["avg_bpm_error"] is not None
+                    else "N/A"
                 )
+                boundary_err = (
+                    f"{res['avg_boundary_error']:.3f}s"
+                    if res["avg_boundary_error"] is not None
+                    else "N/A"
+                )
+                print(f"{res['song']}: BPM err={bpm_err} Boundary err={boundary_err}")
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
