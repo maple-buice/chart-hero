@@ -15,14 +15,20 @@ from chart_hero.inference.charter import Charter
 from chart_hero.inference.input_transform import audio_to_tensors
 from chart_hero.model_training.transformer_config import get_config, get_drum_hits
 from chart_hero.utils.audio_io import load_audio
+from chart_hero.utils.song_utils import (
+    choose_audio_path,
+    list_stems,
+    mix_stems_to_waveform,
+    save_eval_song_copy,
+)
 
 """
 Evaluate inference against a known-good PART DRUMS MIDI.
 
 Usage:
   python -m chart_hero.eval.evaluate_chart \
-    --audio path/to/song.ogg \
-    --mid path/to/notes.mid \
+    --audio path/to/song.ogg --mid path/to/notes.mid \
+    [or --song path/to/song_dir] \
     --model models/local_transformer_models/best_model.ckpt \
     [--patch-stride 8] [--tol-ms 45]
 
@@ -429,11 +435,26 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate model vs known-good notes.mid")
     ap.add_argument(
         "--audio",
-        required=True,
         nargs="+",
+        default=None,
         help="One or more audio paths; if multiple are given (e.g., drums_1 drums_2 drums_3), they are mixed",
     )
-    ap.add_argument("--mid", required=True, help="notes.mid path (ground truth)")
+    ap.add_argument("--mid", type=str, default=None, help="notes.mid path (ground truth)")
+    ap.add_argument(
+        "--song",
+        type=str,
+        default=None,
+        help="Path to song directory; infers audio and notes.mid when provided",
+    )
+    ap.add_argument(
+        "--eval-copy-root",
+        type=str,
+        default="CloneHero/Songs/Chart Hero/Eval",
+        help=(
+            "When --song is given, copy the folder here with generated notes.mid "
+            "and '[EVAL]' name for Clone Hero testing"
+        ),
+    )
     ap.add_argument("--model", required=True, help="Model checkpoint path")
     ap.add_argument("--patch-stride", type=int, default=None)
     ap.add_argument("--tol-ms", type=float, default=45.0)
@@ -506,6 +527,48 @@ def main() -> None:
         help="Fraction of mel bins considered 'high' for the cymbal HF gate (default 0.70)",
     )
     args = ap.parse_args()
+    cfg = get_config("local")
+    sr = int(cfg.sample_rate)
+
+    tmp_song_mix: Optional[Path] = None
+    song_dir: Optional[Path] = None
+    eval_bpm = 120.0
+    eval_ppq = 480
+    if args.song:
+        song_dir = Path(args.song)
+        mix = mix_stems_to_waveform(song_dir, sr)
+        if mix is not None:
+            fd, out_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            sf.write(out_path, mix, sr)
+            args.audio = [out_path]
+            tmp_song_mix = Path(out_path)
+        else:
+            p = choose_audio_path(song_dir)
+            if p is None:
+                stems = list_stems(song_dir)
+                drum_keys = [k for k in stems.keys() if "drum" in k]
+                if drum_keys:
+                    p = stems[drum_keys[0]]
+            if p is None:
+                raise RuntimeError("No audio found in song directory")
+            args.audio = [str(p)]
+        mid_path = song_dir / "notes.mid"
+        if not mid_path.exists():
+            raise RuntimeError("notes.mid not found in song directory")
+        args.mid = str(mid_path)
+        mf = mido.MidiFile(mid_path, clip=True)
+        eval_ppq = int(mf.ticks_per_beat)
+        for msg in mf.tracks[0]:
+            if msg.is_meta and msg.type == "set_tempo":
+                try:
+                    eval_bpm = float(mido.tempo2bpm(msg.tempo))
+                except Exception:
+                    pass
+                break
+    else:
+        if args.audio is None or args.mid is None:
+            raise RuntimeError("Either --song or both --audio and --mid must be provided")
 
     truth = load_truth_from_mid(Path(args.mid))
 
@@ -667,7 +730,26 @@ def main() -> None:
                             vals["recall"] if vals["total"] > 0 else None,
                         ]
                     )
-
+    if song_dir is not None:
+        rows_dict: Dict[int, Dict[str, int]] = {}
+        for e in pred:
+            sample = int(round(e.t * sr))
+            row = rows_dict.setdefault(sample, {"peak_sample": sample})
+            row[str(e.cls)] = 1
+        rows = [row for _, row in sorted(rows_dict.items())]
+        save_eval_song_copy(
+            song_dir,
+            Path(args.eval_copy_root),
+            rows,
+            bpm=eval_bpm,
+            ppq=eval_ppq,
+            sr=sr,
+        )
+    if tmp_song_mix is not None:
+        try:
+            tmp_song_mix.unlink()
+        except OSError:
+            pass
 
 if __name__ == "__main__":
     main()
