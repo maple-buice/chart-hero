@@ -16,13 +16,14 @@ import argparse
 import csv
 import os
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 
 from chart_hero.eval.evaluate_chart import Event, load_truth_from_mid
 from chart_hero.inference.charter import Charter
 from chart_hero.inference.input_transform import audio_to_tensors
+from chart_hero.inference.segment_utils import detect_leading_silence_from_segments
 from chart_hero.model_training.transformer_config import get_config, get_drum_hits
 
 
@@ -137,9 +138,16 @@ def main() -> None:
     early_preds: List[float] = []
     cc_shifts: List[float] = []
     bad_earliest = 0
+    song_rows: List[Dict[str, Any]] = []
 
     for mid, aud in songs:
         segs = audio_to_tensors(str(aud), config)
+        # Estimate leading silence applied during inference
+        silence_thr_db = float(getattr(config, "leading_silence_db", -60.0))
+        silence_thr = 10 ** (silence_thr_db / 20.0)
+        lead_frames = detect_leading_silence_from_segments(segs, silence_thr)
+        lead_ms = lead_frames * config.hop_length * 1000.0 / sr
+
         truth = load_truth_from_mid(mid)
         df = charter.predict(segs)
         preds = _df_to_events(df, sr)
@@ -155,15 +163,30 @@ def main() -> None:
             if earliest < -float(args.early_tol_ms):
                 bad_earliest += 1
             first_true = truth_times[0]
+            early_count = sum(1 for p in pred_times if p < first_true)
             early_preds.extend([(p - first_true) * 1000.0 for p in pred_times if p < first_true])
 
             diffs = [(p - t) * 1000.0 for p in pred_times for t in truth_times]
+            cc_shift = float("nan")
             if diffs:
                 arr = np.array(diffs, dtype=float)
                 bins = np.arange(-1000.0, 1000.0 + 1.0, 1.0)
                 hist, edges = np.histogram(arr, bins=bins)
                 idx = int(np.argmax(hist))
-                cc_shifts.append((edges[idx] + edges[idx + 1]) / 2.0)
+                cc_shift = (edges[idx] + edges[idx + 1]) / 2.0
+                cc_shifts.append(cc_shift)
+
+            song_rows.append(
+                {
+                    "song": mid.parent.name,
+                    "leading_ms": lead_ms,
+                    "first_truth_ms": truth_times[0] * 1000.0,
+                    "first_pred_ms": pred_times[0] * 1000.0,
+                    "first_diff_ms": earliest,
+                    "cc_shift_ms": cc_shift,
+                    "early_pred_count": early_count,
+                }
+            )
 
     # Optionally write CSV of offsets
     if args.out_csv:
@@ -208,6 +231,23 @@ def main() -> None:
         arr = np.array(cc_shifts, dtype=float)
         print("\nEstimated shift via cross-correlation (ms):")
         print(f"  mean={arr.mean():7.2f} med={np.median(arr):7.2f}")
+
+    if song_rows:
+        print("\nPer-song diagnostics:")
+        for row in song_rows:
+            print(
+                "  {song}: lead={lead:.1f}ms first_truth={truth:.1f}ms "
+                "first_pred={pred:.1f}ms diff={diff:.1f}ms "
+                "cc_shift={cc:.1f}ms early_preds={cnt}".format(
+                    song=row["song"],
+                    lead=row["leading_ms"],
+                    truth=row["first_truth_ms"],
+                    pred=row["first_pred_ms"],
+                    diff=row["first_diff_ms"],
+                    cc=row["cc_shift_ms"],
+                    cnt=row["early_pred_count"],
+                )
+            )
 
 
 if __name__ == "__main__":
