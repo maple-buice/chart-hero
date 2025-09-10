@@ -209,7 +209,7 @@ class BaseConfig:
     class_pos_weight: tuple[float, ...] | None = None
     pos_weight_max_files: int | None = None
     # Cap for auto-computed pos_weight to avoid extreme gradients
-    pos_weight_cap: float = 50.0
+    pos_weight_cap: float = 100.0
 
     # Advanced loss/label settings
     use_focal_loss: bool = False
@@ -288,7 +288,9 @@ class LocalConfig(BaseConfig):
     focal_gamma: float = 2.0
 
     # Class imbalance handling
-    pos_weight_cap: float = 10.0  # cap auto pos_weight
+    pos_weight_cap: float = (
+        100.0  # cap auto pos_weight (increased from 10.0 to handle extreme imbalance)
+    )
 
     # Default dataset paths for high-res npy shards
     data_dir: str = "datasets/processed_highres"
@@ -307,6 +309,7 @@ class LocalConfig(BaseConfig):
     pin_memory: bool = False  # MPS does not support pinned memory; avoid warnings
 
     # Training settings
+    learning_rate: float = 1e-5  # Reduced from 1e-4 to 1e-5 for stable fine-tuning
     gradient_checkpointing: bool = True
     accumulate_grad_batches: int = (
         8  # Increased from 4 to maintain effective batch size
@@ -436,7 +439,9 @@ class CloudConfig(BaseConfig):
 
     # Loss settings
     use_focal_loss: bool = True
-    pos_weight_cap: float = 10.0  # cap auto pos_weight
+    pos_weight_cap: float = (
+        100.0  # cap auto pos_weight (increased from 10.0 to handle extreme imbalance)
+    )
 
     # GPU optimization
     train_batch_size: int = 16

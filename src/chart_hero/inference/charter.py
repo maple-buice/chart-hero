@@ -11,12 +11,12 @@ from numpy.typing import NDArray
 
 from chart_hero.model_training.transformer_config import get_drum_hits
 
+from .inference_utils import estimate_global_shift, map_patch_to_sample
 from .model_utils import load_model_from_checkpoint, select_device
 from .segment_utils import (
     detect_leading_silence_from_segments,
     frame_energies_from_segments,
 )
-from .inference_utils import estimate_global_shift, map_patch_to_sample
 from .types import PredictionRow, Segment, TransformerConfig
 
 
@@ -56,11 +56,14 @@ class Charter:
             # If hyperparameters saved by Lightning exist, prefer them for consistency
             hparams = ckpt.get("hyper_parameters") or ckpt.get("hparams")
             if isinstance(hparams, dict):
+                restored_params = []
                 for k in (
                     "sample_rate",
                     "n_mels",
                     "n_fft",
                     "hop_length",
+                    "max_audio_length",
+                    "prediction_threshold",
                     "hidden_size",
                     "num_layers",
                     "num_heads",
@@ -68,12 +71,19 @@ class Charter:
                     "patch_size",
                     "patch_stride",
                     "enable_onset_head",
+                    "num_drum_classes",
                 ):
                     if k in hparams:
                         try:
+                            old_val = getattr(self.config, k, None)
+                            new_val = hparams[k]
                             setattr(self.config, k, hparams[k])
+                            if old_val != new_val:
+                                restored_params.append(f"{k}={new_val}")
                         except Exception:
                             pass
+                if restored_params:
+                    print(f"Restored training config: {', '.join(restored_params)}")
         except Exception:
             pass
 
@@ -181,7 +191,9 @@ class Charter:
         # Detect and trim leading silence so early frames do not yield spurious notes
         silence_thr_db = float(getattr(self.config, "leading_silence_db", -40.0))
         min_sil_ms = float(getattr(self.config, "leading_silence_min_ms", 250.0))
-        min_sil_frames = int(round(min_sil_ms * self.config.sample_rate / (hop * 1000.0)))
+        min_sil_frames = int(
+            round(min_sil_ms * self.config.sample_rate / (hop * 1000.0))
+        )
         offset_frames = detect_leading_silence_from_segments(
             norm_segments, silence_thr_db, min_silence_frames=min_sil_frames
         )
@@ -238,9 +250,7 @@ class Charter:
             last_time_ms: dict[str, float] = {}
 
             # Optional per-class time offset corrections (ms)
-            class_time_offsets_ms = getattr(
-                self.config, "class_time_offsets_ms", None
-            )
+            class_time_offsets_ms = getattr(self.config, "class_time_offsets_ms", None)
             classes_list = classes
 
             for b_idx, seg in enumerate(batch):
@@ -259,9 +269,7 @@ class Charter:
                 if k > 1 and T_p > 1:
                     # seg_probs: [T,C] -> [1,C,T] for pooling
                     p_ct = seg_probs.transpose(0, 1).unsqueeze(0)
-                    pooled = F.max_pool1d(
-                        p_ct, kernel_size=k, stride=1, padding=k // 2
-                    )
+                    pooled = F.max_pool1d(p_ct, kernel_size=k, stride=1, padding=k // 2)
                     # keep only local maxima
                     keep_mask = (p_ct >= pooled).squeeze(0).transpose(0, 1)  # [T,C]
                 else:
@@ -279,9 +287,7 @@ class Charter:
 
                 # Cymbal gating knobs
                 hf_gate = getattr(self.config, "cymbal_highfreq_ratio_gate", None)
-                hf_cut = float(
-                    getattr(self.config, "cymbal_highfreq_cutoff_mel", 0.7)
-                )
+                hf_cut = float(getattr(self.config, "cymbal_highfreq_cutoff_mel", 0.7))
 
                 for t in range(T_p):
                     p_t = seg_probs[t]  # [C]
@@ -290,9 +296,7 @@ class Charter:
                     act = (p_t >= thr_row) & km_t
 
                     # Map to frame center using kernel size and stride (for gates that look at the input feature)
-                    frame_idx = (
-                        seg["start_frame"] + t * stride_frames + (patch // 2)
-                    )
+                    frame_idx = seg["start_frame"] + t * stride_frames + (patch // 2)
                     # Local frame index inside spectrogram
                     local_idx = min(
                         seg_arr.shape[1] - 1, t * stride_frames + (patch // 2)
@@ -307,18 +311,16 @@ class Charter:
                     # Optional onset gate: require onset probability >= threshold
                     if onset_probs is not None:
                         try:
-                            if float(onset_probs[b_idx, t].item()) < float(
-                                onset_thr
-                            ):
+                            if float(onset_probs[b_idx, t].item()) < float(onset_thr):
                                 continue
                         except Exception:
                             pass
 
                     # Optional activity gate: if nothing is strong enough, skip whole tick
-                    gate = getattr(self.config, "activity_gate", None)
-                    if gate is not None:
-                        if float(p_t.max().item()) < float(gate):
-                            continue
+                    # gate = getattr(self.config, "activity_gate", None)
+                    # if gate is not None:
+                    #     if float(p_t.max().item()) < float(gate):
+                    #         continue
 
                     # Optional spectral gate to suppress cymbal FPs caused by pitched trills, vocals, etc.
                     # Require a minimum fraction of energy in the high-mel bands around this time.
@@ -341,86 +343,60 @@ class Charter:
                         except Exception:
                             pass
 
-                    # Pairwise arbitration per color (prefer higher prob when both fire)
-                    # Yellow: tom '2' vs hat '67'
-                    y_tom = class_idx.get("2")
-                    y_cym = class_idx.get("67")
-                    b_tom = class_idx.get("3")
-                    b_cym = class_idx.get("68")
-                    g_tom = class_idx.get("4")
-                    g_cym = class_idx.get("66")
+                    # # Pairwise arbitration per color (prefer higher prob when both fire)
+                    # # Yellow: tom '2' vs hat '67'
+                    # y_tom = class_idx.get("2")
+                    # y_cym = class_idx.get("67")
+                    # b_tom = class_idx.get("3")
+                    # b_cym = class_idx.get("68")
+                    # g_tom = class_idx.get("4")
+                    # g_cym = class_idx.get("66")
 
-                    margin = float(getattr(self.config, "cymbal_margin", 0.1))
-                    tom_margin = float(
-                        getattr(self.config, "tom_over_cymbal_margin", 0.35)
-                    )
+                    # margin = float(getattr(self.config, "cymbal_margin", 0.1))
+                    # tom_margin = float(
+                    #     getattr(self.config, "tom_over_cymbal_margin", 0.35)
+                    # )
 
-                    def choose_pair(
-                        tom_i: int | None, cym_i: int | None
-                    ) -> tuple[int, int]:
-                        if tom_i is None or cym_i is None:
-                            # Fallback: nothing to arbitrate
-                            return (
-                                int(act[tom_i].item()) if tom_i is not None else 0,
-                                int(act[cym_i].item()) if cym_i is not None else 0,
-                            )
-                        a_t = bool(act[tom_i].item())
-                        a_c = bool(act[cym_i].item())
-                        if a_t and a_c:
-                            pt = float(p_t[tom_i].item())
-                            pc = float(p_t[cym_i].item())
-                            # Selection policy:
-                            # - If cymbal within margin of tom, choose cymbal
-                            # - Else require tom to exceed cymbal by a larger margin to choose tom
-                            if (pc + margin) >= pt:
-                                return (0, 1)
-                            if pt >= (pc + tom_margin):
-                                return (1, 0)
-                            # Otherwise still prefer cymbal
-                            return (0, 1)
-                        return (int(a_t), int(a_c))
+                    # def choose_pair(
+                    #     tom_i: int | None, cym_i: int | None
+                    # ) -> tuple[int, int]:
+                    #     if tom_i is None or cym_i is None:
+                    #         # Fallback: nothing to arbitrate
+                    #         return (
+                    #             int(act[tom_i].item()) if tom_i is not None else 0,
+                    #             int(act[cym_i].item()) if cym_i is not None else 0,
+                    #         )
+                    #     a_t = bool(act[tom_i].item())
+                    #     a_c = bool(act[cym_i].item())
+                    #     if a_t and a_c:
+                    #         pt = float(p_t[tom_i].item())
+                    #         pc = float(p_t[cym_i].item())
+                    #         # Selection policy:
+                    #         # - If cymbal within margin of tom, choose cymbal
+                    #         # - Else require tom to exceed cymbal by a larger margin to choose tom
+                    #         if (pc + margin) >= pt:
+                    #             return (0, 1)
+                    #         if pt >= (pc + tom_margin):
+                    #             return (1, 0)
+                    #         # Otherwise still prefer cymbal
+                    #         return (0, 1)
+                    #     return (int(a_t), int(a_c))
 
-                    y_t, y_c = choose_pair(y_tom, y_cym)
-                    b_t, b_c = choose_pair(b_tom, b_cym)
-                    g_t, g_c = choose_pair(g_tom, g_cym)
+                    # y_t, y_c = choose_pair(y_tom, y_cym)
+                    # b_t, b_c = choose_pair(b_tom, b_cym)
+                    # g_t, g_c = choose_pair(g_tom, g_cym)
 
                     # If nothing active on any class, skip
-                    i0 = class_idx.get("0")
-                    i1 = class_idx.get("1")
-                    has_kick = bool(act[i0].item()) if i0 is not None else False
-                    has_snare = bool(act[i1].item()) if i1 is not None else False
-                    if not (
-                        has_kick
-                        or has_snare
-                        or (y_t or y_c or b_t or b_c or g_t or g_c)
+                    if not any(
+                        bool(act[class_idx.get(c)].item())
+                        for c in classes
+                        if class_idx.get(c) is not None
                     ):
                         continue
 
-                    # Apply per-class time offsets by shifting sample position
-                    # Use the largest offset among active classes to avoid splitting events
+                    # Apply per-class time offsets - DISABLED (no time offsets)
                     add_ms = 0.0
-                    if isinstance(class_time_offsets_ms, (list, tuple)) and len(
-                        class_time_offsets_ms
-                    ) == len(classes_list):
-                        # Determine active classes indices
-                        active_indices: list[int] = []
-                        for name, idx_i in [
-                            ("0", class_idx.get("0")),
-                            ("1", class_idx.get("1")),
-                            ("2", class_idx.get("2")),
-                            ("3", class_idx.get("3")),
-                            ("4", class_idx.get("4")),
-                            ("66", class_idx.get("66")),
-                            ("67", class_idx.get("67")),
-                            ("68", class_idx.get("68")),
-                        ]:
-                            if idx_i is not None and bool(act[idx_i].item()):
-                                active_indices.append(idx_i)
-                        if active_indices:
-                            add_ms = -max(
-                                float(class_time_offsets_ms[i])
-                                for i in active_indices
-                            )
+
                     peak_sample = map_patch_to_sample(
                         start_frame=seg["start_frame"],
                         patch_idx=t,
@@ -432,51 +408,41 @@ class Charter:
                         sample_rate=self.config.sample_rate,
                     )
 
+                    # Generate raw predictions for ALL classes (no arbitration)
                     row: PredictionRow = {
                         "peak_sample": peak_sample,
-                        "0": int(act[i0].item()) if i0 is not None else 0,
-                        "1": int(act[i1].item()) if i1 is not None else 0,
-                        "2": y_t,
-                        "3": b_t,
-                        "4": g_t,
-                        "66": g_c,
-                        "67": y_c,
-                        "68": b_c,
+                        "0": int(act[class_idx.get("0")].item())
+                        if class_idx.get("0") is not None
+                        else 0,
+                        "1": int(act[class_idx.get("1")].item())
+                        if class_idx.get("1") is not None
+                        else 0,
+                        "2": int(act[class_idx.get("2")].item())
+                        if class_idx.get("2") is not None
+                        else 0,
+                        "3": int(act[class_idx.get("3")].item())
+                        if class_idx.get("3") is not None
+                        else 0,
+                        "4": int(act[class_idx.get("4")].item())
+                        if class_idx.get("4") is not None
+                        else 0,
+                        "66": int(act[class_idx.get("66")].item())
+                        if class_idx.get("66") is not None
+                        else 0,
+                        "67": int(act[class_idx.get("67")].item())
+                        if class_idx.get("67") is not None
+                        else 0,
+                        "68": int(act[class_idx.get("68")].item())
+                        if class_idx.get("68") is not None
+                        else 0,
                     }
 
-                    # Optional min spacing per class (skip if within limit)
-                    def _ms_from_sample(samp: int) -> float:
-                        return float(samp) * 1000.0 / float(self.config.sample_rate)
-
-                    now_ms = _ms_from_sample(peak_sample)
-                    keep = True
-                    for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
-                        if row.get(lab, 0) != 1:
-                            continue
-                        last_ms = last_time_ms.get(lab)
-                        limit = (
-                            min_map.get(lab, min_default)
-                            if min_default is not None
-                            else min_map.get(lab)
-                        )
-                        if (
-                            last_ms is not None
-                            and limit is not None
-                            and (now_ms - last_ms) < float(limit)
-                        ):
-                            keep = False
-                            break
-                    if not keep:
-                        continue
-                    for lab in ["0", "1", "2", "3", "4", "66", "67", "68"]:
-                        if row.get(lab, 0) == 1:
-                            last_time_ms[lab] = now_ms
+                    # MIN SPACING DISABLED - add all predictions
                     rows.append(row)
 
         if rows:
             pred_frames = [
-                int((r["peak_sample"] - self.last_offset_samples) // hop)
-                for r in rows
+                int((r["peak_sample"] - self.last_offset_samples) // hop) for r in rows
             ]
             shift_ms = estimate_global_shift(
                 energy_envelope,

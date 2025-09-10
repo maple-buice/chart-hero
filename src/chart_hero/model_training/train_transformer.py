@@ -81,6 +81,14 @@ def main() -> None:
                     current_files = list(train_split.glob("*_label.npy"))
                     if len(current_files) != payload.get("num_files"):
                         return None
+                    # Validate that pos_weight_cap hasn't changed (invalidate cache if it has)
+                    cached_cap = payload.get("pos_weight_cap")
+                    current_cap = getattr(config, "pos_weight_cap", None)
+                    if cached_cap != current_cap:
+                        logger.info(
+                            f"pos_weight_cap changed from {cached_cap} to {current_cap}, recomputing pos_weight"
+                        )
+                        return None
                     pw = payload.get("pos_weight")
                     if (
                         isinstance(pw, torch.Tensor)
@@ -103,6 +111,7 @@ def main() -> None:
                             "data_dir": str(Path(config.data_dir).resolve()),
                             "num_files": num_files,
                             "pos_weight": pw.detach().cpu(),
+                            "pos_weight_cap": getattr(config, "pos_weight_cap", None),
                         },
                         cache_path,
                     )

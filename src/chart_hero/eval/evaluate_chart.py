@@ -176,44 +176,44 @@ def predict_events(
 ) -> List[Event]:
     config = get_config("local")
 
-    # Apply balanced inference defaults if not provided via CLI
-    if getattr(config, "activity_gate", None) is None:
-        config.activity_gate = 0.50
+    # DISABLED: Apply balanced inference defaults if not provided via CLI
+    # if getattr(config, "activity_gate", None) is None:
+    #     config.activity_gate = 0.50
 
-    # Prefer slightly stronger NMS for stability
-    config.event_nms_kernel_patches = int(
-        max(1, getattr(config, "event_nms_kernel_patches", 3))
-    )
+    # DISABLED: Prefer slightly stronger NMS for stability
+    # config.event_nms_kernel_patches = int(
+    #     max(1, getattr(config, "event_nms_kernel_patches", 3))
+    # )
 
-    if config.event_nms_kernel_patches < 9:
-        config.event_nms_kernel_patches = 9
+    # if config.event_nms_kernel_patches < 9:
+    #     config.event_nms_kernel_patches = 9
 
-    if getattr(config, "cymbal_margin", None) is None:
-        config.cymbal_margin = 0.30
+    # DISABLED: if getattr(config, "cymbal_margin", None) is None:
+    #     config.cymbal_margin = 0.30
 
-    # Make tom win require clearly higher prob than cymbal
-    if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
-        config.tom_over_cymbal_margin = 0.45
+    # DISABLED: Make tom win require clearly higher prob than cymbal
+    # if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
+    #     config.tom_over_cymbal_margin = 0.45
 
-    # Mild per-class min spacing by default (unless provided)
-    base_map = getattr(config, "min_spacing_ms_map", None) or {}
-    mild_map = {
-        "0": 28.0,
-        "1": 26.0,
-        "2": 24.0,
-        "3": 26.0,
-        "4": 28.0,
-        "66": 22.0,
-        "67": 24.0,
-        "68": 24.0,
-    }
-    for k, v in mild_map.items():
-        if k not in base_map:
-            base_map[k] = v
-    config.min_spacing_ms_map = base_map
+    # DISABLED: Mild per-class min spacing by default (unless provided)
+    # base_map = getattr(config, "min_spacing_ms_map", None) or {}
+    # mild_map = {
+    #     "0": 28.0,
+    #     "1": 26.0,
+    #     "2": 24.0,
+    #     "3": 26.0,
+    #     "4": 28.0,
+    #     "66": 22.0,
+    #     "67": 24.0,
+    #     "68": 24.0,
+    # }
+    # for k, v in mild_map.items():
+    #     if k not in base_map:
+    #         base_map[k] = v
+    # config.min_spacing_ms_map = base_map
 
-    if getattr(config, "min_spacing_ms_default", None) is None:
-        config.min_spacing_ms_default = 22.0
+    # DISABLED: if getattr(config, "min_spacing_ms_default", None) is None:
+    #     config.min_spacing_ms_default = 22.0
 
     # Per-class thresholds default only if no checkpoint calibration file
     if getattr(config, "class_thresholds", None) is None and class_thresholds is None:
