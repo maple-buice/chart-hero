@@ -307,10 +307,11 @@ class Charter:
                     weight = self._window_weight(
                         int(seg["start_frame"]), int(seg["end_frame"]), int(frame_idx)
                     )
-                    p_t = seg_probs[t] * weight  # [C]
+                    raw_p_t = seg_probs[t]  # [C]
+                    p_t = raw_p_t * weight
                     km_t = keep_mask[t]
-                    # Binary activations by threshold
-                    act = (p_t >= thr_row) & km_t
+                    # Binary activations by threshold before weighting
+                    act = (raw_p_t >= thr_row) & km_t
 
                     # Local frame index inside spectrogram
                     local_idx = min(
@@ -326,7 +327,7 @@ class Charter:
                     # Optional onset gate: require onset probability >= threshold
                     if onset_probs is not None:
                         try:
-                            if float(onset_probs[b_idx, t].item() * weight) < float(onset_thr):
+                            if float(onset_probs[b_idx, t].item()) < float(onset_thr):
                                 continue
                         except Exception:
                             pass

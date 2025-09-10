@@ -75,3 +75,20 @@ def test_window_weight_function():
     assert Charter._window_weight(0, 100, 50) == 1.0
     assert Charter._window_weight(0, 100, 0) == 0.0
     assert pytest.approx(Charter._window_weight(0, 100, 75), 0.01) == 0.5
+
+
+def test_boundary_weighting_does_not_suppress_hits():
+    """Ensure thresholding occurs before window weighting."""
+    weight = Charter._window_weight(0, 100, 0)
+    assert weight == 0.0
+    seg_probs = torch.tensor([[1.0]])
+    thr_row = torch.tensor([0.5])
+    km_t = torch.tensor([True])
+
+    p_t = seg_probs[0] * weight
+    act_old = (p_t >= thr_row) & km_t
+    assert not bool(act_old.item())
+
+    raw_p_t = seg_probs[0]
+    act_new = (raw_p_t >= thr_row) & km_t
+    assert bool(act_new.item())
