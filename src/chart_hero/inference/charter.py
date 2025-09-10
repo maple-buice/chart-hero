@@ -12,8 +12,11 @@ from numpy.typing import NDArray
 from chart_hero.model_training.transformer_config import get_drum_hits
 
 from .model_utils import load_model_from_checkpoint, select_device
-from .segment_utils import detect_leading_silence_from_segments
-from .inference_utils import map_patch_to_sample
+from .segment_utils import (
+    detect_leading_silence_from_segments,
+    frame_energies_from_segments,
+)
+from .inference_utils import estimate_global_shift, map_patch_to_sample
 from .types import PredictionRow, Segment, TransformerConfig
 
 
@@ -78,6 +81,8 @@ class Charter:
         self.model = load_model_from_checkpoint(
             self.config, model_path, max_time_patches=max_time_patches
         )
+        self.last_offset_samples: int = 0
+        self.last_shift_ms: float = 0.0
         # Try to load calibrated per-class thresholds saved during training
         # Only if not already provided on the config
         if not getattr(self.config, "class_thresholds", None):
@@ -174,15 +179,20 @@ class Charter:
             )
 
         # Detect and trim leading silence so early frames do not yield spurious notes
-        silence_thr_db = float(getattr(self.config, "leading_silence_db", -60.0))
-        # Convert dB threshold to a positive magnitude for the spectrogram scale
-        silence_thr = 10 ** (silence_thr_db / 20.0)
-        offset_frames = detect_leading_silence_from_segments(norm_segments, silence_thr)
+        silence_thr_db = float(getattr(self.config, "leading_silence_db", -40.0))
+        min_sil_ms = float(getattr(self.config, "leading_silence_min_ms", 250.0))
+        min_sil_frames = int(round(min_sil_ms * self.config.sample_rate / (hop * 1000.0)))
+        offset_frames = detect_leading_silence_from_segments(
+            norm_segments, silence_thr_db, min_silence_frames=min_sil_frames
+        )
         offset_samples = offset_frames * hop
+        self.last_offset_samples = offset_samples
         if offset_frames > 0:
             for seg in norm_segments:
                 seg["start_frame"] = max(0, int(seg["start_frame"]) - offset_frames)
                 seg["end_frame"] = max(0, int(seg["end_frame"]) - offset_frames)
+
+        energy_envelope = frame_energies_from_segments(norm_segments)
 
         for i in range(0, len(norm_segments), batch_size):
             batch = norm_segments[i : i + batch_size]
@@ -462,6 +472,25 @@ class Charter:
                         if row.get(lab, 0) == 1:
                             last_time_ms[lab] = now_ms
                     rows.append(row)
+
+        if rows:
+            pred_frames = [
+                int((r["peak_sample"] - self.last_offset_samples) // hop)
+                for r in rows
+            ]
+            shift_ms = estimate_global_shift(
+                energy_envelope,
+                pred_frames,
+                hop,
+                self.config.sample_rate,
+                max_shift_ms=float(getattr(self.config, "global_shift_max_ms", 200.0)),
+            )
+            self.last_shift_ms = float(shift_ms)
+            if shift_ms:
+                shift_samples = int(round(shift_ms * self.config.sample_rate / 1000.0))
+                for r in rows:
+                    r["peak_sample"] = r["peak_sample"] - shift_samples
+                rows = [r for r in rows if r["peak_sample"] >= 0]
 
         if not rows:
             return pd.DataFrame(columns=["peak_sample"] + classes)

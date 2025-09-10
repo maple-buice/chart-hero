@@ -27,3 +27,6 @@ class TransformerConfig(Protocol):
     class_thresholds: list[float] | None
     device: str
     inference_batch_size: int
+    leading_silence_db: float
+    leading_silence_min_ms: float
+    global_shift_max_ms: float

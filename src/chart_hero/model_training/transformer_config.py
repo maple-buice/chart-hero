@@ -162,6 +162,9 @@ class BaseConfig:
 
     # Inference settings
     inference_batch_size: int = 4
+    leading_silence_db: float = -40.0
+    leading_silence_min_ms: float = 250.0
+    global_shift_max_ms: float = 200.0
 
     # Data
     train_batch_size: int = 32

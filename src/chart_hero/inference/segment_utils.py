@@ -8,23 +8,9 @@ import torch
 from .types import Segment
 
 
-def detect_leading_silence_from_segments(
-    segments: Sequence[Segment], threshold: float = 1e-3
-) -> int:
-    """Return the number of silent frames preceding the first audible frame.
-
-    Frame energy is measured as the mean spectrogram magnitude per frame.  If
-    the spectrogram is in log scale (e.g., dB), it is converted back to a
-    positive magnitude before computing energy.  The first frame whose energy is
-    greater than or equal to ``threshold`` is considered the start of audible
-    content.  The returned index is in frame units relative to the beginning of
-    the audio.  If no frame crosses the threshold, the total number of frames is
-    returned.
-    """
-    if not segments:
-        return 0
-
-    last_end = 0
+def frame_energies_from_segments(segments: Sequence[Segment]) -> np.ndarray:
+    """Return concatenated mean energies for each frame across segments."""
+    energies: list[np.ndarray] = []
     for seg in segments:
         spec = seg["spec"]
         if isinstance(spec, torch.Tensor):
@@ -32,17 +18,35 @@ def detect_leading_silence_from_segments(
         else:
             spec_arr = np.asarray(spec)
         if spec_arr.ndim != 2:
-            last_end = int(seg.get("end_frame", last_end))
             continue
-
         if np.any(spec_arr < 0):
             spec_arr = np.power(10.0, spec_arr / 20.0)
+        energies.append(spec_arr.mean(axis=0))
+    if not energies:
+        return np.array([], dtype=float)
+    return np.concatenate(energies)
 
-        frame_energies = spec_arr.mean(axis=0)
-        idx = np.nonzero(frame_energies >= threshold)[0]
-        if idx.size > 0:
-            return int(seg["start_frame"]) + int(idx[0])
 
-        last_end = int(seg.get("end_frame", seg["start_frame"] + frame_energies.size))
+def detect_leading_silence_from_segments(
+    segments: Sequence[Segment],
+    threshold_db: float = -60.0,
+    min_silence_frames: int = 0,
+) -> int:
+    """Return number of silent frames before the first audible frame.
 
-    return last_end
+    ``threshold_db`` is measured relative to the maximum frame energy.
+    """
+    energies = frame_energies_from_segments(segments)
+    if energies.size == 0:
+        return 0
+    max_e = float(energies.max())
+    if max_e <= 0:
+        return 0
+    thr = max_e * (10.0 ** (threshold_db / 20.0))
+    idx = np.nonzero(energies >= thr)[0]
+    if idx.size == 0:
+        return int(energies.size)
+    first = int(idx[0])
+    if first < int(min_silence_frames):
+        return 0
+    return first

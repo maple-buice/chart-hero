@@ -23,7 +23,6 @@ import numpy as np
 from chart_hero.eval.evaluate_chart import Event, load_truth_from_mid
 from chart_hero.inference.charter import Charter
 from chart_hero.inference.input_transform import audio_to_tensors
-from chart_hero.inference.segment_utils import detect_leading_silence_from_segments
 from chart_hero.model_training.transformer_config import get_config, get_drum_hits
 
 
@@ -142,14 +141,10 @@ def main() -> None:
 
     for mid, aud in songs:
         segs = audio_to_tensors(str(aud), config)
-        # Estimate leading silence applied during inference
-        silence_thr_db = float(getattr(config, "leading_silence_db", -60.0))
-        silence_thr = 10 ** (silence_thr_db / 20.0)
-        lead_frames = detect_leading_silence_from_segments(segs, silence_thr)
-        lead_ms = lead_frames * config.hop_length * 1000.0 / sr
-
         truth = load_truth_from_mid(mid)
         df = charter.predict(segs)
+        lead_ms = charter.last_offset_samples * 1000.0 / sr
+        applied_shift_ms = charter.last_shift_ms
         preds = _df_to_events(df, sr)
         off = _match_offsets(preds, truth, float(args.tol_ms) / 1000.0)
         for c in classes:
@@ -180,6 +175,7 @@ def main() -> None:
                 {
                     "song": mid.parent.name,
                     "leading_ms": lead_ms,
+                    "applied_shift_ms": applied_shift_ms,
                     "first_truth_ms": truth_times[0] * 1000.0,
                     "first_pred_ms": pred_times[0] * 1000.0,
                     "first_diff_ms": earliest,
@@ -236,11 +232,12 @@ def main() -> None:
         print("\nPer-song diagnostics:")
         for row in song_rows:
             print(
-                "  {song}: lead={lead:.1f}ms first_truth={truth:.1f}ms "
+                "  {song}: lead={lead:.1f}ms shift={shift:.1f}ms first_truth={truth:.1f}ms "
                 "first_pred={pred:.1f}ms diff={diff:.1f}ms "
                 "cc_shift={cc:.1f}ms early_preds={cnt}".format(
                     song=row["song"],
                     lead=row["leading_ms"],
+                    shift=row["applied_shift_ms"],
                     truth=row["first_truth_ms"],
                     pred=row["first_pred_ms"],
                     diff=row["first_diff_ms"],
