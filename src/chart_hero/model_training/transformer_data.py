@@ -6,8 +6,9 @@ Handles patch-based spectrogram processing and efficient data loading.
 import logging
 import math
 import os
+import multiprocessing as mp
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Any, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -223,10 +224,12 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         data_files: List[Tuple[str, str]],
         config: BaseConfig,
         mode: str = "train",
+        shared_epoch: Any | None = None,
     ) -> None:
         self.data_files = data_files
         self.config = config
         self.mode = mode
+        self.shared_epoch = shared_epoch
 
         max_seq_len = int(getattr(self.config, "max_seq_len", 0) or 0)
         max_audio_frames = int(
@@ -303,13 +306,22 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             self.epoch = int(epoch)
             self._build_index()
 
+    def _maybe_refresh_epoch(self) -> None:
+        """Rebuild index map if the shared epoch has advanced."""
+        if self.shared_epoch is not None:
+            current = int(self.shared_epoch.value)
+            if current != self.epoch:
+                self.set_epoch(current)
+
     # ------------------------------------------------------------------
     # Dataset protocol
     # ------------------------------------------------------------------
     def __len__(self) -> int:
+        self._maybe_refresh_epoch()
         return len(self._index_map)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        self._maybe_refresh_epoch()
         song_idx, start = self._index_map[idx]
         spec_file, label_file = self.data_files[song_idx]
 
@@ -422,6 +434,7 @@ def create_data_loaders(
     data_dir: str,
     batch_size: Optional[int] = None,
     with_lengths: bool = False,
+    shared_epoch: Any | None = None,
 ) -> Tuple[
     DataLoader[Tuple[torch.Tensor, torch.Tensor]],
     DataLoader[Tuple[torch.Tensor, torch.Tensor]],
@@ -474,7 +487,7 @@ def create_data_loaders(
 
     # Create datasets
     train_dataset = SlidingWindowDataset(
-        data_files["train"], config, mode="train"
+        data_files["train"], config, mode="train", shared_epoch=shared_epoch
     )
     val_dataset = SlidingWindowDataset(data_files["val"], config, mode="val")
     test_dataset = SlidingWindowDataset(data_files["test"], config, mode="test")
