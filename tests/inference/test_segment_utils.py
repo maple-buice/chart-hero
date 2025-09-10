@@ -25,7 +25,7 @@ def test_detect_leading_silence():
     }
 
     frames = detect_leading_silence_from_segments(
-        [seg_silence, seg_sound], threshold=0.1
+        [seg_silence, seg_sound], threshold_db=-20.0
     )
     seconds = frames * config.hop_length / config.sample_rate
     assert seconds == pytest.approx(5.0, abs=0.1)
