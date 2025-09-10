@@ -10,6 +10,7 @@ matched offsets for deeper analysis.
 Example:
   python scripts/analyze_offsets.py --model models/local_transformer_models/best_model.ckpt
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,7 +63,9 @@ def _df_to_events(df, sr: int) -> List[Event]:
     return ev
 
 
-def _match_offsets(pred: List[Event], true: List[Event], tol_s: float) -> Dict[str, List[float]]:
+def _match_offsets(
+    pred: List[Event], true: List[Event], tol_s: float
+) -> Dict[str, List[float]]:
     """Greedy match events and return per-class offsets (pred - true in sec)."""
     classes = get_drum_hits()
     offsets: Dict[str, List[float]] = {c: [] for c in classes}
@@ -159,7 +162,9 @@ def main() -> None:
                 bad_earliest += 1
             first_true = truth_times[0]
             early_count = sum(1 for p in pred_times if p < first_true)
-            early_preds.extend([(p - first_true) * 1000.0 for p in pred_times if p < first_true])
+            early_preds.extend(
+                [(p - first_true) * 1000.0 for p in pred_times if p < first_true]
+            )
 
             diffs = [(p - t) * 1000.0 for p in pred_times for t in truth_times]
             cc_shift = float("nan")
@@ -218,7 +223,7 @@ def main() -> None:
             f"  songs earlier than -{float(args.early_tol_ms):.1f} ms: {bad_earliest}/{arr.size}"
         )
     if early_preds:
-        bins = np.arange(-500.0, 0.0 + 50.0, 50.0)
+        bins = np.arange(-30000.0, 0.0 + 500.0, 30000.0)
         hist, edges = np.histogram(np.array(early_preds, dtype=float), bins=bins)
         print("\nPredictions before first true note (histogram ms):")
         for count, start, end in zip(hist, edges[:-1], edges[1:]):

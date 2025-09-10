@@ -135,7 +135,6 @@ sweep-offsets:
 		$(PY) scripts/sweep_time_offsets.py \
 			--roots "$(DEV_SET_ROOT)" \
 			--model "$(INFER_MODEL)" \
-			--offsets -80,-40,-20,-10,0,10,20,40,80 \
 			--nms-k 9 \
 			--activity-gate 0.45 \
 			--patch-stride $(PATCH_STRIDE) \

@@ -175,20 +175,26 @@ def predict_events(
     cymbal_hf_cut: Optional[float] = None,
 ) -> List[Event]:
     config = get_config("local")
+
     # Apply balanced inference defaults if not provided via CLI
     if getattr(config, "activity_gate", None) is None:
         config.activity_gate = 0.50
+
     # Prefer slightly stronger NMS for stability
     config.event_nms_kernel_patches = int(
         max(1, getattr(config, "event_nms_kernel_patches", 3))
     )
+
     if config.event_nms_kernel_patches < 9:
         config.event_nms_kernel_patches = 9
+
     if getattr(config, "cymbal_margin", None) is None:
         config.cymbal_margin = 0.30
+
     # Make tom win require clearly higher prob than cymbal
     if float(getattr(config, "tom_over_cymbal_margin", 0.35)) < 0.45:
         config.tom_over_cymbal_margin = 0.45
+
     # Mild per-class min spacing by default (unless provided)
     base_map = getattr(config, "min_spacing_ms_map", None) or {}
     mild_map = {
@@ -205,8 +211,10 @@ def predict_events(
         if k not in base_map:
             base_map[k] = v
     config.min_spacing_ms_map = base_map
+
     if getattr(config, "min_spacing_ms_default", None) is None:
         config.min_spacing_ms_default = 22.0
+
     # Per-class thresholds default only if no checkpoint calibration file
     if getattr(config, "class_thresholds", None) is None and class_thresholds is None:
         try:
@@ -229,9 +237,11 @@ def predict_events(
             config.class_thresholds = [
                 float(thr_map.get(c, config.prediction_threshold)) for c in classes
             ]
+
     # Do not force class_gains by default; keep None unless provided
     if patch_stride is not None and patch_stride > 0:
         config.patch_stride = int(patch_stride)
+
     # Optional tuning hooks
     if activity_gate is not None:
         config.activity_gate = float(activity_gate)
@@ -239,6 +249,7 @@ def predict_events(
         config.cymbal_margin = float(cymbal_margin)
     if nms_k is not None and nms_k > 0:
         config.event_nms_kernel_patches = int(nms_k)
+
     # Optional HF cymbal gate
     if cymbal_hf_gate is not None:
         config.cymbal_highfreq_ratio_gate = float(cymbal_hf_gate)
@@ -255,12 +266,15 @@ def predict_events(
                 tmp_mix.unlink()
             except OSError:
                 pass
+
     ch = Charter(config, model_path)
+
     # Optional threshold overrides after Charter init (which may load calibrated)
     if disable_calibrated:
         ch.config.class_thresholds = None
     if threshold is not None:
         ch.config.prediction_threshold = float(threshold)
+
     if class_thresholds is not None:
         # Only apply if same length as classes
         classes = get_drum_hits()
@@ -269,10 +283,12 @@ def predict_events(
                 float(x) if x == x else ch.config.prediction_threshold
                 for x in class_thresholds
             ]
+
     if class_gains is not None:
         classes = get_drum_hits()
         if len(class_gains) == len(classes):
             ch.config.class_gains = [float(max(0.0, g)) for g in class_gains]
+
     # Per-class thresholds via parsed mapping handled by caller by setting config.class_thresholds
     df = ch.predict(segments)
     sr = config.sample_rate
@@ -286,6 +302,41 @@ def predict_events(
             if int(hit) == 1:
                 ev.append(Event(t=sec, cls=cls))
     return ev
+
+
+def calculate_duration_comparison(
+    pred: List[Event], true: List[Event]
+) -> Dict[str, float]:
+    """Calculate and compare note duration spans between predicted and true events."""
+    if not pred:
+        pred_duration = 0.0
+        pred_first = pred_last = 0.0
+    else:
+        pred_times = [e.t for e in pred]
+        pred_first = min(pred_times)
+        pred_last = max(pred_times)
+        pred_duration = pred_last - pred_first
+
+    if not true:
+        true_duration = 0.0
+        true_first = true_last = 0.0
+    else:
+        true_times = [e.t for e in true]
+        true_first = min(true_times)
+        true_last = max(true_times)
+        true_duration = true_last - true_first
+
+    ratio = pred_duration / true_duration if true_duration > 0 else float("inf")
+
+    return {
+        "pred_first_note_s": pred_first,
+        "pred_last_note_s": pred_last,
+        "pred_duration_s": pred_duration,
+        "true_first_note_s": true_first,
+        "true_last_note_s": true_last,
+        "true_duration_s": true_duration,
+        "duration_ratio": ratio,
+    }
 
 
 def match_events(
@@ -662,9 +713,24 @@ def main() -> None:
         pred = shifted
     df, summary, ioi = match_events(pred, truth, tol_s=args.tol_ms / 1000.0)
 
+    # Calculate and print duration comparison
+    duration_stats = calculate_duration_comparison(pred, truth)
+    print("\nDuration Comparison:")
+    print(
+        f"True chart:       {duration_stats['true_first_note_s']:.2f}s to {duration_stats['true_last_note_s']:.2f}s (duration: {duration_stats['true_duration_s']:.2f}s)"
+    )
+    print(
+        f"Predicted chart:  {duration_stats['pred_first_note_s']:.2f}s to {duration_stats['pred_last_note_s']:.2f}s (duration: {duration_stats['pred_duration_s']:.2f}s)"
+    )
+    print(f"Duration ratio (pred/true): {duration_stats['duration_ratio']:.4f}")
+    if duration_stats["duration_ratio"] < 0.5:
+        print("  WARNING: Predicted notes are severely compressed in time!")
+    elif duration_stats["duration_ratio"] > 2.0:
+        print("  WARNING: Predicted notes are severely stretched in time!")
+
     # Print concise summary
     order = get_drum_hits()
-    print("class tp fp fn precision recall f1 off_mean_ms off_med_ms")
+    print("\nclass tp fp fn precision recall f1 off_mean_ms off_med_ms")
     for c in order:
         s = summary[c]
         print(

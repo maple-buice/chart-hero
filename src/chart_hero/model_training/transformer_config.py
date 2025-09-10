@@ -254,7 +254,11 @@ class BaseConfig:
 
 @dataclass
 class LocalConfig(BaseConfig):
-    """Configuration optimized for M1-Max MacBook Pro (64GB RAM, 1TB storage)."""
+    """High-resolution configuration optimized for M1-Max MacBook Pro (64GB RAM, 1TB storage).
+
+    Targets ~5.8 ms frame step with tighter event tolerance and focal loss.
+    Optimized for local development; reduce batch sizes if memory constrained.
+    """
 
     # Device settings
     device: str = "cpu"
@@ -266,10 +270,40 @@ class LocalConfig(BaseConfig):
     # Smaller model for memory efficiency
     num_heads: int = 4  # Changed from 6 to 4 for compatibility with hidden_size 256
 
-    # Memory optimization for 64GB RAM with MPS GPU
-    train_batch_size: int = 4  # Conservative default for MPS
-    val_batch_size: int = 8  # Conservative default for MPS
-    num_workers: int = 2  # Reduced for MPS stability
+    # Audio processing (higher temporal resolution)
+    n_fft: int = 1024  # ~46 ms window to reduce temporal smearing
+    hop_length: int = 128  # ~5.8 ms per frame @ 22.05 kHz
+
+    # Patching (increase temporal resolution of logits)
+    patch_size: Tuple[int, int] = (8, 16)
+    patch_stride: int = 1  # 1-frame stride for ~frame-level logits
+
+    # Training tolerances
+    event_tolerance_patches: int = 3
+    label_dilation_frames: int = 3
+
+    # Loss settings
+    use_focal_loss: bool = True
+    focal_alpha: float = 0.25
+    focal_gamma: float = 2.0
+
+    # Class imbalance handling
+    pos_weight_cap: float = 10.0  # cap auto pos_weight
+
+    # Default dataset paths for high-res npy shards
+    data_dir: str = "datasets/processed_highres"
+    audio_dir: str = "datasets/processed_highres"
+
+    # Sequence length can get large with stride=1; prefer shorter segments for stability
+    max_audio_length: float = 20.0
+
+    # Batching tuned down for the higher sequence length
+    train_batch_size: int = 10
+    val_batch_size: int = 12
+
+    # Improve dataloader stability locally
+    num_workers: int = 4
+    persistent_workers: bool = False
     pin_memory: bool = False  # MPS does not support pinned memory; avoid warnings
 
     # Training settings
@@ -282,9 +316,8 @@ class LocalConfig(BaseConfig):
     cache_dataset: bool = False  # Disable caching to save memory
     prefetch_factor: int = 2
 
-    # Conservative settings for local development
-    max_audio_length: float = 5.0  # Further reduced for memory efficiency
-    max_seq_len: int = 512  # Reduced from 768
+    # Conservative decode min spacing defaults (ms)
+    min_spacing_ms_map: dict[str, float] | None = None
 
     def __post_init__(self) -> None:
         """Select default device preferring MPS, then CUDA, otherwise CPU."""
@@ -294,6 +327,26 @@ class LocalConfig(BaseConfig):
             self.device = "mps"
         elif torch.cuda.is_available():
             self.device = "cuda"
+
+        # Set default min spacing for kick/snare if not provided
+        if self.min_spacing_ms_map is None:
+            self.min_spacing_ms_map = {"0": 30.0, "1": 30.0}
+
+        # Force MPS device if available; otherwise fall back to CPU and full precision
+        if self.device != "mps":
+            self.mixed_precision = False
+            self.precision = "32"
+            return
+        # Attempt a small bf16 tensor on MPS to verify support; fall back on failure
+        try:  # pragma: no cover - hardware dependent
+            torch.tensor(1.0, device="mps", dtype=torch.bfloat16)
+        except Exception:
+            warnings.warn(
+                "MPS bf16 mixed precision unsupported or unstable; falling back to full precision",
+                RuntimeWarning,
+            )
+            self.mixed_precision = False
+            self.precision = "32"
 
     @property
     def effective_batch_size(self) -> int:
@@ -338,77 +391,6 @@ class OvernightConfig(LocalConfig):  # Inherits from LocalConfig for MPS setting
 
     # You might want a specific model_dir suffix for overnight runs if not using experiment_tag for the main folder
     # model_dir: str = "models/local_transformer_models/overnight/"
-
-
-@dataclass
-class LocalHighResConfig(LocalConfig):
-    """High-resolution baseline config for drum transcription.
-
-    Targets ~5.8 ms frame step with tighter event tolerance and focal loss.
-    Optimized for local development; reduce batch sizes if memory constrained.
-    """
-
-    # Audio processing (higher temporal resolution)
-    n_fft: int = 1024  # ~46 ms window to reduce temporal smearing
-    hop_length: int = 128  # ~5.8 ms per frame @ 22.05 kHz
-
-    # Patching (increase temporal resolution of logits)
-    patch_size: Tuple[int, int] = (8, 16)
-    patch_stride: int = 1  # 1-frame stride for ~frame-level logits
-
-    # Training tolerances
-    event_tolerance_patches: int = 3
-    label_dilation_frames: int = 3
-
-    # Loss settings
-    use_focal_loss: bool = True
-    focal_alpha: float = 0.25
-    focal_gamma: float = 2.0
-
-    # Class imbalance handling
-    pos_weight_cap: float = 10.0  # cap auto pos_weight
-
-    # Default dataset paths for high-res npy shards
-    data_dir: str = "datasets/processed_highres"
-    audio_dir: str = "datasets/processed_highres"
-
-    # Sequence length can get large with stride=1; prefer shorter segments for stability
-    max_audio_length: float = 20.0
-
-    # Batching tuned down for the higher sequence length
-    train_batch_size: int = 10
-    val_batch_size: int = 12
-
-    # Improve dataloader stability locally
-    num_workers: int = 4
-    persistent_workers: bool = False
-    # Conservative decode min spacing defaults (ms)
-    min_spacing_ms_map: dict[str, float] | None = None
-
-    mixed_precision: bool = False
-    precision: str = "32"
-
-    def __post_init__(self) -> None:  # type: ignore[override]
-        super().__post_init__()
-        # Set default min spacing for kick/snare if not provided
-        if self.min_spacing_ms_map is None:
-            self.min_spacing_ms_map = {"0": 30.0, "1": 30.0}
-
-        # Force MPS device if available; otherwise fall back to CPU and full precision
-        if self.device != "mps":
-            self.mixed_precision = False
-            self.precision = "32"
-            return
-        # Attempt a small bf16 tensor on MPS to verify support; fall back on failure
-        try:  # pragma: no cover - hardware dependent
-            torch.tensor(1.0, device="mps", dtype=torch.bfloat16)
-        except Exception:
-            warnings.warn(
-                "MPS bf16 mixed precision unsupported or unstable; falling back to full precision",
-                RuntimeWarning,
-            )
-            self.mixed_precision = False
-            self.precision = "32"
 
 
 @dataclass
@@ -506,23 +488,11 @@ def get_config(
 
     config_type_lower = config_type.lower()
     if config_type_lower == "local":
-        cfg: BaseConfig = LocalConfig()
-    elif config_type_lower == "local_performance":
-        cfg = LocalPerformanceConfig()
-    elif config_type_lower == "local_max_performance":
-        cfg = LocalMaxPerformanceConfig()
+        cfg = LocalConfig()
     elif config_type_lower == "cloud":
         cfg = CloudConfig()
-    elif config_type_lower == "overnight_default":  # Added new config type
-        cfg = OvernightConfig()
-    elif config_type_lower == "local_highres":
-        cfg = LocalHighResConfig()
-    elif config_type_lower == "local_micro":
-        cfg = LocalMicroConfig()
     else:
-        raise ValueError(
-            f"Unknown config type: {config_type}. Use 'local', 'cloud', or 'overnight_default'."
-        )
+        raise ValueError(f"Unknown config type: {config_type}. Use 'local' or 'cloud'.")
 
     if max_audio_length is not None:
         cfg.max_audio_length = float(max_audio_length)

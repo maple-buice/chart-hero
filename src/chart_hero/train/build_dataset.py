@@ -547,7 +547,7 @@ def main() -> None:
     )
     ap.add_argument("--roots", type=str, nargs="+", default=["CloneHero/Songs"])
     ap.add_argument("--out-dir", type=str, default="datasets/processed_highres")
-    ap.add_argument("--config", type=str, default="local_highres")
+    ap.add_argument("--config", type=str, default="local")
     ap.add_argument("--max-files", type=int, default=None)
     ap.add_argument("--splits", type=float, nargs=3, default=[0.8, 0.1, 0.1])
     ap.add_argument(

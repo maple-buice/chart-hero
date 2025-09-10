@@ -29,7 +29,7 @@ def main() -> None:
         "-m",
         "chart_hero.model_training.train_transformer",
         "--config",
-        "local_highres",
+        "local",
     ]
     if parsed.data_dir is None:
         args += ["--data-dir", "datasets/processed_highres"]

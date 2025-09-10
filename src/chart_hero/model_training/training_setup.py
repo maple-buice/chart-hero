@@ -4,8 +4,8 @@ including argument parsing, configuration loading, and callback/logger setup.
 """
 
 import argparse
-import os
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -58,16 +58,7 @@ def setup_arg_parser() -> argparse.ArgumentParser:
         "--config",
         type=str,
         default="auto",
-        choices=[
-            "local",
-            "local_performance",
-            "local_max_performance",
-            "cloud",
-            "auto",
-            "overnight_default",
-            "local_highres",
-            "local_micro",
-        ],
+        choices=["local", "cloud"],
         help="Configuration to use",
     )
     parser.add_argument("--use-wandb", action="store_true", help="Enable W&B logging")

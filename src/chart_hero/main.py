@@ -13,24 +13,24 @@ from chart_hero.inference.artwork import generate_art
 from chart_hero.inference.charter import Charter, ChartGenerator
 from chart_hero.inference.input_transform import audio_to_tensors, get_yt_audio
 from chart_hero.inference.lyrics import (
-    get_synced_lyrics,
-    to_rb_tokens,
     Lyrics,
+    get_synced_lyrics,
     parse_lrc,
+    to_rb_tokens,
 )
 from chart_hero.inference.mid_export import write_notes_mid
 from chart_hero.inference.mid_vocals import Phrase as VoxPhrase
 from chart_hero.inference.mid_vocals import SyllableEvent as VoxSyllable
 from chart_hero.inference.packager import package_clonehero_song
 from chart_hero.inference.song_identifier import (
-    get_data_from_acousticbrainz,
-    identify_song as _identify_song,
-    search_musicbrainz_recording,
-    get_acousticbrainz_lowlevel_by_mbid,
     extract_bpm_from_acousticbrainz,
-    search_musicbrainz_recording_cached,
+    get_acousticbrainz_lowlevel_by_mbid,
     get_acousticbrainz_lowlevel_by_mbid_cached,
+    get_data_from_acousticbrainz,
+    search_musicbrainz_recording,
+    search_musicbrainz_recording_cached,
 )
+from chart_hero.inference.song_identifier import identify_song as _identify_song
 from chart_hero.inference.types import PredictionRow
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.utils.audio_io import get_duration, load_audio
@@ -206,11 +206,6 @@ def main() -> None:
         default=None,
         choices=[
             "local",
-            "local_performance",
-            "local_max_performance",
-            "overnight_default",
-            "local_highres",
-            "local_micro",
             "cloud",
         ],
         help="Model config to use for inference; if omitted, attempts to adapt to checkpoint",
@@ -656,6 +651,7 @@ def main() -> None:
         config.cymbal_highfreq_ratio_gate = float(args.cymbal_hf_gate)
     if args.cymbal_hf_cut is not None:
         config.cymbal_highfreq_cutoff_mel = float(args.cymbal_hf_cut)
+
     # Parse per-class thresholds and gains
     if args.class_thresholds:
         from chart_hero.model_training.transformer_config import get_drum_hits
@@ -691,10 +687,12 @@ def main() -> None:
         if mapping:
             classes = get_drum_hits()
             config.class_gains = [float(mapping.get(c, 1.0)) for c in classes]
+
     # Load per-class time offsets (ms) if provided
     if args.offsets_json:
         try:
             import json as _json
+
             from chart_hero.model_training.transformer_config import get_drum_hits
 
             with open(args.offsets_json, "r") as f:
@@ -711,6 +709,7 @@ def main() -> None:
                 config.class_time_offsets_ms = lst
         except Exception:
             pass
+
     spectrogram_segments = audio_to_tensors(f_path, config)
     if not spectrogram_segments:
         print("Could not process audio file.")

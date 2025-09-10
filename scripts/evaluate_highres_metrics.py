@@ -287,7 +287,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate IOI-binned metrics (high-res)")
     ap.add_argument("--songs-dir", type=str, nargs="+", default=["CloneHero/Songs"])
     ap.add_argument("--model-ckpt", type=str, required=True)
-    ap.add_argument("--config", type=str, default="local_highres")
+    ap.add_argument("--config", type=str, default="local")
     ap.add_argument("--tol-patches", type=int, default=3)
     ap.add_argument(
         "--difficulty",
