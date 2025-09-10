@@ -50,4 +50,5 @@ def test_charter_predict_offsets(monkeypatch):
     assert charter.last_offset_samples == offset_frames * config.hop_length
     assert not df.empty
     first = int(df.iloc[0]["peak_sample"])
-    assert first >= charter.last_offset_samples
+    shift_samples = int(round(charter.last_shift_ms * config.sample_rate / 1000.0))
+    assert first >= charter.last_offset_samples + shift_samples

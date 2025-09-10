@@ -489,7 +489,7 @@ class Charter:
             if shift_ms:
                 shift_samples = int(round(shift_ms * self.config.sample_rate / 1000.0))
                 for r in rows:
-                    r["peak_sample"] = r["peak_sample"] - shift_samples
+                    r["peak_sample"] = r["peak_sample"] + shift_samples
                 rows = [r for r in rows if r["peak_sample"] >= 0]
 
         if not rows:
