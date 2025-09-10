@@ -40,3 +40,17 @@ def test_audio_to_tensors(dummy_audio_file):
         config.max_audio_length * config.sample_rate / config.hop_length
     )
     assert spec.shape[1] == expected_time_frames
+
+
+def test_audio_to_tensors_overlap(dummy_audio_file):
+    config = get_config("local")
+    config.max_audio_length = 5.0
+    config.inference_overlap_ratio = 0.25
+    segments = audio_to_tensors(str(dummy_audio_file), config)
+    assert len(segments) >= 2
+    segment_length_frames = int(
+        config.max_audio_length * config.sample_rate / config.hop_length
+    )
+    stride = int(segment_length_frames * (1.0 - config.inference_overlap_ratio))
+    starts = [s["start_frame"] for s in segments]
+    assert starts[1] - starts[0] == stride
