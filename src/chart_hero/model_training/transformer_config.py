@@ -309,7 +309,7 @@ class LocalConfig(BaseConfig):
     pin_memory: bool = False  # MPS does not support pinned memory; avoid warnings
 
     # Training settings
-    learning_rate: float = 1e-5  # Reduced from 1e-4 to 1e-5 for stable fine-tuning
+    learning_rate: float = 1e-4  # Standard rate for training from scratch
     gradient_checkpointing: bool = True
     accumulate_grad_batches: int = (
         8  # Increased from 4 to maintain effective batch size
