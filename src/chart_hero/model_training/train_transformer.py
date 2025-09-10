@@ -12,7 +12,7 @@ from typing import Any
 import pytorch_lightning as pl
 import torch
 import torch.multiprocessing as mp
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.training_setup import (
@@ -246,6 +246,16 @@ def main() -> None:
             config.monitor = "train_f1"
             config.mode = "max"
         callbacks = setup_callbacks(config, use_logger=use_wandb)
+        # Ensure sliding-window datasets update window positions each epoch
+        class DatasetEpochCallback(Callback):
+            def __init__(self, dataset):
+                self.dataset = dataset
+
+            def on_train_epoch_start(self, trainer, pl_module):
+                if hasattr(self.dataset, "set_epoch"):
+                    self.dataset.set_epoch(trainer.current_epoch)
+
+        callbacks.append(DatasetEpochCallback(train_loader.dataset))
         trainer_kwargs["callbacks"] = callbacks
 
         # Log final checkpoint settings and model_dir

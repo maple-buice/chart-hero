@@ -215,6 +215,164 @@ class NpyDrumDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         return spectrogram, label_matrix
 
 
+class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
+    """Dataset that extracts sliding windows from full-song spectrograms."""
+
+    def __init__(
+        self,
+        data_files: List[Tuple[str, str]],
+        config: BaseConfig,
+        mode: str = "train",
+    ) -> None:
+        self.data_files = data_files
+        self.config = config
+        self.mode = mode
+
+        max_seq_len = int(getattr(self.config, "max_seq_len", 0) or 0)
+        max_audio_frames = int(
+            round(
+                (getattr(self.config, "max_audio_length", 0.0) or 0.0)
+                * self.config.sample_rate
+                / max(1, int(self.config.hop_length))
+            )
+        )
+        self.window_frames = max(max_seq_len, max_audio_frames)
+
+        self.windows_per_song = getattr(self.config, "windows_per_song", None)
+        self.window_jitter_ratio = float(
+            getattr(self.config, "window_jitter_ratio", 0.1)
+        )
+
+        # Pre-compute song lengths to avoid reopening label files repeatedly
+        self.song_lengths: List[int] = []
+        for _, lbl in self.data_files:
+            arr = np.load(lbl, allow_pickle=False, mmap_mode="r")
+            self.song_lengths.append(int(arr.shape[0]))
+
+        self.epoch = 0
+        self._index_map: List[Tuple[int, int]] = []  # (song_idx, start_frame)
+        self._build_index()
+        logger.info(
+            f"Created {mode} sliding-window dataset with {len(self._index_map)} windows."
+        )
+
+    # ------------------------------------------------------------------
+    # Index creation and epoch management
+    # ------------------------------------------------------------------
+    def _seed(self, song_idx: int, window_idx: int) -> int:
+        return (
+            hash((self.epoch, song_idx, window_idx)) & 0xFFFFFFFF
+        )  # deterministic 32-bit seed
+
+    def _build_index(self) -> None:
+        self._index_map = []
+        win = self.window_frames
+        for song_idx, total in enumerate(self.song_lengths):
+            if self.mode == "train":
+                n_windows = self.windows_per_song
+                if n_windows is None:
+                    n_windows = int(math.ceil(total / win))
+                n_windows = max(1, int(n_windows))
+                step = 0 if n_windows == 1 else (total - win) / (n_windows - 1)
+                rng = None
+                jitter_max = int(self.window_jitter_ratio * win)
+                for w in range(n_windows):
+                    base = int(round(w * step))
+                    if rng is None:
+                        rng = np.random.default_rng(self._seed(song_idx, w))
+                    jitter = 0
+                    if jitter_max > 0:
+                        jitter = int(rng.integers(-jitter_max, jitter_max + 1))
+                    start = base + jitter
+                    start = max(0, min(start, max(0, total - win)))
+                    self._index_map.append((song_idx, start))
+            else:
+                stride = max(1, win // 2)
+                starts = list(range(0, max(total - win, 0) + 1, stride))
+                if not starts:
+                    starts = [0]
+                last_start = max(0, total - win)
+                if starts[-1] != last_start:
+                    starts.append(last_start)
+                for s in starts:
+                    self._index_map.append((song_idx, int(s)))
+
+    def set_epoch(self, epoch: int) -> None:
+        """Update epoch-dependent window jitter for training."""
+        if self.mode == "train":
+            self.epoch = int(epoch)
+            self._build_index()
+
+    # ------------------------------------------------------------------
+    # Dataset protocol
+    # ------------------------------------------------------------------
+    def __len__(self) -> int:
+        return len(self._index_map)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        song_idx, start = self._index_map[idx]
+        spec_file, label_file = self.data_files[song_idx]
+
+        spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
+        label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
+
+        end = start + self.window_frames
+        spectrogram_np = spectrogram_np[:, start:end]
+        label_np = label_np[start:end, :]
+
+        spectrogram_np = np.array(spectrogram_np, dtype=np.float32, copy=True)
+        label_np = np.array(label_np, dtype=np.float32, copy=True)
+
+        spectrogram = torch.from_numpy(spectrogram_np)
+        label_matrix = torch.from_numpy(label_np)
+
+        spectrogram = torch.nan_to_num(spectrogram, nan=0.0, posinf=0.0, neginf=0.0)
+        label_matrix = torch.nan_to_num(label_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if spectrogram.dim() == 2:
+            spectrogram = spectrogram.unsqueeze(0)
+
+        if getattr(self.config, "normalize_spectrograms", False):
+            mean = spectrogram.mean(dim=(1, 2), keepdim=True)
+            std = spectrogram.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            spectrogram = (spectrogram - mean) / std
+
+        if self.mode == "train" and self.config.enable_spec_augmentation:
+            spec = spectrogram.squeeze(0)
+            spec = augment_spectrogram_time_masking(
+                spec,
+                num_masks=self.config.spec_aug_num_time_masks,
+                max_mask_percentage=self.config.spec_aug_max_time_mask_percentage,
+            )
+            spec = augment_spectrogram_frequency_masking(
+                spec,
+                num_masks=self.config.spec_aug_num_freq_masks,
+                max_mask_percentage=self.config.spec_aug_max_freq_mask_percentage,
+            )
+            spectrogram = spec.unsqueeze(0)
+
+        if self.mode == "train" and getattr(
+            self.config, "enable_time_shift_augmentation", False
+        ):
+            if torch.rand(1).item() < getattr(self.config, "time_shift_prob", 0.0):
+                max_pct = getattr(self.config, "time_shift_max_percentage", 0.1)
+                T = spectrogram.shape[-1]
+                max_shift = max(1, int(max_pct * T))
+                shift = int(
+                    torch.randint(low=-max_shift, high=max_shift + 1, size=(1,)).item()
+                )
+                if shift != 0:
+                    spectrogram = torch.roll(spectrogram, shifts=shift, dims=-1)
+                    label_matrix = torch.roll(label_matrix, shifts=shift, dims=0)
+
+        return spectrogram, label_matrix
+
+    # Expose window indices for testing/analysis
+    @property
+    def window_indices(self) -> List[Tuple[int, int]]:
+        return list(self._index_map)
+
+
 class BucketBatchSampler(Sampler[List[int]]):
     """Group samples of similar lengths to minimize padding overhead.
 
@@ -315,83 +473,94 @@ def create_data_loaders(
     data_files["test"] = _subset_pairs(data_files["test"], "test")
 
     # Create datasets
-    train_dataset = NpyDrumDataset(data_files["train"], config, mode="train")
-    val_dataset = NpyDrumDataset(data_files["val"], config, mode="val")
-    test_dataset = NpyDrumDataset(data_files["test"], config, mode="test")
+    train_dataset = SlidingWindowDataset(
+        data_files["train"], config, mode="train"
+    )
+    val_dataset = SlidingWindowDataset(data_files["val"], config, mode="val")
+    test_dataset = SlidingWindowDataset(data_files["test"], config, mode="test")
 
-    # Efficient: estimate T from file size without opening arrays: T = bytes / (C * 4)
-    def _file_lengths_from_stat(
-        pairs: List[Tuple[str, str]], num_classes: int
-    ) -> List[int]:
-        lengths: List[int] = []
-        bytes_per_timestep = num_classes * 4  # float32 per class
-        for _, lbl in pairs:
-            size = os.stat(lbl).st_size
-            t = max(1, int(size // bytes_per_timestep))
-            lengths.append(t)
-        return lengths
+    if isinstance(train_dataset, SlidingWindowDataset):
+        train_lengths = [train_dataset.window_frames] * len(train_dataset)
+        val_lengths = [val_dataset.window_frames] * len(val_dataset)
+        test_lengths = [test_dataset.window_frames] * len(test_dataset)
+    else:
+        # Efficient: estimate T from file size without opening arrays: T = bytes / (C * 4)
+        def _file_lengths_from_stat(
+            pairs: List[Tuple[str, str]], num_classes: int
+        ) -> List[int]:
+            lengths: List[int] = []
+            bytes_per_timestep = num_classes * 4  # float32 per class
+            for _, lbl in pairs:
+                size = os.stat(lbl).st_size
+                t = max(1, int(size // bytes_per_timestep))
+                lengths.append(t)
+            return lengths
 
-    # Cache lengths to avoid re-computing across runs. Use model_dir to avoid read-only data_dir.
-    cache_root = Path(getattr(config, "model_dir", "."))
-    cache_dir = cache_root / ".length_cache"
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        cache_dir = None
+        # Cache lengths to avoid re-computing across runs. Use model_dir to avoid read-only data_dir.
+        cache_root = Path(getattr(config, "model_dir", "."))
+        cache_dir = cache_root / ".length_cache"
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            cache_dir = None
 
-    def _cache_paths(split: str) -> tuple[Path, Path]:
-        return (
-            cache_dir / f"lengths_{split}.npy",
-            cache_dir / f"lengths_{split}.meta.json",
-        )
+        def _cache_paths(split: str) -> tuple[Path, Path]:
+            return (
+                cache_dir / f"lengths_{split}.npy",
+                cache_dir / f"lengths_{split}.meta.json",
+            )
 
-    import json as _json
+        import json as _json
 
-    def _load_or_compute_lengths(split: str, pairs: List[Tuple[str, str]]) -> List[int]:
-        if cache_dir is not None:
-            npy_path, meta_path = _cache_paths(split)
-            try:
-                if npy_path.exists() and meta_path.exists():
-                    meta = _json.loads(meta_path.read_text())
-                    if meta.get("num_files") == len(pairs):
-                        arr = np.load(npy_path)
-                        if arr.ndim == 1 and arr.shape[0] == len(pairs):
-                            logger.info(
-                                f"Loaded cached lengths for split '{split}' from {npy_path}"
-                            )
-                            return arr.astype(int).tolist()
-            except Exception as e:
-                logger.warning(
-                    f"Failed to load cached lengths for split '{split}': {e}"
-                )
-
-        lengths = (
-            _file_lengths_from_stat(pairs, config.num_drum_classes) if pairs else []
-        )
-        if cache_dir is not None:
-            try:
+        def _load_or_compute_lengths(split: str, pairs: List[Tuple[str, str]]) -> List[int]:
+            if cache_dir is not None:
                 npy_path, meta_path = _cache_paths(split)
-                np.save(npy_path, np.array(lengths, dtype=np.int32))
-                meta = {"num_files": len(pairs)}
-                meta_path.write_text(_json.dumps(meta))
-                logger.info(f"Saved lengths cache for split '{split}' to {npy_path}")
-            except Exception as e:
-                logger.warning(f"Failed to save lengths cache for split '{split}': {e}")
-        return lengths
+                try:
+                    if npy_path.exists() and meta_path.exists():
+                        meta = _json.loads(meta_path.read_text())
+                        if meta.get("num_files") == len(pairs):
+                            arr = np.load(npy_path)
+                            if arr.ndim == 1 and arr.shape[0] == len(pairs):
+                                logger.info(
+                                    f"Loaded cached lengths for split '{split}' from {npy_path}"
+                                )
+                                return arr.astype(int).tolist()
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load cached lengths for split '{split}': {e}"
+                    )
 
-    train_lengths = (
-        _load_or_compute_lengths("train", data_files["train"])
-        if data_files["train"]
-        else []
-    )
-    val_lengths = (
-        _load_or_compute_lengths("val", data_files["val"]) if data_files["val"] else []
-    )
-    test_lengths = (
-        _load_or_compute_lengths("test", data_files["test"])
-        if data_files["test"]
-        else []
-    )
+            lengths = (
+                _file_lengths_from_stat(pairs, config.num_drum_classes) if pairs else []
+            )
+            if cache_dir is not None:
+                try:
+                    npy_path, meta_path = _cache_paths(split)
+                    np.save(npy_path, np.array(lengths, dtype=np.int32))
+                    meta = {"num_files": len(pairs)}
+                    meta_path.write_text(_json.dumps(meta))
+                    logger.info(
+                        f"Saved lengths cache for split '{split}' to {npy_path}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to save lengths cache for split '{split}': {e}"
+                    )
+            return lengths
+
+        train_lengths = (
+            _load_or_compute_lengths("train", data_files["train"])
+            if data_files["train"]
+            else []
+        )
+        val_lengths = (
+            _load_or_compute_lengths("val", data_files["val"]) if data_files["val"] else []
+        )
+        test_lengths = (
+            _load_or_compute_lengths("test", data_files["test"])
+            if data_files["test"]
+            else []
+        )
 
     # Auto-tune workers/prefetch for better CPU utilization
     cpu_count = os.cpu_count() or 4
