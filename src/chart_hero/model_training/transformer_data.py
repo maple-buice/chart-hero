@@ -232,9 +232,12 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.shared_epoch = shared_epoch
 
         max_seq_len = int(getattr(self.config, "max_seq_len", 0) or 0)
+        window_seconds = getattr(self.config, "window_length_seconds", None)
+        if window_seconds is None:
+            window_seconds = float(getattr(self.config, "max_audio_length", 0.0) or 0.0)
         max_audio_frames = int(
             round(
-                (getattr(self.config, "max_audio_length", 0.0) or 0.0)
+                window_seconds
                 * self.config.sample_rate
                 / max(1, int(self.config.hop_length))
             )

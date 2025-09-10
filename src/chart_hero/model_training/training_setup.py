@@ -124,8 +124,10 @@ def setup_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-audio-length",
+        "--window-length",
+        dest="max_audio_length",
         type=float,
-        help="Override max audio segment length in seconds for training windows",
+        help="Override sliding window length in seconds",
     )
     return parser
 
@@ -176,7 +178,7 @@ def apply_cli_overrides(config: "BaseConfig", args: argparse.Namespace) -> None:
         config.enable_media_logging = True
     if getattr(args, "max_audio_length", None) is not None:
         try:
-            config.max_audio_length = float(args.max_audio_length)
+            config.set_window_length(float(args.max_audio_length))
         except Exception:
             pass
 

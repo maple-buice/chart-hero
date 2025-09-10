@@ -117,6 +117,10 @@ class BaseConfig:
     n_fft: int = 2048
     hop_length: int = 512
     max_audio_length: float = 10.0  # seconds
+    # Sliding-window training/inference parameters
+    window_length_seconds: float = 10.0
+    windows_per_song: int = 10
+    window_jitter_ratio: float = 0.1
 
     # Transformer input
     patch_size: Tuple[int, int] = (16, 16)  # (time, frequency)
@@ -300,6 +304,7 @@ class LocalConfig(BaseConfig):
 
     # Sequence length can get large with stride=1; prefer shorter segments for stability
     max_audio_length: float = 20.0
+    window_length_seconds: float = 20.0
 
     # Batching tuned down for the higher sequence length
     train_batch_size: int = 10
@@ -326,6 +331,10 @@ class LocalConfig(BaseConfig):
 
     def __post_init__(self) -> None:
         """Select default device preferring MPS, then CUDA, otherwise CPU."""
+        # Ensure window length mirrors max_audio_length
+        if getattr(self, "window_length_seconds", None) is not None:
+            self.max_audio_length = float(self.window_length_seconds)
+
         # `torch.backends.mps.is_built` is not consistently available across builds;
         # checking only `is_available` keeps logic simple and testable.
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -356,6 +365,25 @@ class LocalConfig(BaseConfig):
     @property
     def effective_batch_size(self) -> int:
         return self.train_batch_size * self.accumulate_grad_batches
+
+    def set_window_length(self, seconds: float, base: float = 20.0) -> None:
+        """Set sliding-window length and adjust dependent parameters.
+
+        Parameters
+        ----------
+        seconds:
+            Desired window length in seconds.
+        base:
+            Baseline window length used for scaling batch sizes.
+        """
+
+        self.window_length_seconds = float(seconds)
+        self.max_audio_length = float(seconds)
+        frames_per_sec = self.sample_rate / max(1, self.hop_length)
+        self.max_seq_len = int(self.window_length_seconds * frames_per_sec)
+        scale = base / self.window_length_seconds if self.window_length_seconds > 0 else 1.0
+        self.train_batch_size = max(1, int(self.train_batch_size * scale))
+        self.val_batch_size = max(1, int(self.val_batch_size * scale))
 
 
 @dataclass
@@ -412,6 +440,7 @@ class LocalMicroConfig(LocalConfig):
     event_tolerance_patches: int = 5
     label_dilation_frames: int = 4
     max_audio_length: float = 3.0
+    window_length_seconds: float = 3.0
     train_batch_size: int = 2
     val_batch_size: int = 4
     num_workers: int = 2
@@ -465,6 +494,7 @@ class CloudConfig(BaseConfig):
 
     # Longer sequences for GPU training
     max_audio_length: float = 20.0
+    window_length_seconds: float = 20.0
     max_seq_len: int = 1536
 
     # More aggressive training for cloud resources
@@ -502,7 +532,7 @@ def get_config(
         raise ValueError(f"Unknown config type: {config_type}. Use 'local' or 'cloud'.")
 
     if max_audio_length is not None:
-        cfg.max_audio_length = float(max_audio_length)
+        cfg.set_window_length(float(max_audio_length))
 
     return cfg
 
