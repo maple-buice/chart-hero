@@ -69,3 +69,9 @@ def test_chart_generator():
 
     assert isinstance(chart_generator.sheet, stream.Score)
     assert chart_generator.sheet.metadata.title == "Test Song"
+
+
+def test_window_weight_function():
+    assert Charter._window_weight(0, 100, 50) == 1.0
+    assert Charter._window_weight(0, 100, 0) == 0.0
+    assert pytest.approx(Charter._window_weight(0, 100, 75), 0.01) == 0.5

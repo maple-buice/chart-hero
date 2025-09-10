@@ -165,6 +165,8 @@ class BaseConfig:
     leading_silence_db: float = -40.0
     leading_silence_min_ms: float = 250.0
     global_shift_max_ms: float = 200.0
+    # Fractional overlap between consecutive inference windows (0.25 -> 25% overlap)
+    inference_overlap_ratio: float = 0.25
 
     # Data
     train_batch_size: int = 32

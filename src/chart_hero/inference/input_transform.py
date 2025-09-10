@@ -66,7 +66,19 @@ def audio_to_tensors(audio_path: str, config: TransformerConfig) -> list[Segment
 
     segments: list[Segment] = []
     total_frames = int(np.ceil(len(y) / config.hop_length))
-    for i in range(0, len(y), segment_length_samples):
+
+    overlap = float(getattr(config, "inference_overlap_ratio", 0.0))
+    step_samples = int(segment_length_samples * (1.0 - overlap))
+    if step_samples <= 0:
+        step_samples = segment_length_samples
+    starts = list(range(0, max(len(y) - segment_length_samples, 0) + 1, step_samples))
+    if not starts:
+        starts = [0]
+    last_start = max(0, len(y) - segment_length_samples)
+    if starts[-1] != last_start:
+        starts.append(last_start)
+
+    for i in starts:
         y_seg = y[i : i + segment_length_samples]
         spec_segment = create_transient_enhanced_spectrogram(
             y=y_seg,
