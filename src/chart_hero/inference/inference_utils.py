@@ -17,7 +17,7 @@ def map_patch_to_sample(
 ) -> int:
     """Convert a patch index into an absolute sample position."""
     frame = start_frame + patch_idx * stride_frames + patch_size // 2
-    sample = offset_samples + frame * hop_length
+    sample = frame * hop_length  # offset_samples removed to prevent double application
     if add_ms:
         sample += int(add_ms * sample_rate / 1000.0)
     return int(sample)

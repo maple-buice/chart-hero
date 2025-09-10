@@ -441,9 +441,7 @@ class Charter:
                     rows.append(row)
 
         if rows:
-            pred_frames = [
-                int((r["peak_sample"] - self.last_offset_samples) // hop) for r in rows
-            ]
+            pred_frames = [int(r["peak_sample"] // hop) for r in rows]
             shift_ms = estimate_global_shift(
                 energy_envelope,
                 pred_frames,
