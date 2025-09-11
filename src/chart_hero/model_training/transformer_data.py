@@ -404,6 +404,10 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         for i in range(self.sequence_length):
             st = start + i * self.window_frames
             spec_t, lbl_t = _load_window(st)
+            pad = self.window_frames - spec_t.shape[-1]
+            if pad > 0:
+                spec_t = F.pad(spec_t, (0, pad))
+                lbl_t = F.pad(lbl_t, (0, 0, 0, pad))
             specs.append(spec_t)
             labels.append(lbl_t)
 
