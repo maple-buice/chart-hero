@@ -18,8 +18,7 @@ def _create_dummy_pair(tmp_path, config, length):
 
 def test_validation_windows_deterministic(tmp_path):
     config = get_config("local")
-    config.max_seq_len = 40
-    config.max_audio_length = 40 * config.hop_length / config.sample_rate
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
     pairs = _create_dummy_pair(tmp_path, config, length=100)
     dataset = SlidingWindowDataset(pairs, config, mode="val")
     assert len(dataset) == 4
@@ -32,8 +31,7 @@ def test_validation_windows_deterministic(tmp_path):
 
 def test_training_windows_change_with_epoch(tmp_path):
     config = get_config("local")
-    config.max_seq_len = 40
-    config.max_audio_length = 40 * config.hop_length / config.sample_rate
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
     config.window_jitter_ratio = 0.5
     pairs = _create_dummy_pair(tmp_path, config, length=120)
     dataset = SlidingWindowDataset(pairs, config, mode="train")

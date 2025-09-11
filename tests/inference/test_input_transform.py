@@ -44,7 +44,7 @@ def test_audio_to_tensors(dummy_audio_file):
 
 def test_audio_to_tensors_overlap(dummy_audio_file):
     config = get_config("local")
-    config.max_audio_length = 5.0
+    config.set_window_length(5.0)
     config.inference_overlap_ratio = 0.25
     segments = audio_to_tensors(str(dummy_audio_file), config)
     assert len(segments) >= 2
