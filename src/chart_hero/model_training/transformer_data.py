@@ -225,11 +225,13 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         config: BaseConfig,
         mode: str = "train",
         shared_epoch: Any | None = None,
+        return_lengths: bool = False,
     ) -> None:
         self.data_files = data_files
         self.config = config
         self.mode = mode
         self.shared_epoch = shared_epoch
+        self.return_lengths = return_lengths
 
         max_seq_len = int(getattr(self.config, "max_seq_len", 0) or 0)
         window_seconds = getattr(self.config, "window_length_seconds", None)
@@ -397,22 +399,31 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
 
         if not self.enable_sequential:
             spectrogram, label_matrix = _load_window(start)
+            if self.return_lengths:
+                length = torch.tensor(spectrogram.shape[-1], dtype=torch.long)
+                return spectrogram, label_matrix, length
             return spectrogram, label_matrix
 
         specs: List[torch.Tensor] = []
         labels: List[torch.Tensor] = []
+        lengths: List[int] = []
         for i in range(self.sequence_length):
             st = start + i * self.window_frames
             spec_t, lbl_t = _load_window(st)
-            pad = self.window_frames - spec_t.shape[-1]
+            orig_len = spec_t.shape[-1]
+            pad = self.window_frames - orig_len
             if pad > 0:
                 spec_t = F.pad(spec_t, (0, pad))
                 lbl_t = F.pad(lbl_t, (0, 0, 0, pad))
             specs.append(spec_t)
             labels.append(lbl_t)
+            lengths.append(int(orig_len))
 
         spectrogram = torch.stack(specs, dim=0)
         label_matrix = torch.stack(labels, dim=0)
+        if self.return_lengths:
+            lengths_t = torch.tensor(lengths, dtype=torch.long)
+            return spectrogram, label_matrix, lengths_t
         return spectrogram, label_matrix
 
     # Expose window indices for testing/analysis
@@ -523,10 +534,18 @@ def create_data_loaders(
 
     # Create datasets
     train_dataset = SlidingWindowDataset(
-        data_files["train"], config, mode="train", shared_epoch=shared_epoch
+        data_files["train"],
+        config,
+        mode="train",
+        shared_epoch=shared_epoch,
+        return_lengths=with_lengths,
     )
-    val_dataset = SlidingWindowDataset(data_files["val"], config, mode="val")
-    test_dataset = SlidingWindowDataset(data_files["test"], config, mode="test")
+    val_dataset = SlidingWindowDataset(
+        data_files["val"], config, mode="val", return_lengths=with_lengths
+    )
+    test_dataset = SlidingWindowDataset(
+        data_files["test"], config, mode="test", return_lengths=with_lengths
+    )
 
     if isinstance(train_dataset, SlidingWindowDataset):
         train_lengths = [train_dataset.window_frames] * len(train_dataset)
