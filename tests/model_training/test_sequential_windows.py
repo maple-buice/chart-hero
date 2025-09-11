@@ -81,6 +81,17 @@ def test_short_song_is_padded(tmp_path):
     assert torch.allclose(labels[2], torch.zeros_like(labels[2]))
 
 
+def test_short_song_not_repeated(tmp_path):
+    config = get_config("local")
+    config.enable_sequential_windows = True
+    config.sequence_length = 3
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
+    pairs = _create_dummy_pair(tmp_path, config, length=60)
+    dataset = SlidingWindowDataset(pairs, config, mode="train")
+    assert len(dataset) == 1
+    assert dataset.window_indices == [(0, 0)]
+
+
 def test_collate_preserves_sequence_dimension(tmp_path):
     config = get_config("local")
     config.enable_sequential_windows = True

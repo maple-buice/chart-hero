@@ -290,24 +290,42 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                 if n_windows is None:
                     n_windows = int(math.ceil(total / win))
                 n_windows = max(1, int(n_windows))
-                if self.enable_sequential:
-                    n_seq = max(1, n_windows - seq + 1)
-                    step = 0 if n_seq == 1 else (total - seq_span) / (n_seq - 1)
-                else:
-                    step = 0 if n_windows == 1 else (total - win) / (n_windows - 1)
                 rng = None
                 jitter_max = int(self.window_jitter_ratio * win)
-                limit = max(0, total - (seq_span if self.enable_sequential else win))
-                for w in range(n_seq if self.enable_sequential else n_windows):
-                    base = int(round(w * step))
-                    if rng is None:
-                        rng = np.random.default_rng(self._seed(song_idx, w))
-                    jitter = 0
-                    if jitter_max > 0:
-                        jitter = int(rng.integers(-jitter_max, jitter_max + 1))
-                    start = base + jitter
-                    start = max(0, min(start, limit))
-                    self._index_map.append((song_idx, start))
+                if self.enable_sequential:
+                    if total < seq_span:
+                        n_seq = 1
+                        step = 0.0
+                        limit = 0
+                    else:
+                        n_seq = max(1, n_windows - seq + 1)
+                        step = (
+                            0.0 if n_seq == 1 else (total - seq_span) / (n_seq - 1)
+                        )
+                        limit = max(0, total - seq_span)
+                    for w in range(n_seq):
+                        base = int(round(w * step))
+                        if rng is None:
+                            rng = np.random.default_rng(self._seed(song_idx, w))
+                        jitter = 0
+                        if jitter_max > 0:
+                            jitter = int(rng.integers(-jitter_max, jitter_max + 1))
+                        start = base + jitter
+                        start = max(0, min(start, limit))
+                        self._index_map.append((song_idx, start))
+                else:
+                    step = 0 if n_windows == 1 else (total - win) / (n_windows - 1)
+                    limit = max(0, total - win)
+                    for w in range(n_windows):
+                        base = int(round(w * step))
+                        if rng is None:
+                            rng = np.random.default_rng(self._seed(song_idx, w))
+                        jitter = 0
+                        if jitter_max > 0:
+                            jitter = int(rng.integers(-jitter_max, jitter_max + 1))
+                        start = base + jitter
+                        start = max(0, min(start, limit))
+                        self._index_map.append((song_idx, start))
             else:
                 stride = max(1, win // 2)
                 if self.enable_sequential:
