@@ -8,9 +8,9 @@ from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 
 def _create_dummy_pair(tmp_path, config, length):
     spec = np.random.rand(config.n_mels, length).astype(np.float32)
-    labels = np.random.randint(0, 2, (length, config.num_drum_classes), dtype=np.int32).astype(
-        np.float32
-    )
+    labels = np.random.randint(
+        0, 2, (length, config.num_drum_classes), dtype=np.int32
+    ).astype(np.float32)
     spec_file = tmp_path / "song_mel.npy"
     label_file = tmp_path / "song_label.npy"
     np.save(spec_file, spec)
