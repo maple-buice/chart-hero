@@ -121,6 +121,8 @@ class BaseConfig:
     window_length_seconds: float = 10.0
     windows_per_song: int = 10
     window_jitter_ratio: float = 0.1
+    enable_sequential_windows: bool = False
+    sequence_length: int = 2
 
     # Transformer input
     patch_size: Tuple[int, int] = (16, 16)  # (time, frequency)

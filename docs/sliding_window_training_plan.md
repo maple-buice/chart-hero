@@ -38,7 +38,7 @@ The current training pipeline feeds entire songs (220–338s) to a transformer c
 
 ### Phase 4—Sequential Window Training (Low Priority)
 - Extend dataset to emit sequences of consecutive windows.
-- Add temporal modeling module (attention or LSTM) on top of per-window embeddings.
+- Add temporal modeling module (currently an LSTM operating on CLS embeddings) on top of per-window embeddings.
 - Evaluate memory impact and loss computation across sequences.
 
 ## Implementation Considerations

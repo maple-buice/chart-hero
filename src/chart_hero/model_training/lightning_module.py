@@ -65,6 +65,16 @@ class DrumTranscriptionModule(pl.LightningModule):
             task="multilabel", num_labels=config.num_drum_classes
         )
 
+        self.enable_sequential = bool(
+            getattr(config, "enable_sequential_windows", False)
+        )
+        if self.enable_sequential:
+            self.seq_model = nn.LSTM(
+                input_size=config.hidden_size,
+                hidden_size=config.hidden_size,
+                batch_first=True,
+            )
+
         self.test_step_outputs: list[dict[str, torch.Tensor]] = []
         self._val_sample_limit = int(getattr(config, "val_sample_limit", 10000))
         self._val_sample_count = 0
@@ -85,11 +95,34 @@ class DrumTranscriptionModule(pl.LightningModule):
         else:
             spectrograms, labels = batch  # type: ignore[misc]
             lengths = None
-        outputs = self.model(spectrograms)
-        logits = outputs["logits"].float()  # [B, T_patches, C]
-        onset_logits = (
-            outputs.get("onset_logits") if isinstance(outputs, dict) else None
-        )
+
+        if self.enable_sequential and spectrograms.dim() == 5:
+            B, L = spectrograms.shape[0], spectrograms.shape[1]
+            spectrograms = spectrograms.view(B * L, *spectrograms.shape[2:])
+            labels = labels.view(B * L, *labels.shape[2:])
+            if lengths is not None:
+                lengths = lengths.view(B * L)
+            model_out = self.model(spectrograms, return_embeddings=True)
+            final_emb = model_out["final_embedding"]  # [B*L, T, H]
+            cls_emb = model_out["cls_embedding"].view(B, L, -1)
+            seq_out, _ = self.seq_model(cls_emb)
+            seq_out = seq_out.view(B * L, -1)
+            seq_exp = seq_out.unsqueeze(1).expand(-1, final_emb.shape[1], -1)
+            final_emb = final_emb + seq_exp
+            logits = self.model.classifier(final_emb)
+            onset_logits = None
+            if getattr(self.model, "enable_onset_head", False):
+                onset_logits = self.model.onset_head(final_emb).squeeze(-1)
+            outputs = {"logits": logits}
+            if onset_logits is not None:
+                outputs["onset_logits"] = onset_logits
+        else:
+            outputs = self.model(spectrograms)
+            logits = outputs["logits"]
+            onset_logits = (
+                outputs.get("onset_logits") if isinstance(outputs, dict) else None
+            )
+        logits = logits.float()  # [B, T_patches, C]
         if onset_logits is not None:
             onset_logits = onset_logits.float()
 
