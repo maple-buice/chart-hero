@@ -1,9 +1,15 @@
 import numpy as np
 import torch
 
+from torch.utils.data import DataLoader
+
 from chart_hero.model_training.transformer_config import get_config
 from chart_hero.model_training.transformer_data import SlidingWindowDataset
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
+from chart_hero.model_training.data_utils import (
+    custom_collate_fn,
+    collate_with_lengths,
+)
 
 
 def _create_dummy_pair(tmp_path, config, length):
@@ -73,3 +79,23 @@ def test_short_song_is_padded(tmp_path):
     assert torch.allclose(labels[1, 20:, :], torch.zeros_like(labels[1, 20:, :]))
     assert torch.allclose(spec[2], torch.zeros_like(spec[2]))
     assert torch.allclose(labels[2], torch.zeros_like(labels[2]))
+
+
+def test_collate_preserves_sequence_dimension(tmp_path):
+    config = get_config("local")
+    config.enable_sequential_windows = True
+    config.sequence_length = 2
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
+    pairs = _create_dummy_pair(tmp_path, config, length=120)
+    dataset = SlidingWindowDataset(pairs, config, mode="val")
+
+    loader = DataLoader(dataset, batch_size=2, collate_fn=custom_collate_fn)
+    specs, labels = next(iter(loader))
+    assert specs.shape[:2] == (2, config.sequence_length)
+    assert labels.shape[:2] == (2, config.sequence_length)
+
+    loader_len = DataLoader(dataset, batch_size=2, collate_fn=collate_with_lengths)
+    specs2, labels2, lengths = next(iter(loader_len))
+    assert specs2.shape[:2] == (2, config.sequence_length)
+    assert labels2.shape[:2] == (2, config.sequence_length)
+    assert lengths.shape == (2, config.sequence_length)
