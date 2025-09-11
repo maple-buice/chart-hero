@@ -257,6 +257,19 @@ class BaseConfig:
     onset_loss_weight: float = 0.3
     onset_gate_threshold: Optional[float] = None
 
+    def set_window_length(self, seconds: float) -> None:
+        """Set sliding-window and max audio length.
+
+        This base implementation updates the window length related fields and
+        recomputes :attr:`max_seq_len`. Subclasses can extend this to adjust
+        batch sizes or other parameters.
+        """
+
+        self.window_length_seconds = float(seconds)
+        self.max_audio_length = float(seconds)
+        frames_per_sec = self.sample_rate / max(1, self.hop_length)
+        self.max_seq_len = int(self.window_length_seconds * frames_per_sec)
+
 
 @dataclass
 class LocalConfig(BaseConfig):
@@ -367,20 +380,9 @@ class LocalConfig(BaseConfig):
         return self.train_batch_size * self.accumulate_grad_batches
 
     def set_window_length(self, seconds: float, base: float = 20.0) -> None:
-        """Set sliding-window length and adjust dependent parameters.
+        """Extend :meth:`BaseConfig.set_window_length` with batch scaling."""
 
-        Parameters
-        ----------
-        seconds:
-            Desired window length in seconds.
-        base:
-            Baseline window length used for scaling batch sizes.
-        """
-
-        self.window_length_seconds = float(seconds)
-        self.max_audio_length = float(seconds)
-        frames_per_sec = self.sample_rate / max(1, self.hop_length)
-        self.max_seq_len = int(self.window_length_seconds * frames_per_sec)
+        super().set_window_length(seconds)
         scale = base / self.window_length_seconds if self.window_length_seconds > 0 else 1.0
         self.train_batch_size = max(1, int(self.train_batch_size * scale))
         self.val_batch_size = max(1, int(self.val_batch_size * scale))
