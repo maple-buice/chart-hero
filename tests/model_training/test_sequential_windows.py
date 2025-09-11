@@ -48,3 +48,28 @@ def test_module_training_step_with_sequences():
     batch = (spectrogram, labels)
     loss = model.training_step(batch, 0)
     assert loss is not None
+
+
+def test_short_song_is_padded(tmp_path):
+    config = get_config("local")
+    config.enable_sequential_windows = True
+    config.sequence_length = 3
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
+    pairs = _create_dummy_pair(tmp_path, config, length=60)
+    dataset = SlidingWindowDataset(pairs, config, mode="val")
+    spec, labels = dataset[0]
+    assert spec.shape == (
+        config.sequence_length,
+        1,
+        config.n_mels,
+        config.max_seq_len,
+    )
+    assert labels.shape == (
+        config.sequence_length,
+        config.max_seq_len,
+        config.num_drum_classes,
+    )
+    assert torch.allclose(spec[1, :, :, 20:], torch.zeros_like(spec[1, :, :, 20:]))
+    assert torch.allclose(labels[1, 20:, :], torch.zeros_like(labels[1, 20:, :]))
+    assert torch.allclose(spec[2], torch.zeros_like(spec[2]))
+    assert torch.allclose(labels[2], torch.zeros_like(labels[2]))
