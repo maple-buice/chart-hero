@@ -41,3 +41,32 @@ def test_training_windows_change_with_epoch(tmp_path):
     idx1 = dataset.window_indices.copy()
     assert idx0 != idx1
     assert len(idx0) == len(idx1)
+
+
+def test_file_subset_changes_each_epoch(tmp_path):
+    config = get_config("local")
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
+    config.dataset_fraction = 0.5
+    pairs = []
+    for i in range(8):
+        spec = np.random.rand(config.n_mels, 80).astype(np.float32)
+        labels = np.random.randint(
+            0, 2, (80, config.num_drum_classes), dtype=np.int32
+        ).astype(np.float32)
+        spec_file = tmp_path / f"song{i}_mel.npy"
+        label_file = tmp_path / f"song{i}_label.npy"
+        np.save(spec_file, spec)
+        np.save(label_file, labels)
+        pairs.append((str(spec_file), str(label_file)))
+    dataset = SlidingWindowDataset(pairs, config, mode="train")
+    dataset.set_epoch(0)
+    songs0 = dataset.selected_song_indices.copy()
+    dataset.set_epoch(1)
+    songs1 = dataset.selected_song_indices.copy()
+    rng0 = np.random.default_rng(42)
+    rng1 = np.random.default_rng(43)
+    expected0 = sorted(rng0.choice(8, size=4, replace=False))
+    expected1 = sorted(rng1.choice(8, size=4, replace=False))
+    assert songs0 == expected0
+    assert songs1 == expected1
+    assert songs0 != songs1
