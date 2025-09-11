@@ -266,6 +266,10 @@ def main() -> None:
                     self.loader.dataset, "set_epoch"
                 ):
                     self.loader.dataset.set_epoch(epoch)
+                n = len(self.loader.dataset)
+                bs = getattr(self.loader, "batch_sampler", None)
+                if bs is not None and hasattr(bs, "lengths"):
+                    bs.lengths = [self.loader.dataset.window_frames] * n
 
         callbacks.append(DatasetEpochCallback(train_loader, shared_epoch))
         trainer_kwargs["callbacks"] = callbacks

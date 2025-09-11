@@ -228,7 +228,7 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         shared_epoch: Any | None = None,
         return_lengths: bool = False,
     ) -> None:
-        self.data_files = data_files
+        self.data_files = list(data_files)
         self.config = config
         self.mode = mode
         self.shared_epoch = shared_epoch
@@ -265,6 +265,13 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             arr = np.load(lbl, allow_pickle=False, mmap_mode="r")
             self.song_lengths.append(int(arr.shape[0]))
 
+        # Preserve full set for epoch-wise resampling
+        self.all_data_files = list(self.data_files)
+        self.all_song_lengths = list(self.song_lengths)
+        self.dataset_fraction = float(
+            getattr(self.config, "dataset_fraction", 1.0) or 1.0
+        )
+
         self.epoch = 0
         self._index_map: List[Tuple[int, int]] = []  # (song_idx, start_frame)
         self._build_index()
@@ -279,7 +286,22 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         data = f"{self.epoch}-{song_idx}-{window_idx}".encode()
         return int.from_bytes(hashlib.sha256(data).digest()[:4], "little")
 
+    def _select_active_files(self) -> None:
+        frac = self.dataset_fraction if self.mode == "train" else 1.0
+        total = len(self.all_data_files)
+        if self.mode == "train" and 0.0 < frac < 1.0:
+            keep = max(1, int(round(total * frac)))
+            seed = (getattr(self.config, "seed", 42) + self.epoch) % (2**32)
+            rng = np.random.default_rng(seed)
+            idx = np.sort(rng.choice(total, size=keep, replace=False))
+        else:
+            idx = np.arange(total)
+        self.selected_song_indices = [int(i) for i in idx]
+        self.data_files = [self.all_data_files[int(i)] for i in idx]
+        self.song_lengths = [self.all_song_lengths[int(i)] for i in idx]
+
     def _build_index(self) -> None:
+        self._select_active_files()
         self._index_map = []
         win = self.window_frames
         seq = self.sequence_length
@@ -527,11 +549,13 @@ def create_data_loaders(
 
     # Optional subsampling per split for faster iteration
     def _subset_pairs(
-        pairs: List[Tuple[str, str]], split: str
+        pairs: List[Tuple[str, str]], split: str, fraction: float | None = None
     ) -> List[Tuple[str, str]]:
         if not pairs:
             return pairs
-        frac = float(getattr(config, "dataset_fraction", 1.0) or 1.0)
+        frac = float(
+            fraction if fraction is not None else getattr(config, "dataset_fraction", 1.0) or 1.0
+        )
         cap = getattr(config, "max_files_per_split", None)
         n = len(pairs)
         keep = n
@@ -546,7 +570,7 @@ def create_data_loaders(
             logger.info("Subsampled %s split: %d/%d files", split, keep, n)
         return pairs
 
-    data_files["train"] = _subset_pairs(data_files["train"], "train")
+    data_files["train"] = _subset_pairs(data_files["train"], "train", fraction=1.0)
     data_files["val"] = _subset_pairs(data_files["val"], "val")
     data_files["test"] = _subset_pairs(data_files["test"], "test")
 
