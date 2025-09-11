@@ -94,8 +94,27 @@ def test_collate_preserves_sequence_dimension(tmp_path):
     assert specs.shape[:2] == (2, config.sequence_length)
     assert labels.shape[:2] == (2, config.sequence_length)
 
-    loader_len = DataLoader(dataset, batch_size=2, collate_fn=collate_with_lengths)
+    dataset_len = SlidingWindowDataset(
+        pairs, config, mode="val", return_lengths=True
+    )
+    loader_len = DataLoader(dataset_len, batch_size=2, collate_fn=collate_with_lengths)
     specs2, labels2, lengths = next(iter(loader_len))
     assert specs2.shape[:2] == (2, config.sequence_length)
     assert labels2.shape[:2] == (2, config.sequence_length)
     assert lengths.shape == (2, config.sequence_length)
+
+
+def test_collate_returns_true_lengths(tmp_path):
+    config = get_config("local")
+    config.enable_sequential_windows = True
+    config.sequence_length = 3
+    config.set_window_length(40 * config.hop_length / config.sample_rate)
+    pairs = _create_dummy_pair(tmp_path, config, length=60)
+    dataset = SlidingWindowDataset(
+        pairs, config, mode="val", return_lengths=True
+    )
+    loader = DataLoader(dataset, batch_size=1, collate_fn=collate_with_lengths)
+    specs, labels, lengths = next(iter(loader))
+    assert specs.shape[:2] == (1, config.sequence_length)
+    assert labels.shape[:2] == (1, config.sequence_length)
+    assert torch.equal(lengths[0], torch.tensor([40, 20, 0]))
