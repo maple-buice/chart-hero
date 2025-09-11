@@ -232,10 +232,12 @@ def test_model():
     logger.info(f"✓ Output logits shape: {output['logits'].shape}")
     logger.info(f"✓ CLS embedding shape: {output['cls_embedding'].shape}")
 
-    # Check output dimensions
+    patch_stride = getattr(config, "patch_stride", patch_size_t)
+    expected_patches = (time_frames - patch_size_t) // patch_stride + 1
+
     assert output["logits"].shape == (
         batch_size,
-        max_time_patches,
+        expected_patches,
         config.num_drum_classes,
     )
     assert output["cls_embedding"].shape == (batch_size, config.hidden_size)
@@ -249,7 +251,8 @@ def test_spectrogram_processor():
     processor = SpectrogramProcessor(config)
     dummy_audio = torch.randn(1, int(config.max_audio_length * config.sample_rate))
     spectrogram = processor.audio_to_spectrogram(dummy_audio)
-    assert spectrogram.shape == (1, 216, 128)
+    expected_time = dummy_audio.shape[1] // config.hop_length + 1
+    assert spectrogram.shape == (1, expected_time, config.n_mels)
 
 
 def test_data_processing():
@@ -279,7 +282,8 @@ def test_patch_embedding():
     )
     dummy_spectrogram = torch.randn(1, 1, config.n_mels, 256)
     patch_embeddings = patch_embed(dummy_spectrogram)
-    assert patch_embeddings.shape == (1, 16, config.hidden_size)
+    expected_patches = (256 - config.patch_size[0]) // config.patch_size[0] + 1
+    assert patch_embeddings.shape == (1, expected_patches, config.hidden_size)
 
 
 def test_positional_encoding():

@@ -12,7 +12,7 @@ from typing import Any
 import pytorch_lightning as pl
 import torch
 import torch.multiprocessing as mp
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 
 from chart_hero.model_training.lightning_module import DrumTranscriptionModule
 from chart_hero.model_training.training_setup import (
@@ -209,10 +209,14 @@ def main() -> None:
             except Exception:
                 pass
 
+        shared_epoch = mp.Value("i", 0)
         logger.info("Creating data loaders...")
         try:
             train_loader, val_loader, test_loader = create_data_loaders(
-                config=config, data_dir=config.data_dir, with_lengths=True
+                config=config,
+                data_dir=config.data_dir,
+                with_lengths=True,
+                shared_epoch=shared_epoch,
             )
         except Exception as e:
             msg = str(e)
@@ -231,7 +235,10 @@ def main() -> None:
                 setattr(config, "num_workers", 0)
                 setattr(config, "persistent_workers", False)
                 train_loader, val_loader, test_loader = create_data_loaders(
-                    config=config, data_dir=config.data_dir, with_lengths=True
+                    config=config,
+                    data_dir=config.data_dir,
+                    with_lengths=True,
+                    shared_epoch=shared_epoch,
                 )
             else:
                 raise
@@ -246,6 +253,21 @@ def main() -> None:
             config.monitor = "train_f1"
             config.mode = "max"
         callbacks = setup_callbacks(config, use_logger=use_wandb)
+        # Ensure sliding-window datasets update window positions each epoch
+        class DatasetEpochCallback(Callback):
+            def __init__(self, loader, shared_epoch):
+                self.loader = loader
+                self.shared_epoch = shared_epoch
+
+            def on_train_epoch_start(self, trainer, pl_module):
+                epoch = trainer.current_epoch
+                self.shared_epoch.value = epoch
+                if self.loader.num_workers == 0 and hasattr(
+                    self.loader.dataset, "set_epoch"
+                ):
+                    self.loader.dataset.set_epoch(epoch)
+
+        callbacks.append(DatasetEpochCallback(train_loader, shared_epoch))
         trainer_kwargs["callbacks"] = callbacks
 
         # Log final checkpoint settings and model_dir

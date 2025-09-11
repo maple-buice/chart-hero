@@ -110,6 +110,19 @@ class Charter:
             except Exception:
                 pass
 
+    @staticmethod
+    def _window_weight(start_frame: int, end_frame: int, frame_idx: int) -> float:
+        """Triangular weight favoring the center of a window."""
+        half = max(1.0, (end_frame - start_frame) / 2.0)
+        center = start_frame + half
+        dist = abs(float(frame_idx) - center)
+        w = 1.0 - dist / half
+        if w < 0.0:
+            return 0.0
+        if w > 1.0:
+            return 1.0
+        return float(w)
+
     from typing import Sequence
 
     @torch.no_grad()
@@ -290,13 +303,16 @@ class Charter:
                 hf_cut = float(getattr(self.config, "cymbal_highfreq_cutoff_mel", 0.7))
 
                 for t in range(T_p):
-                    p_t = seg_probs[t]  # [C]
-                    km_t = keep_mask[t]
-                    # Binary activations by threshold
-                    act = (p_t >= thr_row) & km_t
-
-                    # Map to frame center using kernel size and stride (for gates that look at the input feature)
                     frame_idx = seg["start_frame"] + t * stride_frames + (patch // 2)
+                    weight = self._window_weight(
+                        int(seg["start_frame"]), int(seg["end_frame"]), int(frame_idx)
+                    )
+                    raw_p_t = seg_probs[t]  # [C]
+                    p_t = raw_p_t * weight
+                    km_t = keep_mask[t]
+                    # Binary activations by threshold before weighting
+                    act = (raw_p_t >= thr_row) & km_t
+
                     # Local frame index inside spectrogram
                     local_idx = min(
                         seg_arr.shape[1] - 1, t * stride_frames + (patch // 2)
