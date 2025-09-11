@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import multiprocessing as mp
+import hashlib
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Tuple
 
@@ -275,9 +276,8 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     # Index creation and epoch management
     # ------------------------------------------------------------------
     def _seed(self, song_idx: int, window_idx: int) -> int:
-        return (
-            hash((self.epoch, song_idx, window_idx)) & 0xFFFFFFFF
-        )  # deterministic 32-bit seed
+        data = f"{self.epoch}-{song_idx}-{window_idx}".encode()
+        return int.from_bytes(hashlib.sha256(data).digest()[:4], "little")
 
     def _build_index(self) -> None:
         self._index_map = []
