@@ -248,6 +248,13 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.window_jitter_ratio = float(
             getattr(self.config, "window_jitter_ratio", 0.1)
         )
+        self.enable_sequential = bool(
+            getattr(self.config, "enable_sequential_windows", False)
+        )
+        self.sequence_length = int(getattr(self.config, "sequence_length", 1))
+        if not self.enable_sequential or self.sequence_length <= 1:
+            self.sequence_length = 1
+            self.enable_sequential = False
 
         # Pre-compute song lengths to avoid reopening label files repeatedly
         self.song_lengths: List[int] = []
@@ -273,16 +280,23 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
     def _build_index(self) -> None:
         self._index_map = []
         win = self.window_frames
+        seq = self.sequence_length
+        seq_span = win * seq
         for song_idx, total in enumerate(self.song_lengths):
             if self.mode == "train":
                 n_windows = self.windows_per_song
                 if n_windows is None:
                     n_windows = int(math.ceil(total / win))
                 n_windows = max(1, int(n_windows))
-                step = 0 if n_windows == 1 else (total - win) / (n_windows - 1)
+                if self.enable_sequential:
+                    n_seq = max(1, n_windows - seq + 1)
+                    step = 0 if n_seq == 1 else (total - seq_span) / (n_seq - 1)
+                else:
+                    step = 0 if n_windows == 1 else (total - win) / (n_windows - 1)
                 rng = None
                 jitter_max = int(self.window_jitter_ratio * win)
-                for w in range(n_windows):
+                limit = max(0, total - (seq_span if self.enable_sequential else win))
+                for w in range(n_seq if self.enable_sequential else n_windows):
                     base = int(round(w * step))
                     if rng is None:
                         rng = np.random.default_rng(self._seed(song_idx, w))
@@ -290,16 +304,24 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
                     if jitter_max > 0:
                         jitter = int(rng.integers(-jitter_max, jitter_max + 1))
                     start = base + jitter
-                    start = max(0, min(start, max(0, total - win)))
+                    start = max(0, min(start, limit))
                     self._index_map.append((song_idx, start))
             else:
                 stride = max(1, win // 2)
-                starts = list(range(0, max(total - win, 0) + 1, stride))
-                if not starts:
-                    starts = [0]
-                last_start = max(0, total - win)
-                if starts[-1] != last_start:
-                    starts.append(last_start)
+                if self.enable_sequential:
+                    starts = list(range(0, max(total - seq_span, 0) + 1, stride))
+                    if not starts:
+                        starts = [0]
+                    last_start = max(0, total - seq_span)
+                    if starts[-1] != last_start:
+                        starts.append(last_start)
+                else:
+                    starts = list(range(0, max(total - win, 0) + 1, stride))
+                    if not starts:
+                        starts = [0]
+                    last_start = max(0, total - win)
+                    if starts[-1] != last_start:
+                        starts.append(last_start)
                 for s in starts:
                     self._index_map.append((song_idx, int(s)))
 
@@ -331,55 +353,66 @@ class SlidingWindowDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         spectrogram_np = np.load(spec_file, allow_pickle=False, mmap_mode="r")
         label_np = np.load(label_file, allow_pickle=False, mmap_mode="r")
 
-        end = start + self.window_frames
-        spectrogram_np = spectrogram_np[:, start:end]
-        label_np = label_np[start:end, :]
-
-        spectrogram_np = np.array(spectrogram_np, dtype=np.float32, copy=True)
-        label_np = np.array(label_np, dtype=np.float32, copy=True)
-
-        spectrogram = torch.from_numpy(spectrogram_np)
-        label_matrix = torch.from_numpy(label_np)
-
-        spectrogram = torch.nan_to_num(spectrogram, nan=0.0, posinf=0.0, neginf=0.0)
-        label_matrix = torch.nan_to_num(label_matrix, nan=0.0, posinf=0.0, neginf=0.0)
-
-        if spectrogram.dim() == 2:
-            spectrogram = spectrogram.unsqueeze(0)
-
-        if getattr(self.config, "normalize_spectrograms", False):
-            mean = spectrogram.mean(dim=(1, 2), keepdim=True)
-            std = spectrogram.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
-            spectrogram = (spectrogram - mean) / std
-
-        if self.mode == "train" and self.config.enable_spec_augmentation:
-            spec = spectrogram.squeeze(0)
-            spec = augment_spectrogram_time_masking(
-                spec,
-                num_masks=self.config.spec_aug_num_time_masks,
-                max_mask_percentage=self.config.spec_aug_max_time_mask_percentage,
-            )
-            spec = augment_spectrogram_frequency_masking(
-                spec,
-                num_masks=self.config.spec_aug_num_freq_masks,
-                max_mask_percentage=self.config.spec_aug_max_freq_mask_percentage,
-            )
-            spectrogram = spec.unsqueeze(0)
-
-        if self.mode == "train" and getattr(
-            self.config, "enable_time_shift_augmentation", False
-        ):
-            if torch.rand(1).item() < getattr(self.config, "time_shift_prob", 0.0):
-                max_pct = getattr(self.config, "time_shift_max_percentage", 0.1)
-                T = spectrogram.shape[-1]
-                max_shift = max(1, int(max_pct * T))
-                shift = int(
-                    torch.randint(low=-max_shift, high=max_shift + 1, size=(1,)).item()
+        def _load_window(st: int) -> Tuple[torch.Tensor, torch.Tensor]:
+            end = st + self.window_frames
+            spec_np = np.array(spectrogram_np[:, st:end], dtype=np.float32, copy=True)
+            lbl_np = np.array(label_np[st:end, :], dtype=np.float32, copy=True)
+            spec_t = torch.from_numpy(spec_np)
+            lbl_t = torch.from_numpy(lbl_np)
+            spec_t = torch.nan_to_num(spec_t, nan=0.0, posinf=0.0, neginf=0.0)
+            lbl_t = torch.nan_to_num(lbl_t, nan=0.0, posinf=0.0, neginf=0.0)
+            if spec_t.dim() == 2:
+                spec_t = spec_t.unsqueeze(0)
+            if getattr(self.config, "normalize_spectrograms", False):
+                mean = spec_t.mean(dim=(1, 2), keepdim=True)
+                std = spec_t.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+                spec_t = (spec_t - mean) / std
+            if self.mode == "train" and self.config.enable_spec_augmentation:
+                spec_inner = spec_t.squeeze(0)
+                spec_inner = augment_spectrogram_time_masking(
+                    spec_inner,
+                    num_masks=self.config.spec_aug_num_time_masks,
+                    max_mask_percentage=self.config.spec_aug_max_time_mask_percentage,
                 )
-                if shift != 0:
-                    spectrogram = torch.roll(spectrogram, shifts=shift, dims=-1)
-                    label_matrix = torch.roll(label_matrix, shifts=shift, dims=0)
+                spec_inner = augment_spectrogram_frequency_masking(
+                    spec_inner,
+                    num_masks=self.config.spec_aug_num_freq_masks,
+                    max_mask_percentage=self.config.spec_aug_max_freq_mask_percentage,
+                )
+                spec_t = spec_inner.unsqueeze(0)
+            if self.mode == "train" and getattr(
+                self.config, "enable_time_shift_augmentation", False
+            ):
+                if torch.rand(1).item() < getattr(self.config, "time_shift_prob", 0.0):
+                    max_pct = getattr(self.config, "time_shift_max_percentage", 0.1)
+                    T = spec_t.shape[-1]
+                    max_shift = max(1, int(max_pct * T))
+                    shift = int(
+                        torch.randint(low=-max_shift, high=max_shift + 1, size=(1,)).item()
+                    )
+                    if shift != 0:
+                        spec_t = torch.roll(spec_t, shifts=shift, dims=-1)
+                        lbl_t = torch.roll(lbl_t, shifts=shift, dims=0)
+            return spec_t, lbl_t
 
+        if not self.enable_sequential:
+            spectrogram, label_matrix = _load_window(start)
+            return spectrogram, label_matrix
+
+        specs: List[torch.Tensor] = []
+        labels: List[torch.Tensor] = []
+        for i in range(self.sequence_length):
+            st = start + i * self.window_frames
+            spec_t, lbl_t = _load_window(st)
+            pad = self.window_frames - spec_t.shape[-1]
+            if pad > 0:
+                spec_t = F.pad(spec_t, (0, pad))
+                lbl_t = F.pad(lbl_t, (0, 0, 0, pad))
+            specs.append(spec_t)
+            labels.append(lbl_t)
+
+        spectrogram = torch.stack(specs, dim=0)
+        label_matrix = torch.stack(labels, dim=0)
         return spectrogram, label_matrix
 
     # Expose window indices for testing/analysis
