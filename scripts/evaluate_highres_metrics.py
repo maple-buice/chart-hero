@@ -6,7 +6,7 @@ Usage:
   python scripts/evaluate_highres_metrics.py \
     --songs-dir CloneHero/Songs \
     --model-ckpt models/local_transformer_models/best_model.ckpt \
-    --config local_highres \
+    --config local \
     --tol-patches 3 \
     --out-csv artifacts/highres_eval.csv
 

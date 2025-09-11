@@ -6,7 +6,7 @@ Usage examples:
   python scripts/train_highres.py --data-dir datasets/processed_highres \
     --model-dir models/highres --log-dir logs/highres --num-epochs 100
 
-This forwards all arguments to the standard trainer with --config local_highres.
+This forwards all arguments to the standard trainer with --config local.
 """
 
 from __future__ import annotations

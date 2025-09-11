@@ -14,7 +14,7 @@ Usage:
   python -m chart_hero.train.build_dataset \
     --roots CloneHero/Songs \
     --out-dir datasets/processed_highres \
-    --config local_highres \
+    --config local \
     --max-files 500
 """
 

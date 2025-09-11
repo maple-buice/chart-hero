@@ -327,15 +327,13 @@ class LocalConfig(BaseConfig):
 
     # Improve dataloader stability locally
     num_workers: int = 4
-    persistent_workers: bool = False
+    persistent_workers: bool = True
     pin_memory: bool = False  # MPS does not support pinned memory; avoid warnings
 
     # Training settings
     learning_rate: float = 1e-4  # Standard rate for training from scratch
-    gradient_checkpointing: bool = True
-    accumulate_grad_batches: int = (
-        8  # Increased from 4 to maintain effective batch size
-    )
+    gradient_checkpointing: bool = False
+    accumulate_grad_batches: int = 2
 
     # Storage optimization for 1TB SSD
     cache_dataset: bool = False  # Disable caching to save memory
@@ -385,70 +383,11 @@ class LocalConfig(BaseConfig):
         """Extend :meth:`BaseConfig.set_window_length` with batch scaling."""
 
         super().set_window_length(seconds)
-        scale = base / self.window_length_seconds if self.window_length_seconds > 0 else 1.0
+        scale = (
+            base / self.window_length_seconds if self.window_length_seconds > 0 else 1.0
+        )
         self.train_batch_size = max(1, int(self.train_batch_size * scale))
         self.val_batch_size = max(1, int(self.val_batch_size * scale))
-
-
-@dataclass
-class LocalPerformanceConfig(LocalConfig):
-    """A more aggressive configuration for powerful local machines."""
-
-    train_batch_size: int = 16
-    val_batch_size: int = 32
-    num_workers: int = 8
-    pin_memory: bool = False
-
-
-@dataclass
-class LocalMaxPerformanceConfig(LocalPerformanceConfig):
-    """An even more aggressive configuration for powerful local machines."""
-
-    train_batch_size: int = 24
-
-
-@dataclass
-class OvernightConfig(LocalConfig):  # Inherits from LocalConfig for MPS settings
-    """Configuration optimized for overnight training on local MPS."""
-
-    num_epochs: int = 200  # Example: Increased epochs for overnight run
-    # Override any other LocalConfig settings as needed for overnight runs
-    # For example, you might want to ensure quick_test specific settings are off
-    # or adjust learning rate schedule, or ensure full dataset is used.
-    # These would typically be handled by the config itself rather than CLI flags for an 'overnight' profile.
-
-    # Ensure paths are appropriate if not overridden by CLI in train_transformer.py
-    # data_dir, audio_dir, log_dir, model_dir will be inherited from LocalConfig
-    # or overridden by train_transformer.py if CLI args are provided.
-
-    # Example: ensure no quick_test limits are applied from a base class if any existed
-    # This is more for illustration, as train_transformer.py handles --quick-test CLI
-    # limit_train_batches: Optional[float] = None
-    # limit_val_batches: Optional[float] = None
-
-    # You might want a specific model_dir suffix for overnight runs if not using experiment_tag for the main folder
-    # model_dir: str = "models/local_transformer_models/overnight/"
-
-
-@dataclass
-class LocalMicroConfig(LocalConfig):
-    """Extreme micro-resolution config for very fast passages.
-
-    hop_length=64 (~2.9 ms), patch_stride=1; keep model small for memory.
-    """
-
-    n_fft: int = 512
-    hop_length: int = 64
-    patch_size: Tuple[int, int] = (8, 16)
-    patch_stride: int = 1
-    event_tolerance_patches: int = 5
-    label_dilation_frames: int = 4
-    max_audio_length: float = 3.0
-    window_length_seconds: float = 3.0
-    train_batch_size: int = 2
-    val_batch_size: int = 4
-    num_workers: int = 2
-    persistent_workers: bool = False
 
 
 @dataclass

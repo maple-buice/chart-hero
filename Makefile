@@ -52,8 +52,8 @@ help:
 	@echo "  make format         # Ruff format"
 	@echo "  make train-quick    # Quick sanity training run"
 	@echo "  make dataset-highres SONGS_ROOT=/Volumes/Media/CloneHero DATASET_OUT=datasets/processed_highres  # Build hi-res dataset"
-	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local_highres on processed_highres"
-	@echo "  make train-highres RESUME_LATEST=1  # Resume latest local_highres run"
+	@echo "  make train-highres TAG=myrun WANDB=1  # Train with local on processed_highres"
+	@echo "  make train-highres RESUME_LATEST=1  # Resume latest local run"
 	@echo "  make infer LINK='https://youtu.be/...?...' PRESET=conservative  # Run inference with newest model"
 	@echo "  make eval SONG=/path/to/songdir [NMS=11 AG=0.55 HF=0.32]  # Eval model vs song's notes.mid"
 .PHONY: venv
@@ -97,7 +97,7 @@ dataset-highres:
 	        $(PY) -m chart_hero.train.build_dataset \
 	                --roots "$(SONGS_ROOT)" \
 	                --out-dir "$(DATASET_OUT)" \
-	                --config local_highres \
+	                --config local \
 	                --json-index-dir "$(INDEX_DIR)" \
 	                $(if $(strip $(DATASET_SONG_LIMIT)),--limit-songs $(DATASET_SONG_LIMIT),) \
 	                --min-align-score 0.05 \
