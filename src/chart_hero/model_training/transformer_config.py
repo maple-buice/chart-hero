@@ -322,8 +322,8 @@ class LocalConfig(BaseConfig):
     window_length_seconds: float = 20.0
 
     # Batching tuned down for the higher sequence length
-    train_batch_size: int = 10
-    val_batch_size: int = 12
+    train_batch_size: int = 8
+    val_batch_size: int = 8
 
     # Improve dataloader stability locally
     num_workers: int = 4
@@ -333,7 +333,7 @@ class LocalConfig(BaseConfig):
     # Training settings
     learning_rate: float = 1e-4  # Standard rate for training from scratch
     gradient_checkpointing: bool = False
-    accumulate_grad_batches: int = 2
+    accumulate_grad_batches: int = 3
 
     # Storage optimization for 1TB SSD
     cache_dataset: bool = False  # Disable caching to save memory
@@ -341,6 +341,8 @@ class LocalConfig(BaseConfig):
 
     # Conservative decode min spacing defaults (ms)
     min_spacing_ms_map: dict[str, float] | None = None
+
+    dataset_fraction: float = 0.1  # 0 < fraction <= 1.0
 
     def __post_init__(self) -> None:
         """Select default device preferring MPS, then CUDA, otherwise CPU."""
