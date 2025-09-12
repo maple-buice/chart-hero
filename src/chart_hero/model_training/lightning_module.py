@@ -87,8 +87,10 @@ class DrumTranscriptionModule(pl.LightningModule):
 
     def _common_step(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor]
-        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch: (
+            Tuple[torch.Tensor, torch.Tensor]
+            | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ),
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if len(batch) == 3:
             spectrograms, labels, lengths = batch
@@ -264,8 +266,10 @@ class DrumTranscriptionModule(pl.LightningModule):
 
     def training_step(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor]
-        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch: (
+            Tuple[torch.Tensor, torch.Tensor]
+            | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ),
         batch_idx: int,
     ) -> torch.Tensor:
         loss, preds, labels, _ = self._common_step(batch)
@@ -278,8 +282,10 @@ class DrumTranscriptionModule(pl.LightningModule):
 
     def validation_step(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor]
-        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch: (
+            Tuple[torch.Tensor, torch.Tensor]
+            | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ),
         batch_idx: int,
     ) -> torch.Tensor:
         loss, preds, labels, probs = self._common_step(batch)
@@ -299,8 +305,10 @@ class DrumTranscriptionModule(pl.LightningModule):
 
     def test_step(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor]
-        | Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        batch: (
+            Tuple[torch.Tensor, torch.Tensor]
+            | Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ),
         batch_idx: int,
     ) -> torch.Tensor:
         loss, preds, labels, _ = self._common_step(batch)
@@ -331,12 +339,20 @@ class DrumTranscriptionModule(pl.LightningModule):
                 num_labels=self.config.num_drum_classes,
             )
             self.log("val_acc", base_acc)
+            class_f1s: list[torch.Tensor] = []
+            for i in range(self.config.num_drum_classes):
+                class_f1 = torchmetrics.functional.f1_score(
+                    all_preds[:, i], all_labels[:, i], task="binary"
+                )
+                self.log(f"val_f1_class_{i}", class_f1)
+                class_f1s.append(class_f1)
+            self.print(
+                "Per-class val_f1: "
+                + ", ".join(
+                    f"{idx}:{f1.item():.3f}" for idx, f1 in enumerate(class_f1s)
+                )
+            )
             if self.trainer.logger:
-                for i in range(self.config.num_drum_classes):
-                    class_f1 = torchmetrics.functional.f1_score(
-                        all_preds[:, i], all_labels[:, i], task="binary"
-                    )
-                    self.log(f"val_f1_class_{i}", class_f1)
                 tol = max(0, int(getattr(self.config, "event_tolerance_patches", 1)))
                 ev_p, ev_r, ev_f1 = self._event_level_prf(all_preds, all_labels, tol)
                 self.log("val_event_precision", ev_p)
