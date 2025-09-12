@@ -184,15 +184,17 @@ class DrumTranscriptionModule(pl.LightningModule):
             p = raw_p
             alpha = getattr(self.config, "focal_alpha", 0.25)
             gamma = getattr(self.config, "focal_gamma", 2.0)
-            # BCE per element
-            bce = F.binary_cross_entropy(p, labels_for_loss, reduction="none")
+            # BCE per element using logits to ensure autocast safety
+            bce = F.binary_cross_entropy_with_logits(
+                logits,
+                labels_for_loss,
+                pos_weight=self.pos_weight.to(logits.dtype),
+                reduction="none",
+            )
             focal = (
                 alpha * (1 - p) ** gamma * labels_for_loss
                 + (1 - alpha) * p**gamma * (1 - labels_for_loss)
             ) * bce
-            # Class weighting via pos_weight approximated by scaling positives
-            pos_w = self.pos_weight.to(focal.device, dtype=focal.dtype)
-            focal = focal * (labels_for_loss * (pos_w - 1) + 1)
             if patch_mask is not None:
                 mask_flat = patch_mask.reshape(-1).unsqueeze(1).expand_as(focal) > 0
                 loss = focal[mask_flat].mean() if mask_flat.any() else focal.mean()
